@@ -33,14 +33,7 @@ export function PullRequestMarkdown({
     <div className={cn("space-y-3", className)}>
       {segments.map((segment) => {
         if (segment.kind === "markdown") {
-          return (
-            <ChatMarkdown
-              key={segment.id}
-              text={segment.text}
-              cwd={cwd}
-              environmentId={environmentId}
-            />
-          );
+          return <ChatMarkdown key={segment.id} text={segment.text} cwd={cwd} />;
         }
         const isVideo = segment.media === "video";
         const Icon = isVideo ? PlayIcon : PaperclipIcon;

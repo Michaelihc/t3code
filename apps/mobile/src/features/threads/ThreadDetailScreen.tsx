@@ -1,21 +1,21 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
+import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
 import { HeaderHeightContext } from "@react-navigation/elements";
 import type {
-  ApprovalRequestId,
   EnvironmentId,
   MessageId,
   ModelSelection,
-  OrchestrationThreadShell,
   ProviderApprovalDecision,
   ProviderInteractionMode,
   RuntimeMode,
+  RuntimeRequestId,
   ServerConfig as T3ServerConfig,
   ThreadId,
-  UserInputQuestion,
 } from "@t3tools/contracts";
+import type { ThreadUserInputQuestion } from "@t3tools/client-runtime/state/thread-requests";
 import * as Haptics from "expo-haptics";
 import {
   memo,
@@ -57,13 +57,15 @@ import type { ComposerEditorHandle } from "../../components/ComposerEditor";
 import type { StatusTone } from "../../components/StatusPill";
 import type { DraftComposerImageAttachment } from "../../lib/composerImages";
 import { CHAT_CONTENT_MAX_WIDTH, type LayoutVariant } from "../../lib/layout";
-import { IOS_NAV_BAR_HEIGHT } from "../../lib/layoutMetrics";
 import { scopedThreadKey } from "../../lib/scopedEntities";
+import { threadEnvironment } from "../../state/threads";
+import { useAtomCommand } from "../../state/use-atom-command";
 import type {
   PendingApproval,
   PendingUserInput,
   PendingUserInputDraftAnswer,
   ThreadFeedEntry,
+  ThreadFeedLatestRun,
 } from "../../lib/threadActivity";
 import { PendingApprovalCard } from "./PendingApprovalCard";
 import { PendingUserInputCard } from "./PendingUserInputCard";
@@ -77,31 +79,35 @@ import {
   COMPOSER_EXPANDED_CHROME,
   ThreadComposer,
 } from "./ThreadComposer";
-import { ThreadFeed } from "./ThreadFeed";
+import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import { ThreadRelationshipsBanner } from "./ThreadRelationshipsBanner";
+import { ThreadQueueControl } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
-import { resolveThreadFeedSubmissionAnchor } from "./thread-feed-live-follow";
 
 export interface ThreadDetailScreenProps {
-  readonly selectedThread: OrchestrationThreadShell;
+  readonly selectedThread: EnvironmentThreadShell;
   readonly contentPresentation: ThreadContentPresentation;
   readonly screenTone: StatusTone;
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
-  readonly respondingApprovalId: ApprovalRequestId | null;
+  readonly respondingApprovalId: RuntimeRequestId | null;
   readonly activePendingUserInput: PendingUserInput | null;
   readonly activePendingUserInputDrafts: Record<string, PendingUserInputDraftAnswer>;
   readonly activePendingUserInputAnswers: Record<string, string | ReadonlyArray<string>> | null;
-  readonly respondingUserInputId: ApprovalRequestId | null;
+  readonly respondingUserInputId: RuntimeRequestId | null;
   readonly draftMessage: string;
   readonly draftAttachments: ReadonlyArray<DraftComposerImageAttachment>;
   readonly connectionStateLabel: EnvironmentConnectionPhase;
   /** Message sync status for the selected thread (drives the composer status pill). */
   readonly threadSyncStatus?: EnvironmentThreadStatus;
-  /** Non-null when older turns exist beyond the loaded window. */
-  readonly loadEarlier?: { readonly loading: boolean; readonly onLoadEarlier: () => void } | null;
+  /** Progressive history controls for oversized mobile thread opens. */
+  readonly historyControls?: ThreadFeedHistoryControls;
+  readonly activeThreadBusy: boolean;
+  readonly canStopThread: boolean;
   readonly environmentId: EnvironmentId;
   readonly projectWorkspaceRoot: string | null;
   readonly threadCwd: string | null;
@@ -122,16 +128,16 @@ export interface ThreadDetailScreenProps {
   readonly onUpdateThreadRuntimeMode: (runtimeMode: RuntimeMode) => void;
   readonly onUpdateThreadInteractionMode: (interactionMode: ProviderInteractionMode) => void;
   readonly onRespondToApproval: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<unknown>;
   readonly onSelectUserInputOption: (
-    requestId: ApprovalRequestId,
-    question: UserInputQuestion,
+    requestId: RuntimeRequestId,
+    question: ThreadUserInputQuestion,
     label: string,
   ) => void;
   readonly onChangeUserInputCustomAnswer: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     questionId: string,
     customAnswer: string,
   ) => void;
@@ -250,7 +256,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     }
   }, []);
   const windowHeight = useWindowDimensions().height;
-  const navigationHeaderHeight = useContext(HeaderHeightContext) || insets.top + IOS_NAV_BAR_HEIGHT;
+  const navigationHeaderHeight = useContext(HeaderHeightContext) || insets.top + 44;
   const agentLabel = `${props.selectedThread.modelSelection.instanceId} agent`;
   const selectedThreadKey = scopedThreadKey(props.environmentId, props.selectedThread.id);
   const composerEditorRef = useRef<ComposerEditorHandle>(null);
@@ -258,10 +264,9 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const listRef = useRef<LegendListRef>(null);
   const feedTouchStartRef = useRef<{ pageX: number; pageY: number } | null>(null);
   const selectedThreadKeyRef = useRef(selectedThreadKey);
-  const lastScrolledSubmittedMessageIdRef = useRef<MessageId | null>(null);
+  const lastScrolledAnchorMessageIdRef = useRef<MessageId | null>(null);
   const [composerExpanded, setComposerExpanded] = useState(false);
   const [anchorMessageId, setAnchorMessageId] = useState<MessageId | null>(null);
-  const [submittedMessageId, setSubmittedMessageId] = useState<MessageId | null>(null);
   const [endFollowEnabled, setEndFollowEnabled] = useState(true);
   // Android keys the safe-area padding on keyboard visibility (#5988): the
   // back gesture closes the keyboard while the editor stays focused, and a
@@ -300,7 +305,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // keyboard animations coherent. Collapse state is keyed by request id so a
   // new request re-expands automatically.
   const [collapsedUserInputRequestId, setCollapsedUserInputRequestId] =
-    useState<ApprovalRequestId | null>(null);
+    useState<RuntimeRequestId | null>(null);
   const activeUserInputRequestId = props.activePendingUserInput?.requestId ?? null;
   const userInputCollapsed =
     activeUserInputRequestId !== null && collapsedUserInputRequestId === activeUserInputRequestId;
@@ -458,22 +463,52 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKeyRef.current = selectedThreadKey;
   }, [selectedThreadKey]);
 
+  const visitThread = useAtomCommand(threadEnvironment.visit, { reportFailure: false });
+  const lastDispatchedVisitRef = useRef<string | null>(null);
+  const selectedThreadId = props.selectedThread.id;
+  const selectedThreadUpdatedAt = props.selectedThread.updatedAt;
+  const selectedThreadLastVisitedAt = props.selectedThread.lastVisitedAt;
+  useEffect(() => {
+    // Records the server-side visited watermark while the thread is on
+    // screen (mirror of web ChatView), so the "Done" marker clears on every
+    // device. Field absent → the server predates visited tracking.
+    if (selectedThreadLastVisitedAt === undefined) return;
+    const threadUpdatedAtMs = Date.parse(selectedThreadUpdatedAt);
+    if (Number.isNaN(threadUpdatedAtMs)) return;
+    const lastVisitedAtMs = selectedThreadLastVisitedAt
+      ? Date.parse(selectedThreadLastVisitedAt)
+      : NaN;
+    if (!Number.isNaN(lastVisitedAtMs) && lastVisitedAtMs >= threadUpdatedAtMs) return;
+    // Dedupe per watermark — the effect re-runs before the command echo lands.
+    const dispatchKey = `${selectedThreadKey}:${selectedThreadUpdatedAt}`;
+    if (lastDispatchedVisitRef.current === dispatchKey) return;
+    lastDispatchedVisitRef.current = dispatchKey;
+    void visitThread({
+      environmentId: props.environmentId,
+      input: { threadId: selectedThreadId, visitedAt: selectedThreadUpdatedAt },
+    });
+  }, [
+    props.environmentId,
+    selectedThreadId,
+    selectedThreadKey,
+    selectedThreadLastVisitedAt,
+    selectedThreadUpdatedAt,
+    visitThread,
+  ]);
+
   useEffect(() => {
     setAnchorMessageId(null);
-    setSubmittedMessageId(null);
-    lastScrolledSubmittedMessageIdRef.current = null;
+    lastScrolledAnchorMessageIdRef.current = null;
     setEndFollowEnabled(true);
     freeze.set(false);
   }, [freeze, selectedThreadKey]);
 
   useEffect(() => {
     if (
-      submittedMessageId === null ||
-      lastScrolledSubmittedMessageIdRef.current === submittedMessageId ||
+      anchorMessageId === null ||
+      lastScrolledAnchorMessageIdRef.current === anchorMessageId ||
       contentPresentationKind !== "ready" ||
-      !selectedThreadFeed.some(
-        (entry) => entry.type === "message" && entry.id === submittedMessageId,
-      )
+      !selectedThreadFeed.some((entry) => entry.type === "message" && entry.id === anchorMessageId)
     ) {
       return;
     }
@@ -483,7 +518,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
       if (selectedThreadKeyRef.current !== targetThreadKey) {
         return;
       }
-      lastScrolledSubmittedMessageIdRef.current = submittedMessageId;
+      lastScrolledAnchorMessageIdRef.current = anchorMessageId;
       // Wait for the keyboard dismissal (started by blur() on send) to finish
       // before scrolling: scrollMessageToEnd freezes keyboard-driven inset
       // updates while it runs, and a close event swallowed by that freeze
@@ -493,7 +528,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         .then(() => {
           if (
             selectedThreadKeyRef.current !== targetThreadKey ||
-            lastScrolledSubmittedMessageIdRef.current !== submittedMessageId
+            lastScrolledAnchorMessageIdRef.current !== anchorMessageId
           ) {
             return;
           }
@@ -502,17 +537,17 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
         .catch(() => {
           if (
             selectedThreadKeyRef.current !== targetThreadKey ||
-            lastScrolledSubmittedMessageIdRef.current !== submittedMessageId
+            lastScrolledAnchorMessageIdRef.current !== anchorMessageId
           ) {
             return;
           }
-          lastScrolledSubmittedMessageIdRef.current = null;
+          lastScrolledAnchorMessageIdRef.current = null;
           freeze.set(false);
         });
     });
     return () => cancelAnimationFrame(frame);
   }, [
-    submittedMessageId,
+    anchorMessageId,
     freeze,
     contentPresentationKind,
     selectedThreadFeed,
@@ -522,34 +557,15 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
 
   const handleSendMessage = useCallback(async () => {
     const targetThreadKey = selectedThreadKey;
-    const hasUserMessage = selectedThreadFeed.some(
-      (entry) => entry.type === "message" && entry.message.role === "user",
-    );
     const messageId = await props.onSendMessage();
     if (messageId === null || selectedThreadKeyRef.current !== targetThreadKey) {
       return messageId;
     }
 
-    setSubmittedMessageId(messageId);
-    setAnchorMessageId(
-      resolveThreadFeedSubmissionAnchor({
-        currentAnchorMessageId: anchorMessageId,
-        submittedMessageId: messageId,
-        hasStartedTurn: props.selectedThread.latestTurn !== null,
-        hasUserMessage,
-        queuedMessageCount: props.selectedThreadQueueCount,
-      }),
-    );
+    setAnchorMessageId(messageId);
     composerEditorRef.current?.blur();
     return messageId;
-  }, [
-    anchorMessageId,
-    props.onSendMessage,
-    props.selectedThread.latestTurn,
-    props.selectedThreadQueueCount,
-    selectedThreadFeed,
-    selectedThreadKey,
-  ]);
+  }, [props.onSendMessage, selectedThreadKey]);
 
   const collapseComposer = useCallback(() => {
     composerEditorRef.current?.blur();
@@ -614,22 +630,28 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             feed={props.selectedThreadFeed}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
-            latestTurn={props.selectedThread.latestTurn}
+            threadTitle={props.selectedThread.title}
+            latestRun={props.activityRun}
             activeWorkStartedAt={props.activeWorkStartedAt}
             listRef={listRef}
             freeze={freeze}
             anchorMessageId={anchorMessageId}
-            submittedMessageId={submittedMessageId}
             contentInsetEndAdjustment={combinedContentInsetEndAdjustment}
             contentTopInset={0}
             contentBottomInset={estimatedOverlayHeight}
             contentMaxWidth={contentMaxWidth}
+            historyControls={props.historyControls}
+            topAccessory={
+              <ThreadRelationshipsBanner
+                environmentId={props.environmentId}
+                threadId={props.selectedThread.id}
+              />
+            }
             layoutVariant={layoutVariant}
             usesAutomaticContentInsets={props.usesAutomaticContentInsets}
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             onEndFollowEnabledChange={setEndFollowEnabled}
             skills={selectedProviderSkills}
-            loadEarlier={props.loadEarlier ?? null}
           />
         </View>
       ) : (
@@ -694,6 +716,11 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
               </Animated.View>
             ) : null}
             <View className="w-full self-center" style={{ maxWidth: contentMaxWidth }}>
+              <ThreadQueueControl
+                environmentId={props.environmentId}
+                threadId={props.selectedThread.id}
+              />
+
               {props.activePendingApproval || props.activePendingUserInput ? (
                 <Animated.View
                   className="shrink-0 gap-3 px-4 pb-3"
@@ -752,6 +779,8 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                 selectedThread={props.selectedThread}
                 serverConfig={props.serverConfig}
                 queueCount={props.selectedThreadQueueCount}
+                activeThreadBusy={props.activeThreadBusy}
+                canStopThread={props.canStopThread}
                 environmentId={props.environmentId}
                 projectCwd={props.projectWorkspaceRoot}
                 bottomInset={composerBottomInset}

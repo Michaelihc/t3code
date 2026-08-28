@@ -4,8 +4,8 @@ import { NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas.t
 import {
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   PROVIDER_SEND_TURN_SUPPORTED_IMAGE_MIME_TYPES,
-  ProjectFaviconPath,
-} from "./orchestration.ts";
+} from "./chatAttachment.ts";
+import { ProjectFaviconPath } from "./orchestration.ts";
 
 const ASSET_PATH_MAX_LENGTH = 1024;
 
