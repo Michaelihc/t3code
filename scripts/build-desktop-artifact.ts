@@ -1546,13 +1546,20 @@ export function createStageWorkspaceConfig(input: {
 export function createStagePatchedDependencies(
   patchedDependencies: Record<string, string>,
   dependencies: Record<string, unknown>,
+  transitiveDependencies: readonly string[] = [],
 ): Record<string, string> {
+  const includedPackageNames = new Set([...Object.keys(dependencies), ...transitiveDependencies]);
   return Object.fromEntries(
     Object.entries(patchedDependencies).filter(([patchKey]) =>
-      Object.hasOwn(dependencies, getPatchedDependencyPackageName(patchKey)),
+      includedPackageNames.has(getPatchedDependencyPackageName(patchKey)),
     ),
   );
 }
+
+// effect -> msgpackr -> msgpackr-extract uses this helper to compile when a
+// platform prebuild is unavailable. It remains transitive in both Windows
+// release stages, so carry its path-safe node-gyp patch explicitly.
+const TRANSITIVE_STAGE_PATCH_DEPENDENCIES = ["node-gyp-build-optional-packages"] as const;
 
 function getPatchedDependencyPackageName(patchKey: string): string {
   const versionSeparator = patchKey.lastIndexOf("@");
@@ -3022,6 +3029,7 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   const sidecarPatchedDependencies = createStagePatchedDependencies(
     input.patchedDependencies,
     sidecarDependencies,
+    TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
   );
   const sidecarPackageJson = {
     name: "t3code-server",
@@ -3762,6 +3770,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
     stageDependencies,
+    TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
   );
   const windowsServerAsarPath =
     options.platform === "win"

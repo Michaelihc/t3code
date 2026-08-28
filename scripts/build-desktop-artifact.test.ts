@@ -400,17 +400,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@pierre/diffs@1.1.20": "patches/@pierre%2Fdiffs@1.1.20.patch",
           "alchemy@2.0.0-beta.49": "patches/alchemy@2.0.0-beta.49.patch",
           "effect@4.0.0-beta.73": "patches/effect@4.0.0-beta.73.patch",
+          "node-gyp-build-optional-packages@5.2.2":
+            "patches/node-gyp-build-optional-packages@5.2.2.patch",
         },
         {
           "@ff-labs/fff-node": "0.9.4",
           "@pierre/diffs": "1.1.20",
           effect: "4.0.0-beta.73",
         },
+        ["node-gyp-build-optional-packages"],
       ),
       {
         "@ff-labs/fff-node@0.9.4": "patches/@ff-labs__fff-node@0.9.4.patch",
         "@pierre/diffs@1.1.20": "patches/@pierre%2Fdiffs@1.1.20.patch",
         "effect@4.0.0-beta.73": "patches/effect@4.0.0-beta.73.patch",
+        "node-gyp-build-optional-packages@5.2.2":
+          "patches/node-gyp-build-optional-packages@5.2.2.patch",
       },
     );
 
