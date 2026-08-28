@@ -103,3 +103,94 @@ it.effect("keeps shell snapshots and later deltas moving while project enrichmen
     }).pipe(Effect.provide(testLayer));
   }),
 );
+
+it.effect("preserves thread unsettled timestamps in command and shell snapshots", () =>
+  Effect.gen(function* () {
+    const metadataLayer = Layer.merge(
+      Layer.succeed(RepositoryIdentityResolver.RepositoryIdentityResolver, {
+        resolve: (workspaceRoot) =>
+          Effect.succeed({
+            canonicalKey: "example.test/project",
+            locator: {
+              source: "git-remote" as const,
+              remoteName: "origin",
+              remoteUrl: "https://example.test/project.git",
+            },
+            rootPath: workspaceRoot,
+          }),
+      }),
+      Layer.succeed(ProjectFaviconResolver.ProjectFaviconResolver, {
+        resolvePath: () => Effect.succeed(null),
+      }),
+    );
+    const testLayer = OrchestrationProjectionSnapshotQueryLive.pipe(
+      Layer.provideMerge(ThreadBackgroundLiveness.layer),
+      Layer.provideMerge(ThreadPlanProgress.layer),
+      Layer.provideMerge(ProjectEnrichment.layer),
+      Layer.provideMerge(metadataLayer),
+      Layer.provideMerge(SqlitePersistenceMemory),
+      Layer.provide(
+        ServerConfig.layerTest(process.cwd(), { prefix: "projection-unsettled-at-test-" }),
+      ),
+      Layer.provide(NodeServices.layer),
+    );
+
+    yield* Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      const query = yield* ProjectionSnapshotQuery;
+      const now = "2026-08-28T07:00:00.000Z";
+      const unsettledAt = "2026-08-28T08:00:00.000Z";
+
+      yield* sql`
+        INSERT INTO projection_projects (
+          project_id,
+          title,
+          workspace_root,
+          default_model_selection_json,
+          scripts_json,
+          created_at,
+          updated_at,
+          deleted_at
+        ) VALUES (
+          'project:unsettled-at',
+          'Unsettled timestamp project',
+          '/work/unsettled-at',
+          NULL,
+          '[]',
+          ${now},
+          ${now},
+          NULL
+        )
+      `;
+      yield* sql`
+        INSERT INTO projection_threads (
+          thread_id,
+          project_id,
+          title,
+          model_selection_json,
+          runtime_mode,
+          interaction_mode,
+          created_at,
+          updated_at,
+          unsettled_at
+        ) VALUES (
+          'thread:unsettled-at',
+          'project:unsettled-at',
+          'Unsettled timestamp thread',
+          '{"instanceId":"codex","model":"gpt-5.4"}',
+          'full-access',
+          'default',
+          ${now},
+          ${now},
+          ${unsettledAt}
+        )
+      `;
+
+      const commandReadModel = yield* query.getCommandReadModel();
+      assert.equal(commandReadModel.threads[0]?.unsettledAt, unsettledAt);
+
+      const shellSnapshot = yield* query.getShellSnapshot();
+      assert.equal(shellSnapshot.threads[0]?.unsettledAt, unsettledAt);
+    }).pipe(Effect.provide(testLayer));
+  }),
+);
