@@ -190,7 +190,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
     "monitor",
   );
   const appExecutableName = "t3code.exe";
-  yield* fs.writeFileString(path.join(packagedAppDir, appExecutableName), "electron");
+  yield* fs.copyFile(process.execPath, path.join(packagedAppDir, appExecutableName));
   yield* fs.writeFileString(path.join(packagedAppDir, "chrome_crashpad_handler.exe"), "crashpad");
 
   if (input.wslRuntime !== undefined) {
