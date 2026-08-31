@@ -184,6 +184,42 @@ describe("AssetAccess", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("issues exact download URLs for arbitrary workspace files", () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const root = yield* fileSystem.makeTempDirectoryScoped({
+        prefix: "t3-asset-download-workspace-",
+      });
+      const archivePath = path.join(root, "build output.tar.gz");
+      const siblingPath = path.join(root, "other.tar.gz");
+      yield* fileSystem.writeFile(archivePath, new Uint8Array([1, 2, 3]));
+      yield* fileSystem.writeFile(siblingPath, new Uint8Array([4, 5, 6]));
+      const canonicalArchivePath = yield* fileSystem.realPath(archivePath);
+
+      const result = yield* issueAssetUrl({
+        resource: {
+          _tag: "workspace-file-download",
+          threadId: ThreadId.make("thread-1"),
+          path: archivePath,
+        },
+        workspaceRoot: root,
+      });
+      const suffix = result.relativeUrl.slice(`${ASSET_ROUTE_PREFIX}/`.length);
+      const separatorIndex = suffix.indexOf("/");
+      const token = suffix.slice(0, separatorIndex);
+
+      expect(decodeURIComponent(suffix.slice(separatorIndex + 1))).toBe("build output.tar.gz");
+      expect(yield* resolveAsset(token, "build output.tar.gz")).toEqual({
+        kind: "file",
+        path: canonicalArchivePath,
+        download: true,
+        fileName: "build output.tar.gz",
+      });
+      expect(yield* resolveAsset(token, "other.tar.gz")).toBeNull();
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("issues exact attachment capabilities by attachment id", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

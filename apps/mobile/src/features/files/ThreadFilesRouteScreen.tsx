@@ -2,7 +2,7 @@ import { NativeHeaderToolbar, NativeStackScreenOptions } from "../../native/Stac
 import { StackActions, useNavigation, type StaticScreenProps } from "@react-navigation/native";
 import type { MenuAction } from "@react-native-menu/menu";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ActivityIndicator, Platform, View } from "react-native";
+import { ActivityIndicator, Alert, Platform, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 import {
@@ -20,6 +20,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { LoadingScreen } from "../../components/LoadingScreen";
 import { resolveFileSelectionNavigationAction } from "../../lib/adaptive-navigation";
 import { copyTextWithHaptic } from "../../lib/copyTextWithHaptic";
+import { downloadAndShareAttachment } from "../../lib/attachmentDownload";
 import { tryOpenExternalUrl } from "../../lib/openExternalUrl";
 import { useUniwindTheme } from "../../lib/useUniwindTheme";
 import { useThreadSelection } from "../../state/use-thread-selection";
@@ -53,7 +54,7 @@ import {
   isMarkdownPreviewFile,
   isSvgImagePreviewFile,
 } from "./filePath";
-import { useWorkspaceFileAssetUrl } from "./workspaceFileAssetUrl";
+import { useWorkspaceFileAssetUrl, useWorkspaceFileDownloadUrl } from "./workspaceFileAssetUrl";
 
 type FileViewMode = "preview" | "source";
 
@@ -503,6 +504,12 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
     relativePath: assetPreviewPath,
     threadId,
   });
+  const downloadUri = useWorkspaceFileDownloadUrl({
+    cwd,
+    environmentId,
+    relativePath,
+    threadId,
+  });
   const previewUri =
     assetPreviewUri === null || previewRevision === 0
       ? assetPreviewUri
@@ -557,6 +564,23 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
   );
   useRegisterWorkspaceInspector(fileInspector.supported ? renderWorkspaceInspector : undefined);
 
+  const handleDownload = useCallback(() => {
+    if (downloadUri === null || relativePath === null) return;
+    void downloadAndShareAttachment({
+      url: downloadUri,
+      attachment: {
+        name: basename(relativePath),
+        mimeType: "application/octet-stream",
+      },
+      signal: new AbortController().signal,
+    }).catch((cause) => {
+      Alert.alert(
+        "Could not save file",
+        cause instanceof Error ? cause.message : "The file could not be downloaded.",
+      );
+    });
+  }, [downloadUri, relativePath]);
+
   const fileMenuActions = useMemo(() => {
     if (relativePath === null) return [];
     const canToggleMode = canPreview && !isImageFile;
@@ -586,6 +610,15 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
         inline: false,
         onPress: () => copyTextWithHaptic(relativePath),
       } as const,
+      downloadUri !== null
+        ? ({
+            id: "download",
+            title: "Save or share",
+            icon: "square.and.arrow.down",
+            inline: false,
+            onPress: handleDownload,
+          } as const)
+        : null,
       isBrowserFile && typeof assetPreviewUri === "string"
         ? ({
             id: "open-browser",
@@ -605,7 +638,16 @@ export function ThreadFileScreen(props: ThreadFileRouteScreenProps) {
           } as const)
         : null,
     ].filter((action) => action !== null);
-  }, [assetPreviewUri, canPreview, isBrowserFile, isImageFile, relativePath, resolvedActiveMode]);
+  }, [
+    assetPreviewUri,
+    canPreview,
+    downloadUri,
+    handleDownload,
+    isBrowserFile,
+    isImageFile,
+    relativePath,
+    resolvedActiveMode,
+  ]);
 
   const androidFileMenuActions = useMemo<MenuAction[]>(
     () =>

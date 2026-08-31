@@ -3,6 +3,7 @@ import {
   CheckIcon,
   ChevronRightIcon,
   CopyIcon,
+  DownloadIcon,
   FileSpreadsheetIcon,
   FileTextIcon,
   GlobeIcon,
@@ -160,6 +161,7 @@ import {
   openUrlInPreview,
   BrowserPreviewUnavailableError,
 } from "../browser/openFileInPreview";
+import { downloadWorkspaceFile } from "../browser/downloadWorkspaceFile";
 
 interface ChatMarkdownProps {
   text: string;
@@ -1038,6 +1040,7 @@ interface MarkdownFileLinkProps {
   onOpenInPanel: (workspaceRelativePath: string, line: number | undefined) => void;
   openInEditorMenuLabel: string;
   onOpenInBrowser?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
+  onDownload?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   onReveal?: (() => Promise<AtomCommandResult<unknown, unknown>>) | undefined;
   revealLabel?: string | undefined;
   className?: string | undefined;
@@ -1452,6 +1455,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   onOpenInPanel,
   openInEditorMenuLabel,
   onOpenInBrowser,
+  onDownload,
   onReveal,
   revealLabel,
   className,
@@ -1553,6 +1557,42 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
     });
   }, [onReveal]);
 
+  const handleDownload = useCallback(() => {
+    if (!onDownload) return;
+    void (async () => {
+      try {
+        const result = await onDownload();
+        if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+          return;
+        }
+        reportMarkdownActionFailure(
+          { operation: "download-workspace-file", target: targetPath },
+          result.cause,
+        );
+        const error = squashAtomCommandFailure(result);
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to download file",
+            description: error instanceof Error ? error.message : "An error occurred.",
+          }),
+        );
+      } catch (cause) {
+        reportMarkdownActionFailure(
+          { operation: "download-workspace-file", target: targetPath },
+          cause,
+        );
+        toastManager.add(
+          stackedThreadToast({
+            type: "error",
+            title: "Unable to download file",
+            description: cause instanceof Error ? cause.message : "An error occurred.",
+          }),
+        );
+      }
+    })();
+  }, [onDownload, targetPath]);
+
   const handleCopy = useCallback(
     (value: string, title: string) => {
       if (typeof window === "undefined" || !navigator.clipboard?.writeText) {
@@ -1604,6 +1644,7 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
             ...(onOpenInBrowser
               ? ([{ id: "open-in-browser", label: "Open in integrated browser" }] as const)
               : []),
+            ...(onDownload ? ([{ id: "download", label: "Download file" }] as const) : []),
             ...(onReveal && revealLabel ? ([{ id: "reveal", label: revealLabel }] as const) : []),
             { id: "copy-relative", label: "Copy relative path" },
             { id: "copy-full", label: "Copy full path" },
@@ -1617,6 +1658,10 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
         }
         if (clicked === "open-in-browser") {
           handleOpenInBrowser();
+          return;
+        }
+        if (clicked === "download") {
+          handleDownload();
           return;
         }
         if (clicked === "reveal") {
@@ -1642,9 +1687,11 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
       handleCopy,
       handleOpenInBrowser,
       handleOpenInEditor,
+      handleDownload,
       handleRevealInFileManager,
       onOpen,
       onOpenInBrowser,
+      onDownload,
       onReveal,
       openInEditorMenuLabel,
       revealLabel,
@@ -1684,66 +1731,89 @@ const MarkdownFileLink = memo(function MarkdownFileLink({
   });
 
   return (
-    <Tooltip>
-      <TooltipTrigger
-        render={
-          hasPrimaryAction ? (
-            <a
-              href={href}
-              className={cn(
-                CHAT_FILE_TAG_CHIP_CLASS_NAME,
-                MARKDOWN_FILE_LINK_CLASS_NAME,
-                className,
-              )}
-              data-markdown-copy={copyMarkdown}
-              onClick={(event) => {
-                event.preventDefault();
-                event.stopPropagation();
-                if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
-                  handleOpenInEditor();
-                  return;
-                }
-                if (useBrowserPrimaryAction) {
-                  handleOpenInBrowser();
-                  return;
-                }
-                handleOpenInFilePreview();
-              }}
-              onContextMenu={handleContextMenu}
-            >
-              <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
-            </a>
-          ) : (
-            <button
-              type="button"
-              aria-label={`File options for ${label}`}
-              aria-haspopup="menu"
-              className={cn(
-                CHAT_FILE_TAG_CHIP_CLASS_NAME,
-                MARKDOWN_FILE_LINK_CLASS_NAME,
-                "select-text",
-                className,
-              )}
-              data-markdown-copy={copyMarkdown}
-              onClick={handleContextMenu}
-              onContextMenu={handleContextMenu}
-            >
-              <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
-            </button>
-          )
-        }
-      />
-      <TooltipPopup
-        side="top"
-        className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
-      >
-        <div className="overflow-x-auto whitespace-nowrap [scrollbar-color:color-mix(in_srgb,var(--border)_78%,transparent)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--border)_78%,transparent)] [&::-webkit-scrollbar-track]:bg-transparent">
-          {/* The full path: the chip already shows the shortened form, and a link
-              to the workspace root collapses to a bare label that repeats it. */}
-          {targetPath}
-        </div>
-      </TooltipPopup>
-    </Tooltip>
+    <span className="inline-flex max-w-full items-center gap-0.5 align-middle">
+      <Tooltip>
+        <TooltipTrigger
+          render={
+            hasPrimaryAction ? (
+              <a
+                href={href}
+                className={cn(
+                  CHAT_FILE_TAG_CHIP_CLASS_NAME,
+                  MARKDOWN_FILE_LINK_CLASS_NAME,
+                  className,
+                )}
+                data-markdown-copy={copyMarkdown}
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (onOpen && shouldOpenMarkdownFileLinkInEditor(event)) {
+                    handleOpenInEditor();
+                    return;
+                  }
+                  if (useBrowserPrimaryAction) {
+                    handleOpenInBrowser();
+                    return;
+                  }
+                  handleOpenInFilePreview();
+                }}
+                onContextMenu={handleContextMenu}
+              >
+                <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
+              </a>
+            ) : (
+              <button
+                type="button"
+                aria-label={`File options for ${label}`}
+                aria-haspopup="menu"
+                className={cn(
+                  CHAT_FILE_TAG_CHIP_CLASS_NAME,
+                  MARKDOWN_FILE_LINK_CLASS_NAME,
+                  "select-text",
+                  className,
+                )}
+                data-markdown-copy={copyMarkdown}
+                onClick={handleContextMenu}
+                onContextMenu={handleContextMenu}
+              >
+                <FileTagChipContent path={iconPath} label={label} theme={theme} selectable />
+              </button>
+            )
+          }
+        />
+        <TooltipPopup
+          side="top"
+          className="max-w-[min(40rem,calc(100vw-2rem))] font-mono text-[11px] leading-tight"
+        >
+          <div className="overflow-x-auto whitespace-nowrap [scrollbar-color:color-mix(in_srgb,var(--border)_78%,transparent)_transparent] [scrollbar-width:thin] [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-[color-mix(in_srgb,var(--border)_78%,transparent)] [&::-webkit-scrollbar-track]:bg-transparent">
+            {/* The full path: the chip already shows the shortened form, and a link
+                to the workspace root collapses to a bare label that repeats it. */}
+            {targetPath}
+          </div>
+        </TooltipPopup>
+      </Tooltip>
+      {onDownload ? (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <button
+                type="button"
+                aria-label={`Download ${label}`}
+                className="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/70"
+                onClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  handleDownload();
+                }}
+              >
+                <DownloadIcon className="size-3.5" />
+              </button>
+            }
+          />
+          <TooltipPopup side="top">Download file</TooltipPopup>
+        </Tooltip>
+      ) : null}
+    </span>
   );
 }, areMarkdownFileLinkPropsEqual);
 
@@ -1766,6 +1836,7 @@ function areMarkdownFileLinkPropsEqual(
     previous.onOpenInPanel === next.onOpenInPanel &&
     previous.openInEditorMenuLabel === next.openInEditorMenuLabel &&
     previous.onOpenInBrowser === next.onOpenInBrowser &&
+    previous.onDownload === next.onDownload &&
     previous.onReveal === next.onReveal &&
     previous.revealLabel === next.revealLabel &&
     previous.className === next.className
@@ -1796,6 +1867,9 @@ interface ChatMarkdownComponentsContext {
   readonly openMarkdownFileInPreview: (
     path: string,
   ) => Promise<AtomCommandResult<unknown, unknown>>;
+  readonly downloadMarkdownFile?:
+    | ((fileLinkMeta: MarkdownFileLinkMeta) => Promise<AtomCommandResult<unknown, unknown>>)
+    | undefined;
   readonly openChangeRequestLink: ReturnType<typeof useOpenChangeRequestLink>;
   readonly resolveThreadPullRequest: (href: string) => ThreadLinkedPullRequest | null;
   readonly updateThreadPullRequestLink: (href: string, linked: boolean) => Promise<void>;
@@ -1828,6 +1902,7 @@ function createChatMarkdownComponents(ctx: ChatMarkdownComponentsContext): Compo
     revealMarkdownFileInFileManager,
     openExternalLinkInPreview,
     openMarkdownFileInPreview,
+    downloadMarkdownFile,
     openChangeRequestLink,
     resolveThreadPullRequest,
     updateThreadPullRequestLink,
@@ -1880,6 +1955,7 @@ function createChatMarkdownComponents(ctx: ChatMarkdownComponentsContext): Compo
             ? () => openMarkdownFileInPreview(fileLinkMeta.filePath)
             : undefined
         }
+        onDownload={downloadMarkdownFile ? () => downloadMarkdownFile(fileLinkMeta) : undefined}
         className={className}
       />
     );
@@ -2374,6 +2450,27 @@ function ChatMarkdown({
     },
     [cwd, environmentId, searchProjectEntries],
   );
+  const downloadMarkdownFile = useCallback(
+    async (fileLinkMeta: MarkdownFileLinkMeta) => {
+      if (!threadRef || preparedConnection._tag === "None") {
+        return AsyncResult.failure<void, never>(
+          Cause.die(new Error("Environment is not connected.")),
+        );
+      }
+      const workspaceRelativePath = fileLinkMeta.workspaceRelativePath;
+      const match = workspaceRelativePath
+        ? await findWorkspaceBasenameMatch(workspaceRelativePath)
+        : null;
+      const filePath = match && cwd ? resolvePathLinkTarget(match, cwd) : fileLinkMeta.filePath;
+      return downloadWorkspaceFile({
+        threadRef,
+        filePath,
+        httpBaseUrl: preparedConnection.value.httpBaseUrl,
+        createAssetUrl,
+      });
+    },
+    [createAssetUrl, cwd, findWorkspaceBasenameMatch, preparedConnection, threadRef],
+  );
   // A bare filename resolves to the workspace root, which is rarely where the
   // file is, so ask the index before opening.
   const openFileInPanel = useCallback(
@@ -2430,6 +2527,8 @@ function ChatMarkdown({
             : undefined,
         openExternalLinkInPreview,
         openMarkdownFileInPreview,
+        downloadMarkdownFile:
+          threadRef && preparedConnection._tag !== "None" ? downloadMarkdownFile : undefined,
         openChangeRequestLink,
         resolveThreadPullRequest,
         updateThreadPullRequestLink,
@@ -2457,7 +2556,9 @@ function ChatMarkdown({
       openInPreferredEditor,
       openExternalLinkInPreview,
       openMarkdownFileInPreview,
+      downloadMarkdownFile,
       openChangeRequestLink,
+      preparedConnection,
       resolveThreadPullRequest,
       resolvedTheme,
       skills,

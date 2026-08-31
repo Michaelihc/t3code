@@ -74,6 +74,8 @@ const AssetClaimsSchema = Schema.Union([
     kind: Schema.Literal("workspace-file-exact"),
     workspaceRoot: Schema.String,
     relativePath: Schema.String,
+    download: Schema.optionalKey(Schema.Boolean),
+    fileName: Schema.optionalKey(Schema.String),
     expiresAt: Schema.Number,
   }),
   Schema.Struct({
@@ -211,7 +213,8 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
   let sourcePath: string | undefined;
 
   switch (input.resource._tag) {
-    case "workspace-file": {
+    case "workspace-file":
+    case "workspace-file-download": {
       if (!input.workspaceRoot) {
         return yield* new AssetWorkspaceContextNotFoundError({
           resource: input.resource,
@@ -240,7 +243,10 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
               }),
           ),
         );
-      if (!isWorkspacePreviewEntryPath(resolved.relativePath)) {
+      if (
+        input.resource._tag === "workspace-file" &&
+        !isWorkspacePreviewEntryPath(resolved.relativePath)
+      ) {
         return yield* new AssetPreviewTypeValidationError({
           resource: input.resource,
         });
@@ -271,21 +277,32 @@ export const issueAssetUrl = Effect.fn("AssetAccess.issueAssetUrl")(function* (i
             }),
         ),
       );
-      claims = isWorkspaceImagePreviewPath(resolved.relativePath)
-        ? {
-            version: 1,
-            kind: "workspace-file-exact",
-            workspaceRoot: canonicalWorkspaceRoot,
-            relativePath: resolved.relativePath,
-            expiresAt,
-          }
-        : {
-            version: 1,
-            kind: "workspace-file",
-            workspaceRoot: canonicalWorkspaceRoot,
-            baseRelativePath: path.dirname(resolved.relativePath),
-            expiresAt,
-          };
+      claims =
+        input.resource._tag === "workspace-file-download"
+          ? {
+              version: 1,
+              kind: "workspace-file-exact",
+              workspaceRoot: canonicalWorkspaceRoot,
+              relativePath: resolved.relativePath,
+              download: true,
+              fileName: path.basename(resolved.relativePath),
+              expiresAt,
+            }
+          : isWorkspaceImagePreviewPath(resolved.relativePath)
+            ? {
+                version: 1,
+                kind: "workspace-file-exact",
+                workspaceRoot: canonicalWorkspaceRoot,
+                relativePath: resolved.relativePath,
+                expiresAt,
+              }
+            : {
+                version: 1,
+                kind: "workspace-file",
+                workspaceRoot: canonicalWorkspaceRoot,
+                baseRelativePath: path.dirname(resolved.relativePath),
+                expiresAt,
+              };
       fileName = path.basename(resolved.relativePath);
       break;
     }
@@ -533,7 +550,12 @@ export const resolveAsset = Effect.fn("AssetAccess.resolveAsset")(function* (
       relativePath: claims.relativePath,
     });
     return exactWorkspaceFile
-      ? ({ kind: "file", path: exactWorkspaceFile } satisfies ResolvedAsset)
+      ? ({
+          kind: "file",
+          path: exactWorkspaceFile,
+          ...(claims.download ? { download: true } : {}),
+          ...(claims.fileName !== undefined ? { fileName: claims.fileName } : {}),
+        } satisfies ResolvedAsset)
       : null;
   }
   const segments = decodedPath.split(/[\\/]/);

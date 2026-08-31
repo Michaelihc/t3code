@@ -4,11 +4,12 @@ import { useMemo } from "react";
 import { useAssetUrl } from "../../state/assets";
 import { resolveWorkspaceFilePath } from "./filePath";
 
-export function useWorkspaceFileAssetUrl(props: {
+function useWorkspaceFileAssetUrlForTag(props: {
   readonly cwd: string | null;
   readonly environmentId: EnvironmentId | null;
   readonly relativePath: string | null;
   readonly threadId: ThreadId | null;
+  readonly tag: "workspace-file" | "workspace-file-download";
 }) {
   const absolutePath = useMemo(
     () =>
@@ -22,10 +23,20 @@ export function useWorkspaceFileAssetUrl(props: {
     props.environmentId,
     absolutePath !== null && props.threadId !== null
       ? {
-          _tag: "workspace-file",
+          _tag: props.tag,
           threadId: props.threadId,
           path: absolutePath,
         }
       : null,
   );
+}
+
+type WorkspaceFileAssetUrlProps = Omit<Parameters<typeof useWorkspaceFileAssetUrlForTag>[0], "tag">;
+
+export function useWorkspaceFileAssetUrl(props: WorkspaceFileAssetUrlProps) {
+  return useWorkspaceFileAssetUrlForTag({ ...props, tag: "workspace-file" });
+}
+
+export function useWorkspaceFileDownloadUrl(props: WorkspaceFileAssetUrlProps) {
+  return useWorkspaceFileAssetUrlForTag({ ...props, tag: "workspace-file-download" });
 }

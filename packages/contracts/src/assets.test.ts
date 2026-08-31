@@ -1,13 +1,15 @@
 import * as Schema from "effect/Schema";
 import { describe, expect, it } from "vite-plus/test";
 
-import { AttachmentCreateUploadUrlInput } from "./assets.ts";
+import { AssetResource, AttachmentCreateUploadUrlInput } from "./assets.ts";
+import { ThreadId } from "./baseSchemas.ts";
 import {
   PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
 } from "./chatAttachment.ts";
 
 const isUploadInput = Schema.is(AttachmentCreateUploadUrlInput);
+const isAssetResource = Schema.is(AssetResource);
 
 const uploadInput = {
   name: "screenshot.png",
@@ -56,5 +58,17 @@ describe("AttachmentCreateUploadUrlInput", () => {
         sizeBytes: PROVIDER_SEND_TURN_MAX_FILE_BYTES + 1,
       }),
     ).toBe(false);
+  });
+});
+
+describe("AssetResource", () => {
+  it("accepts an individual workspace file download", () => {
+    expect(
+      isAssetResource({
+        _tag: "workspace-file-download",
+        threadId: ThreadId.make("thread-1"),
+        path: "reports/Q3 results.csv",
+      }),
+    ).toBe(true);
   });
 });

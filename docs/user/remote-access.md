@@ -134,6 +134,12 @@ Use this when you want the desktop app to start or reuse T3 Code on another mach
 
 After setup, the renderer connects to a local forwarded HTTP/WebSocket endpoint. The remote host still owns the actual T3 server, projects, files, git state, terminals, and provider sessions.
 
+## Download remote workspace files
+
+File paths in agent messages include a **Download file** action in web and desktop clients. The Files panel also has a download button, while mobile exposes **Save or share** from the open file's actions menu. T3 Code requests the original bytes from the connected environment only when you use the action, so the file does not need to support an in-app preview.
+
+Downloads are limited to individual files inside the thread's workspace. Folder and multi-file archive downloads are not supported.
+
 SSH launch is a desktop feature because it needs local process and SSH access. Once the environment is paired and saved, it uses the same environment list and connection model as direct LAN, Tailscale, HTTPS, or future tunnel-backed environments.
 
 #### SSH Launch Troubleshooting

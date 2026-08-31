@@ -12,11 +12,12 @@ import {
   isAtomCommandInterrupted,
   squashAtomCommandFailure,
 } from "@t3tools/client-runtime/state/runtime";
-import { ChevronRight, Code2, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
+import { ChevronRight, Code2, Download, Eye, FolderTree, Globe2, LoaderCircle } from "lucide-react";
 import * as Schema from "effect/Schema";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { isBrowserPreviewFile, openFileInPreview } from "~/browser/openFileInPreview";
+import { downloadWorkspaceFile } from "~/browser/downloadWorkspaceFile";
 import { useAssetUrlState } from "~/assets/assetUrls";
 import { OpenInPicker } from "~/components/chat/OpenInPicker";
 import { useRemoteOpenState } from "~/remoteOpen";
@@ -873,6 +874,29 @@ export default function FilePreviewPanel({
     })();
   }, [absolutePath, createAssetUrl, environmentHttpBaseUrl, openPreview, threadRef]);
 
+  const handleDownload = useCallback(() => {
+    if (!absolutePath || !environmentHttpBaseUrl) return;
+    void (async () => {
+      const result = await downloadWorkspaceFile({
+        threadRef,
+        filePath: absolutePath,
+        httpBaseUrl: environmentHttpBaseUrl,
+        createAssetUrl,
+      });
+      if (result._tag === "Success" || isAtomCommandInterrupted(result)) {
+        return;
+      }
+      const error = squashAtomCommandFailure(result);
+      toastManager.add(
+        stackedThreadToast({
+          type: "error",
+          title: "Unable to download file",
+          description: error instanceof Error ? error.message : "An error occurred.",
+        }),
+      );
+    })();
+  }, [absolutePath, createAssetUrl, environmentHttpBaseUrl, threadRef]);
+
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-background">
       {relativePath ? (
@@ -929,6 +953,25 @@ export default function FilePreviewPanel({
               openInCwd={absolutePath}
               compact
             />
+          ) : null}
+          {absolutePath && environmentHttpBaseUrl ? (
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Toggle
+                    className="shrink-0"
+                    pressed={false}
+                    onPressedChange={handleDownload}
+                    aria-label="Download file"
+                    variant="ghost"
+                    size="sm"
+                  >
+                    <Download className="size-3.5" />
+                  </Toggle>
+                }
+              />
+              <TooltipPopup>Download file</TooltipPopup>
+            </Tooltip>
           ) : null}
           {isMarkdown ? (
             <Tooltip>
