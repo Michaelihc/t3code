@@ -1,17 +1,18 @@
 import {
-  type ApprovalRequestId,
   type ProviderApprovalDecision,
   type ProviderApprovalOption,
+  type RuntimeRequestId,
 } from "@t3tools/contracts";
 import { memo } from "react";
 import { Button } from "../ui/button";
 
 interface ComposerPendingApprovalActionsProps {
-  requestId: ApprovalRequestId;
+  requestId: RuntimeRequestId;
   isResponding: boolean;
+  canRespond: boolean;
   options?: ReadonlyArray<ProviderApprovalOption> | undefined;
   onRespondToApproval: (
-    requestId: ApprovalRequestId,
+    requestId: RuntimeRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<unknown>;
 }
@@ -27,6 +28,7 @@ const DEFAULT_APPROVAL_OPTIONS = [
 export const ComposerPendingApprovalActions = memo(function ComposerPendingApprovalActions({
   requestId,
   isResponding,
+  canRespond,
   options = DEFAULT_APPROVAL_OPTIONS,
   onRespondToApproval,
 }: ComposerPendingApprovalActionsProps) {
@@ -44,7 +46,7 @@ export const ComposerPendingApprovalActions = memo(function ComposerPendingAppro
                 ? " text-foreground"
                 : ""
           }`}
-          disabled={isResponding}
+          disabled={isResponding || !canRespond}
           onClick={() => void onRespondToApproval(requestId, option.decision)}
         >
           <span className="max-w-40 truncate">{option.label}</span>

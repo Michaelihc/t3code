@@ -386,17 +386,22 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
           "@pierre/diffs@1.1.20": "patches/@pierre%2Fdiffs@1.1.20.patch",
           "alchemy@2.0.0-beta.49": "patches/alchemy@2.0.0-beta.49.patch",
           "effect@4.0.0-beta.73": "patches/effect@4.0.0-beta.73.patch",
+          "node-gyp-build-optional-packages@5.2.2":
+            "patches/node-gyp-build-optional-packages@5.2.2.patch",
         },
         {
           "@ff-labs/fff-node": "0.9.4",
           "@pierre/diffs": "1.1.20",
           effect: "4.0.0-beta.73",
         },
+        ["node-gyp-build-optional-packages"],
       ),
       {
         "@ff-labs/fff-node@0.9.4": "patches/@ff-labs__fff-node@0.9.4.patch",
         "@pierre/diffs@1.1.20": "patches/@pierre%2Fdiffs@1.1.20.patch",
         "effect@4.0.0-beta.73": "patches/effect@4.0.0-beta.73.patch",
+        "node-gyp-build-optional-packages@5.2.2":
+          "patches/node-gyp-build-optional-packages@5.2.2.patch",
       },
     );
 
@@ -1395,7 +1400,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
       assert.equal(config.appId, "com.t3tools.t3code");
       assert.equal(mac.entitlements, "/tmp/entitlements.mac.plist");
       assert.equal(mac.provisioningProfile, "/tmp/t3code.provisionprofile");
-      assert.match(String(mac.sign), /\/scripts\/sign-macos\.ts$/);
+      assert.match(String(mac.sign), /[\\/]scripts[\\/]sign-macos\.ts$/);
       assert.deepStrictEqual(mac.protocols, [
         { name: "T3 Code", schemes: ["t3code", "t3code-dev"] },
       ]);

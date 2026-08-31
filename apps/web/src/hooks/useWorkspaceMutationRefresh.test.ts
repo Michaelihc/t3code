@@ -1,7 +1,12 @@
-import { EventId, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import {
+  EventId,
+  type OrchestrationThreadActivity,
+  type OrchestrationV2ProjectedTurnItem,
+} from "@t3tools/contracts";
 import { describe, expect, it } from "vite-plus/test";
 
 import {
+  latestV2WorkspaceMutationId,
   latestWorkspaceMutationId,
   workspaceMutationRefreshToken,
 } from "./useWorkspaceMutationRefresh";
@@ -21,6 +26,10 @@ function activity(
     turnId: null,
     createdAt: "2026-08-30T00:00:00.000Z",
   };
+}
+
+function v2Item(id: string, type: string, status: string): OrchestrationV2ProjectedTurnItem {
+  return { item: { id, type, status } } as unknown as OrchestrationV2ProjectedTurnItem;
 }
 
 describe("workspace mutation refresh", () => {
@@ -51,6 +60,20 @@ describe("workspace mutation refresh", () => {
         activity("file-updated", "tool.updated", "file_change", "completed"),
       ]),
     ).toBe("file-updated");
+  });
+
+  it("tracks only terminal orchestration-v2 workspace mutations", () => {
+    expect(
+      latestV2WorkspaceMutationId([
+        v2Item("command-running", "command_execution", "running"),
+        v2Item("search-completed", "web_search", "completed"),
+        v2Item("file-completed", "file_change", "completed"),
+        v2Item("command-failed", "command_execution", "failed"),
+      ]),
+    ).toBe("command-failed");
+    expect(
+      latestV2WorkspaceMutationId([v2Item("file-waiting", "file_change", "waiting")]),
+    ).toBeNull();
   });
 
   it("scopes the same mutation to each preview resource", () => {

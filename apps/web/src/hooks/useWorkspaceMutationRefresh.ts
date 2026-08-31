@@ -1,4 +1,7 @@
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type {
+  OrchestrationThreadActivity,
+  OrchestrationV2ProjectedTurnItem,
+} from "@t3tools/contracts";
 import { useEffect, useRef } from "react";
 
 const WORKSPACE_MUTATION_ITEM_TYPES = new Set(["command_execution", "file_change"]);
@@ -31,6 +34,21 @@ export function latestWorkspaceMutationId(
     if (typeof itemType === "string" && WORKSPACE_MUTATION_ITEM_TYPES.has(itemType)) {
       return activity.id;
     }
+  }
+  return null;
+}
+
+/** Latest terminal orchestration-v2 item that may have changed workspace files. */
+export function latestV2WorkspaceMutationId(
+  rows: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+): string | null {
+  for (let index = rows.length - 1; index >= 0; index -= 1) {
+    const item = rows[index]?.item;
+    if (!item || !WORKSPACE_MUTATION_ITEM_TYPES.has(item.type)) continue;
+    if (item.status === "pending" || item.status === "running" || item.status === "waiting") {
+      continue;
+    }
+    return item.id;
   }
   return null;
 }

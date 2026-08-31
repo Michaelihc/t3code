@@ -25,6 +25,8 @@ const THEME_INTEROP_ALLOWLIST = new Set([
   "features/threads/NewTaskDraftScreen.tsx",
   "features/threads/ThreadComposer.tsx",
   "features/threads/ThreadFeed.tsx",
+  "features/threads/ThreadQueueControl.tsx",
+  "features/threads/ThreadRelationshipsBanner.tsx",
   "features/threads/ThreadSettingsSheet.tsx",
   "features/threads/git/GitOverviewSheet.tsx",
   "features/threads/thread-list-items.tsx",

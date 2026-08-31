@@ -1,9 +1,9 @@
 /**
- * OrchestrationEngineService - Service interface for orchestration command handling.
+ * Historical name for the application event-sourcing engine.
  *
- * Owns command validation/dispatch and in-memory read-model updates backed by
- * `OrchestrationEventStore` persistence. It does not own provider process
- * management or transport concerns (e.g. websocket request parsing).
+ * This is not the agent orchestrator. It retains serialized project-command
+ * validation, append, receipt, and projection transactions. Agent execution is
+ * owned by orchestration V2, whose thread events use the same event store.
  *
  * Uses Effect `Context.Service` for dependency injection. Command dispatch,
  * replay, and unknown-input decoding all return typed domain errors.
@@ -12,9 +12,9 @@
  */
 import type {
   OrchestrationClientOrigin,
-  OrchestrationCommand,
   OrchestrationEvent,
-} from "@t3tools/contracts";
+  ProjectOrchestrationCommand,
+} from "@t3tools/contracts/legacy-orchestration";
 import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import type * as Stream from "effect/Stream";
@@ -53,7 +53,7 @@ export interface OrchestrationEngineShape {
    * command receipts.
    */
   readonly dispatch: (
-    command: OrchestrationCommand,
+    command: ProjectOrchestrationCommand,
     options?: { readonly origin?: OrchestrationClientOrigin },
   ) => Effect.Effect<{ sequence: number }, OrchestrationDispatchError, never>;
 
