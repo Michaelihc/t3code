@@ -1,33 +1,48 @@
-import type {
-  ThreadPendingApproval,
-  ThreadPendingUserInput,
-  ThreadUserInputQuestion,
-} from "@t3tools/client-runtime/state/thread-requests";
-import { turnItemIsWorkspacePreparation } from "@t3tools/client-runtime/state/turn-item-presentation";
 import {
-  resolveT3McpToolPresentation,
-  type T3McpToolLogo,
-  type T3McpToolPresentation,
-} from "@t3tools/shared/t3McpToolPresentation";
+  ApprovalRequestId,
+  isToolLifecycleItemType,
+  ProviderApprovalOption,
+  ProviderRequestKind,
+} from "@t3tools/contracts";
 import type {
-  ChatAttachment,
-  MessageId,
-  OrchestrationV2Actor,
-  OrchestrationV2CreationSource,
-  OrchestrationV2ProjectedTurnItem,
-  OrchestrationV2RunStatus,
-  OrchestrationV2TurnItem,
-  OrchestrationV2UserMessageInputIntent,
-  RunId,
-  ThreadId,
+  OrchestrationLatestTurn,
+  OrchestrationThread,
+  OrchestrationThreadActivity,
+  ToolLifecycleItemType,
+  TurnId,
+  UserInputQuestion,
 } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
-import * as DateTime from "effect/DateTime";
+import {
+  normalizeCompactToolLabel,
+  omitSupersededLifecycleMarkers,
+  summarizeToolGroup,
+  toolGroupSummaryKind,
+  type ToolGroupSummaryKind,
+} from "@t3tools/client-runtime/work-log/presentation";
+import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
 
-export type PendingApproval = ThreadPendingApproval;
-export type PendingUserInput = ThreadPendingUserInput;
+import * as Arr from "effect/Array";
+import * as Order from "effect/Order";
+import * as Schema from "effect/Schema";
 
-const MAX_VISIBLE_WORK_LOG_ENTRIES = 1;
+export interface PendingApproval {
+  readonly requestId: ApprovalRequestId;
+  readonly requestKind: ProviderRequestKind;
+  readonly createdAt: string;
+  readonly detail?: string;
+  readonly appName?: string;
+  readonly options?: ReadonlyArray<ProviderApprovalOption>;
+}
+
+const isProviderRequestKind = Schema.is(ProviderRequestKind);
+const isProviderApprovalOption = Schema.is(ProviderApprovalOption);
+
+export interface PendingUserInput {
+  readonly requestId: ApprovalRequestId;
+  readonly createdAt: string;
+  readonly questions: ReadonlyArray<UserInputQuestion>;
+}
 
 export interface PendingUserInputDraftAnswer {
   readonly selectedOptionLabels?: ReadonlyArray<string>;
@@ -37,7 +52,7 @@ export interface PendingUserInputDraftAnswer {
 export interface ThreadFeedActivity {
   readonly id: string;
   readonly createdAt: string;
-  readonly runId: RunId | null;
+  readonly turnId: TurnId | null;
   readonly summary: string;
   readonly detail: string | null;
   readonly canExpand: boolean;
@@ -56,28 +71,41 @@ export interface ThreadFeedActivity {
     | "warning"
     | "wrench"
     | "zap";
-  readonly logo: T3McpToolLogo | null;
   readonly toolLike: boolean;
-  readonly prominent: boolean;
   readonly status: "success" | "failure" | "neutral" | null;
-  readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+  readonly lifecycleStatus?: WorkLogToolLifecycleStatus;
+  readonly workEntry: WorkLogEntry;
+  readonly groupedToolDetail?: boolean;
+  readonly live?: boolean;
 }
 
-export interface ThreadFeedMessage {
-  readonly id: MessageId;
-  readonly role: "user" | "assistant";
-  readonly text: string;
-  readonly attachments: ReadonlyArray<ChatAttachment>;
-  readonly runId: RunId | null;
-  readonly streaming: boolean;
-  readonly inputIntent?: OrchestrationV2UserMessageInputIntent;
-  readonly createdBy?: OrchestrationV2Actor;
-  readonly creationSource?: OrchestrationV2CreationSource;
-  readonly visibility: OrchestrationV2ProjectedTurnItem["visibility"];
-  readonly sourceThreadId: ThreadId;
-  readonly createdAt: string;
-  readonly updatedAt: string;
-  readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+type WorkLogToolLifecycleStatus = "inProgress" | "completed" | "failed" | "declined" | "stopped";
+
+export interface WorkLogEntry {
+  id: string;
+  createdAt: string;
+  turnId: TurnId | null;
+  label: string;
+  detail?: string;
+  command?: string;
+  rawCommand?: string;
+  changedFiles?: ReadonlyArray<string>;
+  tone: "thinking" | "tool" | "info" | "error";
+  toolTitle?: string;
+  itemType?: ToolLifecycleItemType;
+  requestKind?: PendingApproval["requestKind"];
+  toolLifecycleStatus?: WorkLogToolLifecycleStatus;
+  sourceActivityKind?: OrchestrationThreadActivity["kind"];
+  toolCallId?: string;
+  agentSpawn?: boolean;
+  toolData?: unknown;
+}
+
+interface DerivedWorkLogEntry extends WorkLogEntry {
+  sourceActivityKind: OrchestrationThreadActivity["kind"];
+  collapseKey?: string;
+  /** Grouping key for subagent lifecycle rows (one row per agent). */
+  taskId?: string;
 }
 
 type RawThreadFeedEntry =
@@ -85,58 +113,141 @@ type RawThreadFeedEntry =
       readonly type: "message";
       readonly id: string;
       readonly createdAt: string;
-      readonly message: ThreadFeedMessage;
+      readonly message: OrchestrationThread["messages"][number];
     }
   | {
       readonly type: "activity";
       readonly id: string;
       readonly createdAt: string;
-      readonly runId: RunId | null;
+      readonly turnId: TurnId | null;
       readonly activity: ThreadFeedActivity;
     };
 
 export type ThreadFeedEntry =
   | Extract<RawThreadFeedEntry, { type: "message" }>
   | {
-      readonly type: "working";
-      readonly id: string;
-      readonly createdAt: string;
-    }
-  | {
       readonly type: "activity-group";
       readonly id: string;
       readonly createdAt: string;
-      readonly runId: RunId | null;
+      readonly turnId: TurnId | null;
       readonly activities: ReadonlyArray<ThreadFeedActivity>;
     }
   | {
       readonly type: "work-toggle";
       readonly id: string;
       readonly createdAt: string;
-      readonly runId: RunId | null;
+      readonly turnId: TurnId | null;
       readonly groupId: string;
       readonly hiddenCount: number;
       readonly expanded: boolean;
-      readonly onlyToolActivities: boolean;
+      readonly summary: string;
+      readonly summaryKind: ToolGroupSummaryKind;
+      readonly hasFailure: boolean;
+      readonly live: boolean;
+      readonly shimmer: boolean;
     }
   | {
-      readonly type: "run-fold";
+      readonly type: "turn-fold";
       readonly id: string;
       readonly createdAt: string;
-      readonly runId: RunId;
+      readonly turnId: TurnId;
       readonly label: string;
       readonly expanded: boolean;
     };
 
-export interface ThreadFeedLatestRun {
-  readonly runId: RunId;
-  readonly status: OrchestrationV2RunStatus;
-  readonly startedAt: string | null;
-  readonly completedAt: string | null;
+export type ThreadFeedLatestTurn = Pick<
+  OrchestrationLatestTurn,
+  "turnId" | "state" | "startedAt" | "completedAt"
+>;
+
+function requestKindFromRequestType(requestType: unknown): PendingApproval["requestKind"] | null {
+  switch (requestType) {
+    case "command_execution_approval":
+    case "exec_command_approval":
+      return "command";
+    case "file_read_approval":
+      return "file-read";
+    case "file_change_approval":
+    case "apply_patch_approval":
+      return "file-change";
+    case "mcp_elicitation_approval":
+      return "mcp-elicitation";
+    default:
+      return null;
+  }
+}
+
+function isStalePendingRequestFailureDetail(detail: string | undefined): boolean {
+  const normalized = detail?.toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return (
+    normalized.includes("stale pending approval request") ||
+    normalized.includes("stale pending user-input request") ||
+    normalized.includes("unknown pending approval request") ||
+    normalized.includes("unknown pending permission request") ||
+    normalized.includes("unknown pending user-input request")
+  );
+}
+
+function parseApprovalRequestId(value: unknown): ApprovalRequestId | null {
+  return typeof value === "string" && value.length > 0 ? ApprovalRequestId.make(value) : null;
+}
+
+function parseUserInputQuestions(
+  payload: Record<string, unknown> | null,
+): ReadonlyArray<UserInputQuestion> | null {
+  const questions = payload?.questions;
+  if (!Array.isArray(questions)) {
+    return null;
+  }
+
+  const parsed = questions
+    .map<UserInputQuestion | null>((entry) => {
+      if (!entry || typeof entry !== "object") return null;
+      const question = entry as Record<string, unknown>;
+      if (
+        typeof question.id !== "string" ||
+        typeof question.header !== "string" ||
+        typeof question.question !== "string" ||
+        !Array.isArray(question.options)
+      ) {
+        return null;
+      }
+      const options = question.options
+        .map<UserInputQuestion["options"][number] | null>((option) => {
+          if (!option || typeof option !== "object") return null;
+          const record = option as Record<string, unknown>;
+          if (typeof record.label !== "string" || typeof record.description !== "string") {
+            return null;
+          }
+          return {
+            label: record.label,
+            description: record.description,
+          };
+        })
+        .filter((option): option is UserInputQuestion["options"][number] => option !== null);
+      if (options.length === 0) {
+        return null;
+      }
+      return {
+        id: question.id,
+        header: question.header,
+        question: question.question,
+        options,
+        multiSelect: question.multiSelect === true,
+      };
+    })
+    .filter((question): question is UserInputQuestion => question !== null);
+
+  return parsed.length > 0 ? parsed : null;
 }
 
 function normalizeDraftAnswer(value: string | undefined): string | null {
-  if (typeof value !== "string") return null;
+  if (typeof value !== "string") {
+    return null;
+  }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
 }
@@ -154,7 +265,7 @@ function normalizeSelectedOptionLabels(
 }
 
 function resolvePendingUserInputAnswer(
-  question: ThreadUserInputQuestion,
+  question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
 ): string | ReadonlyArray<string> | null {
   const customAnswer = normalizeDraftAnswer(draft?.customAnswer);
@@ -169,9 +280,500 @@ function resolvePendingUserInputAnswer(
   return selectedOptionLabels[0] ?? null;
 }
 
-function capitalizePhrase(value: string): string {
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? value : `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
+/** Codex children settle via task.updated (idle/failed/interrupted), never
+ * task.completed — these rows are mobile's only terminal signal for them. */
+const MOBILE_TERMINAL_UPDATE_STATUSES: ReadonlySet<string> = new Set([
+  "idle",
+  "completed",
+  "failed",
+  "cancelled",
+  "interrupted",
+]);
+
+function isTerminalBypassUpdate(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "task.updated") {
+    return false;
+  }
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  return (
+    payload?.timelineBypass === true &&
+    typeof payload.status === "string" &&
+    MOBILE_TERMINAL_UPDATE_STATUSES.has(payload.status)
+  );
+}
+
+/**
+ * Quiet-timeline guarantee (mirrors web's session-logic): agent-internal
+ * activity lives in the Agents sheet, not the work log. Terminal rows are
+ * kept — with no Agents surface on mobile they are the terminal signal
+ * (a surface that hides rows must keep its own terminal signal). That means
+ * task.completed (Claude) AND terminal bypassed task.updated (Codex, whose
+ * children never emit task.completed — review finding).
+ */
+function isAgentInternalActivity(activity: OrchestrationThreadActivity): boolean {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  if (!payload) {
+    return false;
+  }
+  const isTerminalTaskRow = activity.kind === "task.completed" || isTerminalBypassUpdate(activity);
+  if (payload.timelineBypass === true && !isTerminalTaskRow) {
+    return true;
+  }
+  // agentId marks ownership, not "hide me": a NESTED AGENT's terminal row is
+  // the only signal mobile gets (no Agents sheet), so it stays. Only an
+  // agent's own background work (stamped "background") is internal — same
+  // rule as web (review finding: hiding on agentId alone dropped nested
+  // completions with no replacement UI).
+  const ownedByAgent = typeof payload.agentId === "string" && payload.agentId.trim().length > 0;
+  if (!ownedByAgent) {
+    return false;
+  }
+  return !(isTerminalTaskRow && payload.agentKind === "agent");
+}
+
+function deriveWorkLogEntries(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): DerivedWorkLogEntry[] {
+  const ordered = Arr.sort(activities, activityOrder);
+  const entries: DerivedWorkLogEntry[] = [];
+  for (const activity of ordered) {
+    if (activity.kind === "tool.started") continue;
+    if (activity.kind === "task.started") continue;
+    // Terminal bypassed updates pass: Codex children's only terminal signal.
+    if (activity.kind === "task.updated" && !isTerminalBypassUpdate(activity)) continue;
+    if (activity.kind === "tool.progress") continue;
+    if (activity.kind === "context-window.updated") continue;
+    if (activity.summary === "Checkpoint captured") continue;
+    if (isNoContentRuntimeWarning(activity)) continue;
+    if (isPlanBoundaryToolActivity(activity)) continue;
+    if (isAgentInternalActivity(activity)) continue;
+    entries.push(toDerivedWorkLogEntry(activity));
+  }
+  return collapseDerivedWorkLogEntries(entries);
+}
+
+/** Adapters forward unknown wire-only SDK messages (background_tasks_changed,
+ *  commands_changed, ...) as runtime warnings. The suffix comes from
+ *  describeUnknownSdkMessage in the Claude adapter; a row with no displayable
+ *  text carries nothing a user can act on, so it does not render. */
+function isNoContentRuntimeWarning(activity: OrchestrationThreadActivity): boolean {
+  return (
+    activity.kind === "runtime.warning" &&
+    activity.summary.endsWith("(no displayable text content)")
+  );
+}
+
+function isPlanBoundaryToolActivity(activity: OrchestrationThreadActivity): boolean {
+  if (activity.kind !== "tool.updated" && activity.kind !== "tool.completed") {
+    return false;
+  }
+
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  return typeof payload?.detail === "string" && payload.detail.startsWith("ExitPlanMode:");
+}
+
+function toDerivedWorkLogEntry(activity: OrchestrationThreadActivity): DerivedWorkLogEntry {
+  const payload =
+    activity.payload && typeof activity.payload === "object"
+      ? (activity.payload as Record<string, unknown>)
+      : null;
+  const commandPreview = extractToolCommand(payload);
+  const changedFiles = extractChangedFiles(payload);
+  const title = extractToolTitle(payload);
+  // task.updated included: terminal bypassed updates (Codex children's only
+  // terminal signal) must carry task identity so they collapse per child
+  // instead of stacking anonymous "Task idle" rows.
+  const isTaskActivity =
+    activity.kind === "task.progress" ||
+    activity.kind === "task.completed" ||
+    activity.kind === "task.updated";
+  const taskSummary =
+    isTaskActivity && typeof payload?.summary === "string" && payload.summary.length > 0
+      ? payload.summary
+      : null;
+  const taskDetailAsLabel =
+    isTaskActivity &&
+    !taskSummary &&
+    typeof payload?.detail === "string" &&
+    payload.detail.length > 0
+      ? payload.detail
+      : null;
+  const taskLabel = taskSummary || taskDetailAsLabel;
+  const taskId =
+    isTaskActivity && typeof payload?.taskId === "string" && payload.taskId.length > 0
+      ? payload.taskId
+      : undefined;
+  const entry: DerivedWorkLogEntry = {
+    id: activity.id,
+    createdAt: activity.createdAt,
+    turnId: activity.turnId,
+    ...(taskId ? { taskId } : {}),
+    label: taskLabel || activity.summary,
+    tone:
+      activity.kind === "task.progress"
+        ? "thinking"
+        : activity.tone === "approval"
+          ? "info"
+          : activity.tone,
+    sourceActivityKind: activity.kind,
+  };
+  const toolCallId =
+    asTrimmedString(payload?.toolCallId) ?? asTrimmedString(asRecord(payload?.data)?.toolCallId);
+  if (toolCallId) {
+    entry.toolCallId = toolCallId;
+  }
+  if (isTaskActivity && payload?.agentKind === "agent") {
+    entry.agentSpawn = true;
+  }
+  const itemType = extractWorkLogItemType(payload);
+  const requestKind = extractWorkLogRequestKind(payload);
+  if (
+    !taskDetailAsLabel &&
+    payload &&
+    typeof payload.detail === "string" &&
+    payload.detail.length > 0
+  ) {
+    const detail = stripTrailingExitCode(payload.detail).output;
+    if (detail) {
+      entry.detail = detail;
+    }
+  }
+  if (commandPreview.command) {
+    entry.command = commandPreview.command;
+  }
+  if (commandPreview.rawCommand) {
+    entry.rawCommand = commandPreview.rawCommand;
+  }
+  if (changedFiles.length > 0) {
+    entry.changedFiles = changedFiles;
+  }
+  if (title) {
+    entry.toolTitle = title;
+  }
+  if (itemType === "mcp_tool_call") {
+    const data = asRecord(payload?.data);
+    if (data?.item !== undefined) {
+      entry.toolData = data.item;
+    }
+  }
+  if (itemType) {
+    entry.itemType = itemType;
+  }
+  if (requestKind) {
+    entry.requestKind = requestKind;
+  }
+  let toolLifecycleStatus = extractWorkLogToolLifecycleStatus(payload);
+  if (!toolLifecycleStatus && activity.kind === "tool.completed") {
+    toolLifecycleStatus = "completed";
+  }
+  if (toolLifecycleStatus) {
+    entry.toolLifecycleStatus = toolLifecycleStatus;
+  }
+  const collapseKey = deriveToolLifecycleCollapseKey(entry);
+  if (collapseKey) {
+    entry.collapseKey = collapseKey;
+  }
+  return entry;
+}
+
+function collapseDerivedWorkLogEntries(
+  entries: ReadonlyArray<DerivedWorkLogEntry>,
+): DerivedWorkLogEntry[] {
+  const collapsed: DerivedWorkLogEntry[] = [];
+  // Subagent rows collapse by identity, not adjacency (quiet-timeline
+  // guarantee; mirrors web's session-logic).
+  const taskRowIndex = new Map<string, number>();
+  const toolLifecycleRowIndex = new Map<string, number>();
+  for (const entry of entries) {
+    const isTaskRow =
+      entry.taskId !== undefined &&
+      (entry.sourceActivityKind === "task.progress" ||
+        entry.sourceActivityKind === "task.completed" ||
+        entry.sourceActivityKind === "task.updated");
+    if (isTaskRow && entry.taskId !== undefined) {
+      const existingIndex = taskRowIndex.get(entry.taskId);
+      if (existingIndex !== undefined) {
+        collapsed[existingIndex] = mergeDerivedWorkLogEntries(collapsed[existingIndex]!, entry);
+        continue;
+      }
+      taskRowIndex.set(entry.taskId, collapsed.length);
+      collapsed.push(entry);
+      continue;
+    }
+    const lifecycleKey = toolLifecycleCollapseMapKey(entry);
+    if (lifecycleKey !== undefined) {
+      const matchingIndex = toolLifecycleRowIndex.get(lifecycleKey);
+      const matchingEntry = matchingIndex === undefined ? undefined : collapsed[matchingIndex];
+      if (
+        matchingIndex !== undefined &&
+        matchingEntry &&
+        shouldCollapseToolLifecycleEntries(matchingEntry, entry)
+      ) {
+        collapsed[matchingIndex] = mergeDerivedWorkLogEntries(matchingEntry, entry);
+        continue;
+      }
+      toolLifecycleRowIndex.delete(lifecycleKey);
+    }
+    const previous = collapsed.at(-1);
+    if (previous && shouldCollapseToolLifecycleEntries(previous, entry)) {
+      const previousIndex = collapsed.length - 1;
+      const previousKey = toolLifecycleCollapseMapKey(previous);
+      if (previousKey !== undefined) toolLifecycleRowIndex.delete(previousKey);
+      const merged = mergeDerivedWorkLogEntries(previous, entry);
+      collapsed[previousIndex] = merged;
+      const mergedKey = toolLifecycleCollapseMapKey(merged);
+      if (mergedKey !== undefined) toolLifecycleRowIndex.set(mergedKey, previousIndex);
+      continue;
+    }
+    collapsed.push(entry);
+    if (lifecycleKey !== undefined) {
+      toolLifecycleRowIndex.set(lifecycleKey, collapsed.length - 1);
+    }
+  }
+  return collapsed;
+}
+
+function toolLifecycleCollapseMapKey(entry: DerivedWorkLogEntry): string | undefined {
+  if (
+    entry.sourceActivityKind !== "tool.updated" &&
+    entry.sourceActivityKind !== "tool.completed"
+  ) {
+    return undefined;
+  }
+  return entry.toolCallId ? `tool:${entry.turnId ?? "no-turn"}:${entry.toolCallId}` : undefined;
+}
+
+function shouldCollapseToolLifecycleEntries(
+  previous: DerivedWorkLogEntry,
+  next: DerivedWorkLogEntry,
+): boolean {
+  if (
+    previous.sourceActivityKind !== "tool.updated" &&
+    previous.sourceActivityKind !== "tool.completed"
+  ) {
+    return false;
+  }
+  if (next.sourceActivityKind !== "tool.updated" && next.sourceActivityKind !== "tool.completed") {
+    return false;
+  }
+  if (previous.turnId !== next.turnId) {
+    return false;
+  }
+  if (previous.sourceActivityKind === "tool.completed") {
+    return false;
+  }
+  if (previous.collapseKey !== undefined && previous.collapseKey === next.collapseKey) {
+    return true;
+  }
+  return (
+    previous.toolCallId !== undefined &&
+    next.toolCallId === undefined &&
+    previous.itemType === next.itemType &&
+    normalizeCompactToolLabel(previous.toolTitle ?? previous.label) ===
+      normalizeCompactToolLabel(next.toolTitle ?? next.label)
+  );
+}
+
+function mergeDerivedWorkLogEntries(
+  previous: DerivedWorkLogEntry,
+  next: DerivedWorkLogEntry,
+): DerivedWorkLogEntry {
+  const changedFiles = mergeChangedFiles(previous.changedFiles, next.changedFiles);
+  const detail = next.detail ?? previous.detail;
+  const command = next.command ?? previous.command;
+  const rawCommand = next.rawCommand ?? previous.rawCommand;
+  const toolTitle = next.toolTitle ?? previous.toolTitle;
+  const itemType = next.itemType ?? previous.itemType;
+  const requestKind = next.requestKind ?? previous.requestKind;
+  const collapseKey = next.collapseKey ?? previous.collapseKey;
+  const toolLifecycleStatus = next.toolLifecycleStatus ?? previous.toolLifecycleStatus;
+  const toolCallId = next.toolCallId ?? previous.toolCallId;
+  const toolData = next.toolData ?? previous.toolData;
+  return {
+    ...previous,
+    ...next,
+    id: previous.id,
+    createdAt: previous.createdAt,
+    ...(detail ? { detail } : {}),
+    ...(command ? { command } : {}),
+    ...(rawCommand ? { rawCommand } : {}),
+    ...(changedFiles.length > 0 ? { changedFiles } : {}),
+    ...(toolTitle ? { toolTitle } : {}),
+    ...(itemType ? { itemType } : {}),
+    ...(requestKind ? { requestKind } : {}),
+    ...(collapseKey ? { collapseKey } : {}),
+    ...(toolLifecycleStatus ? { toolLifecycleStatus } : {}),
+    ...(toolCallId ? { toolCallId } : {}),
+    ...(toolData !== undefined ? { toolData } : {}),
+  };
+}
+
+function mergeChangedFiles(
+  previous: ReadonlyArray<string> | undefined,
+  next: ReadonlyArray<string> | undefined,
+): string[] {
+  const merged = [...(previous ?? []), ...(next ?? [])];
+  if (merged.length === 0) {
+    return [];
+  }
+  return [...new Set(merged)];
+}
+
+function deriveToolLifecycleCollapseKey(entry: DerivedWorkLogEntry): string | undefined {
+  if (
+    entry.sourceActivityKind !== "tool.updated" &&
+    entry.sourceActivityKind !== "tool.completed"
+  ) {
+    return undefined;
+  }
+  if (entry.toolCallId) {
+    return `tool:${entry.turnId ?? "no-turn"}:${entry.toolCallId}`;
+  }
+  const normalizedLabel = normalizeCompactToolLabel(entry.toolTitle ?? entry.label);
+  const detail = entry.detail?.trim() ?? "";
+  const itemType = entry.itemType ?? "";
+  if (normalizedLabel.length === 0 && detail.length === 0 && itemType.length === 0) {
+    return undefined;
+  }
+  return [itemType, normalizedLabel, detail].join("\u001f");
+}
+
+function workLogEntryIsToolLike(entry: WorkLogEntry): boolean {
+  if (entry.tone === "tool" || entry.tone === "thinking" || entry.tone === "error") {
+    return true;
+  }
+  if (entry.command !== undefined && entry.command.trim().length > 0) {
+    return true;
+  }
+  if (entry.requestKind !== undefined) {
+    return true;
+  }
+  return entry.itemType !== undefined && isToolLifecycleItemType(entry.itemType);
+}
+
+function toolDetailTextLooksLikeFailure(text: string): boolean {
+  const normalized = text.toLowerCase();
+  return (
+    normalized.includes("file not found") ||
+    normalized.includes("no files found") ||
+    normalized.includes("enoent") ||
+    normalized.includes("no such file or directory") ||
+    normalized.includes("no such file") ||
+    normalized.includes("commandnotfoundexception") ||
+    normalized.includes("command not found") ||
+    (normalized.includes("cannot find path") && normalized.includes("because it does not exist")) ||
+    (normalized.includes("is not recognized") && normalized.includes("the term '")) ||
+    normalized.includes("is not recognized as the name of a cmdlet") ||
+    normalized.includes("a parameter cannot be found that matches parameter name") ||
+    /<exited with exit code\s+[1-9]\d*\s*>/i.test(text) ||
+    /exit(?:ed)? with exit code\s+[1-9]\d*/i.test(text) ||
+    /exit code\s*[:\s]\s*[1-9]\d*\b/i.test(text)
+  );
+}
+
+function workEntryIndicatesToolFailure(entry: WorkLogEntry): boolean {
+  if (entry.tone === "error") {
+    return true;
+  }
+  if (entry.toolLifecycleStatus === "failed" || entry.toolLifecycleStatus === "declined") {
+    return true;
+  }
+  if (!workLogEntryIsToolLike(entry)) {
+    return false;
+  }
+  return toolDetailTextLooksLikeFailure([entry.detail, entry.command].filter(Boolean).join("\n"));
+}
+
+function workEntryIndicatesToolSuccess(entry: WorkLogEntry): boolean {
+  if (!workLogEntryIsToolLike(entry) || workEntryIndicatesToolFailure(entry)) {
+    return false;
+  }
+  if (entry.tone === "thinking") {
+    return false;
+  }
+  return (
+    entry.toolLifecycleStatus !== "inProgress" &&
+    entry.toolLifecycleStatus !== "stopped" &&
+    entry.toolLifecycleStatus !== "failed" &&
+    entry.toolLifecycleStatus !== "declined"
+  );
+}
+
+function workEntryStatus(entry: WorkLogEntry): ThreadFeedActivity["status"] {
+  if (!workLogEntryIsToolLike(entry)) {
+    return null;
+  }
+  if (workEntryIndicatesToolFailure(entry)) {
+    return "failure";
+  }
+  if (workEntryIndicatesToolSuccess(entry)) {
+    return "success";
+  }
+  return "neutral";
+}
+
+function workEntryIcon(entry: DerivedWorkLogEntry): ThreadFeedActivity["icon"] {
+  if (
+    entry.sourceActivityKind === "user-input.requested" ||
+    entry.sourceActivityKind === "user-input.resolved"
+  ) {
+    return "message";
+  }
+  if (entry.sourceActivityKind === "runtime.warning") return "warning";
+  if (entry.requestKind === "command") return "command";
+  if (entry.requestKind === "file-read") return "eye";
+  if (entry.requestKind === "file-change") return "edit";
+  if (entry.itemType === "command_execution" || entry.command) return "command";
+  if (entry.itemType === "file_change" || (entry.changedFiles?.length ?? 0) > 0) return "edit";
+  if (entry.itemType === "web_search") return "globe";
+  if (entry.itemType === "image_view") return "eye";
+  if (entry.itemType === "mcp_tool_call") return "wrench";
+  if (entry.itemType === "dynamic_tool_call" || entry.itemType === "collab_agent_tool_call") {
+    return "hammer";
+  }
+  if (entry.tone === "error") return "alert";
+  if (entry.tone === "thinking") return "agent";
+  if (entry.tone === "info") return "check";
+  return "zap";
+}
+
+function buildWorkEntryExpandedBody(entry: WorkLogEntry): string | null {
+  const blocks: string[] = [];
+  const appendUniqueBlock = (value: string | null | undefined) => {
+    const trimmed = value?.trim();
+    if (trimmed && !blocks.includes(trimmed)) {
+      blocks.push(trimmed);
+    }
+  };
+
+  if (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) {
+    appendUniqueBlock(`MCP call\n${JSON.stringify(entry.toolData, null, 2)}`);
+  }
+  appendUniqueBlock(entry.rawCommand ?? entry.command);
+  appendUniqueBlock(entry.detail);
+  if ((entry.changedFiles?.length ?? 0) > 0) {
+    appendUniqueBlock(entry.changedFiles!.join("\n"));
+  }
+
+  return blocks.length > 0 ? blocks.join("\n\n") : null;
+}
+
+function workEntryHasExpandedBody(entry: WorkLogEntry): boolean {
+  return (
+    (entry.itemType === "mcp_tool_call" && entry.toolData !== undefined) ||
+    Boolean((entry.rawCommand ?? entry.command)?.trim()) ||
+    Boolean(entry.detail?.trim()) ||
+    (entry.changedFiles?.some((path) => path.trim().length > 0) ?? false)
+  );
 }
 
 function memoizeValue<T>(build: () => T): () => T {
@@ -186,225 +788,383 @@ function memoizeValue<T>(build: () => T): () => T {
   };
 }
 
-function itemIsToolLike(item: OrchestrationV2TurnItem): boolean {
-  return (
-    item.type === "reasoning" ||
-    item.type === "command_execution" ||
-    item.type === "file_change" ||
-    item.type === "file_search" ||
-    item.type === "web_search" ||
-    item.type === "approval_request" ||
-    item.type === "user_input_request" ||
-    item.type === "dynamic_tool" ||
-    item.type === "subagent"
-  );
+function workEntryPreview(
+  workEntry: Pick<WorkLogEntry, "detail" | "command" | "changedFiles">,
+): string | null {
+  if (workEntry.command) return workEntry.command;
+  if (workEntry.detail) return workEntry.detail;
+  if ((workEntry.changedFiles?.length ?? 0) === 0) return null;
+  const [firstPath] = workEntry.changedFiles ?? [];
+  if (!firstPath) return null;
+  return workEntry.changedFiles!.length === 1
+    ? firstPath
+    : `${firstPath} +${workEntry.changedFiles!.length - 1} more`;
 }
 
-function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
-  return item.type === "fork" || item.type === "thread_created" || item.type === "subagent";
-}
-
-function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"] {
-  if (item.type === "error") {
-    if (item.status === "failed") return "failure";
-    return item.status === "completed" ? "success" : "neutral";
+function capitalizePhrase(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return value;
   }
-  if (!itemIsToolLike(item)) return null;
-  if (item.status === "failed") return "failure";
-  return item.status === "completed" ? "success" : "neutral";
+  return `${trimmed.charAt(0).toUpperCase()}${trimmed.slice(1)}`;
 }
 
-function itemIcon(item: OrchestrationV2TurnItem): ThreadFeedActivity["icon"] {
-  switch (item.type) {
-    case "reasoning":
-      return "agent";
-    case "command_execution":
-      return "command";
-    case "file_change":
-      return "edit";
-    case "file_search":
-      return "eye";
-    case "web_search":
-      return "globe";
-    case "approval_request":
-    case "user_input_request":
-    case "user_message":
-    case "assistant_message":
-      return "message";
-    case "dynamic_tool":
-      return "wrench";
-    case "subagent":
-      return "hammer";
-    case "run_interrupt_request":
-    case "run_interrupt_result":
-      return "warning";
-    case "error":
-      return "alert";
-    case "checkpoint":
-    case "proposed_plan":
-    case "todo_list":
-      return "check";
-    case "compaction":
-    case "handoff":
-    case "fork":
-    case "thread_created":
-      return "zap";
+function workEntryHeading(workEntry: WorkLogEntry): string {
+  if (!workEntry.toolTitle) {
+    return capitalizePhrase(normalizeCompactToolLabel(workEntry.label));
   }
+  return capitalizePhrase(normalizeCompactToolLabel(workEntry.toolTitle));
 }
 
-function itemToolPresentation(item: OrchestrationV2TurnItem): T3McpToolPresentation | null {
-  if (item.type !== "dynamic_tool") {
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
+}
+
+function asTrimmedString(value: unknown): string | null {
+  if (typeof value !== "string") {
     return null;
   }
-  return resolveT3McpToolPresentation(item.toolName) ?? resolveT3McpToolPresentation(item.title);
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
 }
 
-function itemSummary(
-  item: OrchestrationV2TurnItem,
-  toolPresentation: T3McpToolPresentation | null = null,
-): string {
-  const title = item.title?.trim();
-  if (title) return toolPresentation?.displayName ?? capitalizePhrase(title);
-  switch (item.type) {
-    case "reasoning":
-      return "Thinking";
-    case "command_execution":
-      return "Command";
-    case "file_change":
-      return `Changed ${item.fileName}`;
-    case "file_search":
-      return "Searched files";
-    case "web_search":
-      return "Searched the web";
-    case "approval_request":
-      return "Approval requested";
-    case "user_input_request":
-      return "Input requested";
-    case "checkpoint":
-      return "Checkpoint captured";
-    case "run_interrupt_request":
-      return "Interrupt requested";
-    case "run_interrupt_result":
-      return "Run interrupted";
-    case "error":
-      return "Provider error";
-    case "compaction":
-      return "Context compacted";
-    case "handoff":
-      return "Context handed off";
-    case "fork":
-      return "Thread forked";
-    case "thread_created":
-      return "Thread created";
-    case "subagent":
-      return "Subagent";
-    case "dynamic_tool":
-      return toolPresentation?.displayName ?? item.toolName ?? "Tool call";
-    case "proposed_plan":
-      return "Proposed plan";
-    case "todo_list":
-      return "Plan updated";
-    case "user_message":
-      return "User message";
-    case "assistant_message":
-      return "Assistant message";
+function trimMatchingOuterQuotes(value: string): string {
+  const trimmed = value.trim();
+  if (
+    (trimmed.startsWith("'") && trimmed.endsWith("'")) ||
+    (trimmed.startsWith('"') && trimmed.endsWith('"'))
+  ) {
+    const unquoted = trimmed.slice(1, -1).trim();
+    return unquoted.length > 0 ? unquoted : trimmed;
   }
+  return trimmed;
 }
 
-function itemPreview(item: OrchestrationV2TurnItem): string | null {
-  switch (item.type) {
-    case "reasoning":
-      return item.text || null;
-    case "command_execution":
-      return item.input || null;
-    case "file_change":
-      return item.fileName;
-    case "file_search":
-      return item.pattern ?? null;
-    case "web_search":
-      return item.patterns?.join(", ") ?? null;
-    case "approval_request":
-      return item.prompt ?? null;
-    case "user_input_request":
-      return item.questions.map((question) => question.question).join(" · ") || null;
-    case "checkpoint":
-      return item.files.length === 1
-        ? (item.files[0]?.path ?? null)
-        : `${item.files.length} changed files`;
-    case "run_interrupt_request":
-    case "run_interrupt_result":
-      return item.message || null;
-    case "error":
-      return item.failure.message;
-    case "compaction":
-    case "handoff":
-      return item.summary ?? null;
-    case "fork":
-    case "thread_created":
-      return item.targetThreadId;
-    case "subagent":
-      return item.result ?? item.progress ?? item.prompt;
-    case "dynamic_tool":
+function executableBasename(value: string): string | null {
+  const trimmed = trimMatchingOuterQuotes(value);
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const normalized = trimmed.replace(/\\/g, "/");
+  const segments = normalized.split("/");
+  const last = segments.at(-1)?.trim() ?? "";
+  return last.length > 0 ? last.toLowerCase() : null;
+}
+
+function splitExecutableAndRest(value: string): { executable: string; rest: string } | null {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+
+  if (trimmed.startsWith('"') || trimmed.startsWith("'")) {
+    const quote = trimmed.charAt(0);
+    const closeIndex = trimmed.indexOf(quote, 1);
+    if (closeIndex <= 0) {
       return null;
-    case "proposed_plan":
-      return item.markdown || null;
-    case "todo_list":
-      return `${item.steps.filter((step) => step.status === "completed").length}/${item.steps.length} completed`;
-    case "user_message":
-    case "assistant_message":
-      return item.text || null;
+    }
+    return {
+      executable: trimmed.slice(0, closeIndex + 1),
+      rest: trimmed.slice(closeIndex + 1).trim(),
+    };
   }
-}
 
-function toFeedActivity(row: OrchestrationV2ProjectedTurnItem): ThreadFeedActivity {
-  const item = row.item;
-  const toolPresentation = itemToolPresentation(item);
-  const summary = itemSummary(item, toolPresentation);
-  const detail = itemPreview(item);
-  const getFullDetail = memoizeValue(() =>
-    JSON.stringify(
-      {
-        visibility: row.visibility,
-        sourceThreadId: row.sourceThreadId,
-        sourceItemId: row.sourceItemId,
-        item,
-      },
-      null,
-      2,
-    ),
-  );
-  const getCopyText = memoizeValue(() =>
-    [summary, detail, getFullDetail()]
-      .filter(
-        (value, index, values): value is string =>
-          Boolean(value) && values.indexOf(value) === index,
-      )
-      .join("\n"),
-  );
+  const firstWhitespace = trimmed.search(/\s/);
+  if (firstWhitespace < 0) {
+    return {
+      executable: trimmed,
+      rest: "",
+    };
+  }
+
   return {
-    id: `${row.visibility}:${row.sourceThreadId}:${row.sourceItemId}`,
-    createdAt: DateTime.formatIso(item.startedAt ?? item.updatedAt),
-    runId: item.runId,
-    summary,
-    detail,
-    canExpand: true,
-    getFullDetail,
-    getCopyText,
-    icon: itemIcon(item),
-    logo: toolPresentation?.logo ?? null,
-    toolLike: itemIsToolLike(item),
-    prominent: itemIsProminent(item),
-    status: itemStatus(item),
-    projectedItem: row,
+    executable: trimmed.slice(0, firstWhitespace),
+    rest: trimmed.slice(firstWhitespace).trim(),
   };
 }
 
-function isEmptyMessage(entry: RawThreadFeedEntry): boolean {
-  return (
-    entry.type === "message" &&
-    entry.message.text.trim().length === 0 &&
-    entry.message.attachments.length === 0
+const SHELL_WRAPPER_SPECS = [
+  {
+    executables: ["pwsh", "pwsh.exe", "powershell", "powershell.exe"],
+    wrapperFlagPattern: /(?:^|\s)-command\s+/i,
+  },
+  {
+    executables: ["cmd", "cmd.exe"],
+    wrapperFlagPattern: /(?:^|\s)\/c\s+/i,
+  },
+  {
+    executables: ["bash", "sh", "zsh"],
+    wrapperFlagPattern: /(?:^|\s)-(?:l)?c\s+/i,
+  },
+] as const;
+
+function findShellWrapperSpec(shell: string) {
+  return SHELL_WRAPPER_SPECS.find((spec) =>
+    (spec.executables as ReadonlyArray<string>).includes(shell),
   );
+}
+
+function unwrapCommandRemainder(value: string, wrapperFlagPattern: RegExp): string | null {
+  const match = wrapperFlagPattern.exec(value);
+  if (!match) {
+    return null;
+  }
+
+  const command = value.slice(match.index + match[0].length).trim();
+  if (command.length === 0) {
+    return null;
+  }
+
+  const unwrapped = trimMatchingOuterQuotes(command);
+  return unwrapped.length > 0 ? unwrapped : null;
+}
+
+function unwrapKnownShellCommandWrapper(value: string): string {
+  const split = splitExecutableAndRest(value);
+  if (!split || split.rest.length === 0) {
+    return value;
+  }
+
+  const shell = executableBasename(split.executable);
+  if (!shell) {
+    return value;
+  }
+
+  const spec = findShellWrapperSpec(shell);
+  if (!spec) {
+    return value;
+  }
+
+  return unwrapCommandRemainder(split.rest, spec.wrapperFlagPattern) ?? value;
+}
+
+function formatCommandArrayPart(value: string): string {
+  return /[\s"'`]/.test(value) ? `"${value.replace(/"/g, '\\"')}"` : value;
+}
+
+function formatCommandValue(value: unknown): string | null {
+  const direct = asTrimmedString(value);
+  if (direct) {
+    return direct;
+  }
+  if (!Array.isArray(value)) {
+    return null;
+  }
+  const parts: Array<string> = [];
+  for (const entry of value) {
+    const part = asTrimmedString(entry);
+    if (part !== null) {
+      parts.push(part);
+    }
+  }
+  if (parts.length === 0) {
+    return null;
+  }
+  return parts.map((part) => formatCommandArrayPart(part)).join(" ");
+}
+
+function normalizeCommandValue(value: unknown): string | null {
+  const formatted = formatCommandValue(value);
+  return formatted ? unwrapKnownShellCommandWrapper(formatted) : null;
+}
+
+function toRawToolCommand(value: unknown, normalizedCommand: string | null): string | null {
+  const formatted = formatCommandValue(value);
+  if (!formatted || normalizedCommand === null) {
+    return null;
+  }
+  return formatted === normalizedCommand ? null : formatted;
+}
+
+function extractToolCommand(payload: Record<string, unknown> | null): {
+  command: string | null;
+  rawCommand: string | null;
+} {
+  const data = asRecord(payload?.data);
+  const item = asRecord(data?.item);
+  const itemResult = asRecord(item?.result);
+  const itemInput = asRecord(item?.input);
+  const itemType = asTrimmedString(payload?.itemType);
+  const detail = asTrimmedString(payload?.detail);
+  const candidates: unknown[] = [
+    item?.command,
+    itemInput?.command,
+    itemResult?.command,
+    data?.command,
+    itemType === "command_execution" && detail ? stripTrailingExitCode(detail).output : null,
+  ];
+
+  for (const candidate of candidates) {
+    const command = normalizeCommandValue(candidate);
+    if (!command) {
+      continue;
+    }
+    return {
+      command,
+      rawCommand: toRawToolCommand(candidate, command),
+    };
+  }
+
+  return {
+    command: null,
+    rawCommand: null,
+  };
+}
+
+function extractToolTitle(payload: Record<string, unknown> | null): string | null {
+  return asTrimmedString(payload?.title);
+}
+
+function extractWorkLogToolLifecycleStatus(
+  payload: Record<string, unknown> | null,
+): WorkLogToolLifecycleStatus | undefined {
+  const status = payload?.status;
+  if (
+    status === "inProgress" ||
+    status === "completed" ||
+    status === "failed" ||
+    status === "declined" ||
+    status === "stopped"
+  ) {
+    return status;
+  }
+  return undefined;
+}
+
+function stripTrailingExitCode(value: string): {
+  output: string | null;
+  exitCode?: number | undefined;
+} {
+  const trimmed = value.trim();
+  const match = /^(?<output>[\s\S]*?)(?:\s*<exited with exit code (?<code>\d+)>)\s*$/i.exec(
+    trimmed,
+  );
+  if (!match?.groups) {
+    return {
+      output: trimmed.length > 0 ? trimmed : null,
+    };
+  }
+  const exitCode = Number.parseInt(match.groups.code ?? "", 10);
+  const normalizedOutput = match.groups.output?.trim() ?? "";
+  return {
+    output: normalizedOutput.length > 0 ? normalizedOutput : null,
+    ...(Number.isInteger(exitCode) ? { exitCode } : {}),
+  };
+}
+
+function extractWorkLogItemType(
+  payload: Record<string, unknown> | null,
+): WorkLogEntry["itemType"] | undefined {
+  if (typeof payload?.itemType === "string" && isToolLifecycleItemType(payload.itemType)) {
+    return payload.itemType;
+  }
+  return undefined;
+}
+
+function extractWorkLogRequestKind(
+  payload: Record<string, unknown> | null,
+): WorkLogEntry["requestKind"] | undefined {
+  if (
+    payload?.requestKind === "command" ||
+    payload?.requestKind === "file-read" ||
+    payload?.requestKind === "file-change"
+  ) {
+    return payload.requestKind;
+  }
+  return requestKindFromRequestType(payload?.requestType) ?? undefined;
+}
+
+function pushChangedFile(target: string[], seen: Set<string>, value: unknown) {
+  const normalized = asTrimmedString(value);
+  if (!normalized || seen.has(normalized)) {
+    return;
+  }
+  seen.add(normalized);
+  target.push(normalized);
+}
+
+function collectChangedFiles(value: unknown, target: string[], seen: Set<string>, depth: number) {
+  if (depth > 4 || target.length >= 12) {
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      collectChangedFiles(entry, target, seen, depth + 1);
+      if (target.length >= 12) {
+        return;
+      }
+    }
+    return;
+  }
+
+  const record = asRecord(value);
+  if (!record) {
+    return;
+  }
+
+  pushChangedFile(target, seen, record.path);
+  pushChangedFile(target, seen, record.filePath);
+  pushChangedFile(target, seen, record.relativePath);
+  pushChangedFile(target, seen, record.filename);
+  pushChangedFile(target, seen, record.newPath);
+  pushChangedFile(target, seen, record.oldPath);
+
+  for (const nestedKey of [
+    "item",
+    "result",
+    "input",
+    "data",
+    "changes",
+    "files",
+    "edits",
+    "patch",
+    "patches",
+    "operations",
+  ]) {
+    if (!(nestedKey in record)) {
+      continue;
+    }
+    collectChangedFiles(record[nestedKey], target, seen, depth + 1);
+    if (target.length >= 12) {
+      return;
+    }
+  }
+}
+
+function extractChangedFiles(payload: Record<string, unknown> | null): string[] {
+  const changedFiles: string[] = [];
+  const seen = new Set<string>();
+  collectChangedFiles(asRecord(payload?.data), changedFiles, seen, 0);
+  return changedFiles;
+}
+
+function compareActivityLifecycleRank(kind: string): number {
+  if (kind.endsWith(".started") || kind === "tool.started") {
+    return 0;
+  }
+  if (kind.endsWith(".progress") || kind.endsWith(".updated")) {
+    return 1;
+  }
+  if (kind.endsWith(".completed") || kind.endsWith(".resolved")) {
+    return 2;
+  }
+  return 1;
+}
+
+const activityOrder = Order.combineAll<OrchestrationThreadActivity>([
+  Order.mapInput(Order.Number, (activity) => activity.sequence ?? Number.MAX_SAFE_INTEGER),
+  Order.mapInput(Order.String, (activity) => activity.createdAt),
+  Order.mapInput(Order.Number, (activity) => compareActivityLifecycleRank(activity.kind)),
+  Order.mapInput(Order.String, (activity) => activity.id),
+]);
+
+function isEmptyMessage(entry: RawThreadFeedEntry): boolean {
+  if (entry.type !== "message") {
+    return false;
+  }
+  const hasText = entry.message.text.trim().length > 0;
+  const hasAttachments = (entry.message.attachments ?? []).length > 0;
+  return !hasText && !hasAttachments;
 }
 
 function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): ThreadFeedEntry[] {
@@ -413,153 +1173,160 @@ function groupAdjacentActivities(entries: ReadonlyArray<RawThreadFeedEntry>): Th
   // O(1) instead of re-copying the group (which made this loop quadratic on
   // long tool runs). The array is only mutated while it is the trailing group.
   let openGroupActivities: ThreadFeedActivity[] | null = null;
-  let openGroupRunId: string | null = null;
-  let openGroupHasProminent = false;
+  let openGroupTurnId: TurnId | null = null;
 
   for (const entry of entries) {
-    if (isEmptyMessage(entry)) continue;
+    // Skip empty messages so they don't break activity grouping.
+    if (isEmptyMessage(entry)) {
+      continue;
+    }
+
     if (entry.type !== "activity") {
       grouped.push(entry);
       openGroupActivities = null;
       continue;
     }
 
-    if (
-      openGroupActivities !== null &&
-      openGroupRunId === entry.runId &&
-      !entry.activity.prominent &&
-      !openGroupHasProminent
-    ) {
+    if (openGroupActivities !== null && openGroupTurnId === entry.turnId) {
       openGroupActivities.push(entry.activity);
       continue;
     }
 
     openGroupActivities = [entry.activity];
-    openGroupRunId = entry.runId;
-    openGroupHasProminent = entry.activity.prominent === true;
+    openGroupTurnId = entry.turnId;
     grouped.push({
       type: "activity-group",
       id: entry.id,
       createdAt: entry.createdAt,
-      runId: entry.runId,
+      turnId: entry.turnId,
       activities: openGroupActivities,
     });
   }
+
   return grouped;
 }
 
 function computeElapsedMs(startIso: string, endIso: string): number | null {
   const start = Date.parse(startIso);
   const end = Date.parse(endIso);
-  return Number.isFinite(start) && Number.isFinite(end) ? Math.max(0, end - start) : null;
+  if (!Number.isFinite(start) || !Number.isFinite(end)) {
+    return null;
+  }
+  return Math.max(0, end - start);
 }
 
-function maxIsoTimestamp(left: string | null, right: string | null): string | null {
-  if (left === null) return right;
-  if (right === null) return left;
-  return Date.parse(right) > Date.parse(left) ? right : left;
+function maxIsoTimestamp(a: string | null, b: string | null): string | null {
+  if (a === null) return b;
+  if (b === null) return a;
+  const aMs = Date.parse(a);
+  const bMs = Date.parse(b);
+  if (!Number.isFinite(aMs)) return b;
+  if (!Number.isFinite(bMs)) return a;
+  return bMs > aMs ? b : a;
 }
 
-function unsettledRunId(latestRun: ThreadFeedLatestRun | null): RunId | null {
-  return threadFeedRunIsUnsettled(latestRun) ? latestRun.runId : null;
+function deriveUnsettledTurnId(latestTurn: ThreadFeedLatestTurn | null): TurnId | null {
+  if (!latestTurn) {
+    return null;
+  }
+  const settled = latestTurn.completedAt !== null && latestTurn.state !== "running";
+  return settled ? null : latestTurn.turnId;
 }
 
-export function threadFeedRunIsUnsettled(
-  run: ThreadFeedLatestRun | null,
-): run is ThreadFeedLatestRun {
-  return (
-    run !== null &&
-    (run.status === "preparing" ||
-      run.status === "starting" ||
-      run.status === "running" ||
-      run.status === "waiting")
-  );
-}
-
-export function threadFeedActivityIsVisible(
-  activity: Pick<ThreadFeedActivity, "prominent" | "status" | "toolLike">,
-): boolean {
-  return activity.prominent || !(activity.toolLike && activity.status === "neutral");
-}
-
-interface ThreadFeedRunFold {
-  readonly runId: RunId;
+interface ThreadFeedTurnFold {
+  readonly turnId: TurnId;
   readonly createdAt: string;
   readonly hiddenEntryIds: ReadonlySet<string>;
   readonly label: string;
 }
 
-function deriveThreadFeedRunFolds(
+function deriveThreadFeedTurnFolds(
   feed: ReadonlyArray<ThreadFeedEntry>,
-  latestRun: ThreadFeedLatestRun | null,
-): ReadonlyMap<string, ThreadFeedRunFold> {
-  const terminalAssistantMessageIdByRun = new Map<RunId, string>();
+  latestTurn: ThreadFeedLatestTurn | null,
+): ReadonlyMap<string, ThreadFeedTurnFold> {
+  const firstAssistantMessageIdByTurn = new Map<TurnId, string>();
+  const terminalAssistantMessageIdByTurn = new Map<TurnId, string>();
   for (const entry of feed) {
-    if (entry.type === "message" && entry.message.role === "assistant" && entry.message.runId) {
-      terminalAssistantMessageIdByRun.set(entry.message.runId, entry.id);
+    if (entry.type === "message" && entry.message.role === "assistant" && entry.message.turnId) {
+      if (!firstAssistantMessageIdByTurn.has(entry.message.turnId)) {
+        firstAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
+      }
+      terminalAssistantMessageIdByTurn.set(entry.message.turnId, entry.id);
     }
   }
 
-  const groupsByRunId = new Map<
-    RunId,
-    { entries: ThreadFeedEntry[]; startBoundary: string | null }
-  >();
+  interface TurnGroup {
+    readonly entries: ThreadFeedEntry[];
+    readonly startBoundary: string | null;
+  }
+  const groupsByTurnId = new Map<TurnId, TurnGroup>();
   let pendingUserBoundary: string | null = null;
   for (const entry of feed) {
     if (entry.type === "message" && entry.message.role === "user") {
       pendingUserBoundary = entry.message.createdAt;
       continue;
     }
-    const runId =
+    const turnId =
       entry.type === "message" && entry.message.role === "assistant"
-        ? entry.message.runId
+        ? entry.message.turnId
         : entry.type === "activity-group"
-          ? entry.runId
+          ? entry.turnId
           : null;
-    if (!runId) continue;
-    let group = groupsByRunId.get(runId);
+    if (!turnId) {
+      continue;
+    }
+    let group = groupsByTurnId.get(turnId);
     if (!group) {
-      group = { entries: [], startBoundary: pendingUserBoundary };
+      group = {
+        entries: [],
+        startBoundary: pendingUserBoundary,
+      };
       pendingUserBoundary = null;
-      groupsByRunId.set(runId, group);
+      groupsByTurnId.set(turnId, group);
     }
     group.entries.push(entry);
   }
 
-  const activeRunId = unsettledRunId(latestRun);
-  const foldsByAnchorId = new Map<string, ThreadFeedRunFold>();
-  for (const [runId, group] of groupsByRunId) {
-    if (
-      runId === activeRunId ||
-      group.entries.some((entry) => entry.type === "message" && entry.message.streaming)
-    ) {
+  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
+  const foldsByAnchorId = new Map<string, ThreadFeedTurnFold>();
+  for (const [turnId, group] of groupsByTurnId) {
+    const { entries } = group;
+    if (turnId === unsettledTurnId) {
       continue;
     }
-    const terminalAssistantId = terminalAssistantMessageIdByRun.get(runId);
+    if (entries.some((entry) => entry.type === "message" && entry.message.streaming)) {
+      continue;
+    }
+
+    const firstAssistantMessageId = firstAssistantMessageIdByTurn.get(turnId);
+    const terminalAssistantMessageId = terminalAssistantMessageIdByTurn.get(turnId);
     const hiddenEntryIds = new Set(
-      group.entries
+      entries
         .filter(
           (entry) =>
-            entry.id !== terminalAssistantId &&
-            !(
-              entry.type === "activity-group" &&
-              entry.activities.some((activity) => activity.prominent)
-            ),
+            entry.id !== firstAssistantMessageId && entry.id !== terminalAssistantMessageId,
         )
         .map((entry) => entry.id),
     );
-    const firstEntry = group.entries[0];
-    const lastEntry = group.entries.at(-1);
-    if (hiddenEntryIds.size === 0 || !firstEntry || !lastEntry) continue;
-    const terminalEntry = terminalAssistantId
-      ? group.entries.find((entry) => entry.id === terminalAssistantId)
+    if (hiddenEntryIds.size === 0) {
+      continue;
+    }
+
+    const firstEntry = entries[0];
+    const firstHiddenEntry = entries.find((entry) => hiddenEntryIds.has(entry.id));
+    const lastEntry = entries.at(-1);
+    if (!firstEntry || !firstHiddenEntry || !lastEntry) {
+      continue;
+    }
+    const terminalEntry = terminalAssistantMessageId
+      ? entries.find((entry) => entry.id === terminalAssistantMessageId)
       : null;
-    const latestRunMatches = latestRun?.runId === runId;
+    const latestTurnMatches = latestTurn?.turnId === turnId;
     const lastEntryEnd =
       lastEntry.type === "message" ? lastEntry.message.updatedAt : lastEntry.createdAt;
     const elapsedMs =
-      latestRunMatches && latestRun.startedAt && latestRun.completedAt
-        ? computeElapsedMs(latestRun.startedAt, latestRun.completedAt)
+      latestTurnMatches && latestTurn.startedAt && latestTurn.completedAt
+        ? computeElapsedMs(latestTurn.startedAt, latestTurn.completedAt)
         : computeElapsedMs(
             group.startBoundary ?? firstEntry.createdAt,
             maxIsoTimestamp(
@@ -568,19 +1335,20 @@ function deriveThreadFeedRunFolds(
             ) ?? lastEntryEnd,
           );
     const duration = elapsedMs === null ? null : formatDuration(elapsedMs);
-    const interrupted =
-      latestRunMatches && (latestRun.status === "interrupted" || latestRun.status === "cancelled");
-    foldsByAnchorId.set(firstEntry.id, {
-      runId,
-      createdAt: firstEntry.createdAt,
+    const interrupted = latestTurnMatches && latestTurn.state === "interrupted";
+    const label = interrupted
+      ? duration
+        ? `You stopped after ${duration}`
+        : "You stopped this response"
+      : duration
+        ? `Worked for ${duration}`
+        : "Worked";
+
+    foldsByAnchorId.set(firstHiddenEntry.id, {
+      turnId,
+      createdAt: firstHiddenEntry.createdAt,
       hiddenEntryIds,
-      label: interrupted
-        ? duration
-          ? `You stopped after ${duration}`
-          : "You stopped this response"
-        : duration
-          ? `Worked for ${duration}`
-          : "Worked",
+      label,
     });
   }
   return foldsByAnchorId;
@@ -588,96 +1356,304 @@ function deriveThreadFeedRunFolds(
 
 export function deriveThreadFeedPresentation(
   feed: ReadonlyArray<ThreadFeedEntry>,
-  latestRun: ThreadFeedLatestRun | null,
-  expandedRunIds: ReadonlySet<RunId>,
+  latestTurn: ThreadFeedLatestTurn | null,
+  expandedTurnIds: ReadonlySet<TurnId>,
   expandedWorkGroupIds: ReadonlySet<string> = new Set(),
   activeWorkStartedAt: string | null = null,
 ): ThreadFeedEntry[] {
   const sourceFeed = feed.filter(
-    (entry) =>
-      entry.type !== "run-fold" && entry.type !== "work-toggle" && entry.type !== "working",
+    (entry) => entry.type !== "turn-fold" && entry.type !== "work-toggle",
   );
-  const foldsByAnchorId = deriveThreadFeedRunFolds(sourceFeed, latestRun);
+  const activeTailGroup = sourceFeed.findLast(
+    (entry) => entry.type !== "message" || !isEmptyMessage(entry),
+  );
+  const foldsByAnchorId = deriveThreadFeedTurnFolds(sourceFeed, latestTurn);
+  const unsettledTurnId = deriveUnsettledTurnId(latestTurn);
+  const isWorking = activeWorkStartedAt !== null;
   const collapsedEntryIds = new Set<string>();
   for (const fold of foldsByAnchorId.values()) {
-    if (!expandedRunIds.has(fold.runId)) {
-      for (const entryId of fold.hiddenEntryIds) collapsedEntryIds.add(entryId);
+    if (!expandedTurnIds.has(fold.turnId)) {
+      for (const entryId of fold.hiddenEntryIds) {
+        collapsedEntryIds.add(entryId);
+      }
     }
   }
+
   const result: ThreadFeedEntry[] = [];
   for (const entry of sourceFeed) {
+    const isActiveTailGroup =
+      isWorking &&
+      unsettledTurnId !== null &&
+      entry.type === "activity-group" &&
+      activeTailGroup?.type === "activity-group" &&
+      activeTailGroup.id === entry.id &&
+      entry.turnId === unsettledTurnId;
     const fold = foldsByAnchorId.get(entry.id);
     if (fold) {
       result.push({
-        type: "run-fold",
-        id: `run-fold:${fold.runId}`,
+        type: "turn-fold",
+        id: `turn-fold:${fold.turnId}`,
         createdAt: fold.createdAt,
-        runId: fold.runId,
+        turnId: fold.turnId,
         label: fold.label,
-        expanded: expandedRunIds.has(fold.runId),
+        expanded: expandedTurnIds.has(fold.turnId),
       });
     }
     if (!collapsedEntryIds.has(entry.id)) {
-      appendPresentedFeedEntry(result, entry, expandedWorkGroupIds);
+      appendPresentedFeedEntry(
+        result,
+        entry,
+        expandedWorkGroupIds,
+        unsettledTurnId,
+        isWorking,
+        isActiveTailGroup,
+      );
     }
-  }
-  if (activeWorkStartedAt !== null) {
-    result.push({
-      type: "working",
-      id: "working-indicator-row",
-      createdAt: activeWorkStartedAt,
-    });
   }
   return result;
 }
 
 function appendPresentedFeedEntry(
   result: ThreadFeedEntry[],
-  entry: Exclude<ThreadFeedEntry, { readonly type: "run-fold" | "work-toggle" | "working" }>,
+  entry: Exclude<ThreadFeedEntry, { readonly type: "turn-fold" | "work-toggle" }>,
   expandedWorkGroupIds: ReadonlySet<string>,
+  unsettledTurnId: TurnId | null,
+  isWorking: boolean,
+  activeTail: boolean,
 ): void {
   if (entry.type !== "activity-group") {
     result.push(entry);
     return;
   }
 
-  const activities = entry.activities.filter(threadFeedActivityIsVisible);
+  const activities = omitSupersededLifecycleMarkers(
+    entry.activities.filter(
+      (activity) =>
+        !(activity.toolLike && activity.status === "neutral") ||
+        (isWorking &&
+          activity.lifecycleStatus === "inProgress" &&
+          activity.turnId === unsettledTurnId),
+    ),
+    (activity) => activity.workEntry,
+  );
   if (activities.length === 0) {
     return;
   }
-  if (activities.length <= MAX_VISIBLE_WORK_LOG_ENTRIES) {
-    result.push({
-      ...entry,
-      activities,
-    });
-    return;
-  }
-
-  const groupId = entry.id;
-  const expanded = expandedWorkGroupIds.has(groupId);
-  const hiddenCount = activities.length - MAX_VISIBLE_WORK_LOG_ENTRIES;
-  const visibleActivities = expanded ? activities : activities.slice(-MAX_VISIBLE_WORK_LOG_ENTRIES);
-
-  for (const activity of visibleActivities) {
+  let groupableRun: ThreadFeedActivity[] = [];
+  const flushGroupableRun = (isTrailingRun: boolean) => {
+    if (groupableRun.length === 0) return;
+    appendToolGroupRows(
+      result,
+      entry,
+      groupableRun,
+      expandedWorkGroupIds,
+      unsettledTurnId,
+      isWorking,
+      activeTail && isTrailingRun,
+    );
+    groupableRun = [];
+  };
+  for (const activity of activities) {
+    if (activity.workEntry.tone !== "error" && activity.workEntry.agentSpawn !== true) {
+      groupableRun.push(activity);
+      continue;
+    }
+    flushGroupableRun(false);
     result.push({
       type: "activity-group",
       id: activity.id,
       createdAt: activity.createdAt,
-      runId: activity.runId,
+      turnId: activity.turnId,
       activities: [activity],
     });
   }
+  flushGroupableRun(true);
+}
+
+function appendToolGroupRows(
+  result: ThreadFeedEntry[],
+  sourceGroup: Extract<ThreadFeedEntry, { readonly type: "activity-group" }>,
+  activities: ReadonlyArray<ThreadFeedActivity>,
+  expandedWorkGroupIds: ReadonlySet<string>,
+  unsettledTurnId: TurnId | null,
+  isWorking: boolean,
+  activeTail: boolean,
+): void {
+  const firstEntry = activities[0]!.workEntry;
+  const identity = firstEntry.toolCallId
+    ? `tool:${firstEntry.turnId ?? "no-turn"}:${firstEntry.toolCallId}`
+    : activities[0]!.id;
+  const groupId = `work-group:${identity}`;
+  const expanded = expandedWorkGroupIds.has(groupId);
+  const latestInProgressActivity = activities.findLast(
+    (activity) =>
+      isWorking && activity.lifecycleStatus === "inProgress" && activity.turnId === unsettledTurnId,
+  );
+  const live = activeTail || latestInProgressActivity !== undefined;
+  const latestActivity = activeTail
+    ? activities.at(-1)!
+    : (latestInProgressActivity ?? activities.at(-1)!);
+  const summary = live
+    ? liveToolActivitySummary(latestActivity)
+    : activities.length === 1 && !activities[0]!.toolLike
+      ? activities[0]!.workEntry.label
+      : summarizeToolGroup(activities.map((activity) => activity.workEntry));
   result.push({
     type: "work-toggle",
-    id: `work-toggle:${groupId}`,
-    createdAt: entry.createdAt,
-    runId: entry.runId,
+    id: `${live ? "work-live" : "work-toggle"}:${groupId}`,
+    createdAt: sourceGroup.createdAt,
+    turnId: sourceGroup.turnId,
     groupId,
-    hiddenCount,
+    hiddenCount: activities.length,
     expanded,
-    onlyToolActivities: activities.every((activity) => activity.toolLike),
+    summary,
+    summaryKind: toolGroupSummaryKind(
+      (live ? [latestActivity] : activities).map((activity) => activity.workEntry),
+    ),
+    hasFailure: activities.findLast((activity) => activity.toolLike)?.status === "failure",
+    live,
+    shimmer:
+      isWorking &&
+      latestActivity.lifecycleStatus === "inProgress" &&
+      latestActivity.turnId === unsettledTurnId,
   });
+  if (!expanded) {
+    return;
+  }
+  for (const activity of activities) {
+    result.push({
+      type: "activity-group",
+      id: activity.id,
+      createdAt: activity.createdAt,
+      turnId: activity.turnId,
+      activities: [
+        {
+          ...activity,
+          groupedToolDetail: true,
+          live:
+            isWorking &&
+            activity.id === latestActivity.id &&
+            activity.lifecycleStatus === "inProgress" &&
+            activity.turnId === unsettledTurnId,
+        },
+      ],
+    });
+  }
 }
+
+function liveToolActivitySummary(activity: ThreadFeedActivity): string {
+  const command = activity.workEntry.command?.trim();
+  if (command) {
+    const program = commandProgramName(command);
+    return program ? `Running ${program}` : "Running command";
+  }
+  return activity.detail ?? activity.summary;
+}
+
+/**
+ * Sorts activities into lifecycle order. `derivePendingApprovals` and
+ * `derivePendingUserInputs` both expect this ordering; sorting once and
+ * passing the result to both avoids re-sorting the full activity history
+ * per derivation.
+ */
+export function sortThreadActivities(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): ReadonlyArray<OrchestrationThreadActivity> {
+  return Arr.sort(activities, activityOrder);
+}
+
+export function derivePendingApprovals(
+  sortedActivities: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingApproval[] {
+  const openByRequestId = new Map<ApprovalRequestId, PendingApproval>();
+
+  for (const activity of sortedActivities) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId = parseApprovalRequestId(payload?.requestId);
+    const requestKind = isProviderRequestKind(payload?.requestKind)
+      ? payload.requestKind
+      : requestKindFromRequestType(payload?.requestType);
+    const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+    const appName = typeof payload?.appName === "string" ? payload.appName : undefined;
+    const options = Array.isArray(payload?.options)
+      ? payload.options.filter(isProviderApprovalOption)
+      : undefined;
+
+    if (activity.kind === "approval.requested" && requestId && requestKind) {
+      openByRequestId.set(requestId, {
+        requestId,
+        requestKind,
+        createdAt: activity.createdAt,
+        ...(detail ? { detail } : {}),
+        ...(appName ? { appName } : {}),
+        ...(options && options.length > 0 ? { options } : {}),
+      });
+      continue;
+    }
+
+    if (activity.kind === "approval.resolved" && requestId) {
+      openByRequestId.delete(requestId);
+      continue;
+    }
+
+    if (
+      activity.kind === "provider.approval.respond.failed" &&
+      requestId &&
+      isStalePendingRequestFailureDetail(detail)
+    ) {
+      openByRequestId.delete(requestId);
+    }
+  }
+
+  return Arr.sortWith([...openByRequestId.values()], (s) => new Date(s.createdAt), Order.Date);
+}
+
+export function derivePendingUserInputs(
+  sortedActivities: ReadonlyArray<OrchestrationThreadActivity>,
+): PendingUserInput[] {
+  const openByRequestId = new Map<ApprovalRequestId, PendingUserInput>();
+
+  for (const activity of sortedActivities) {
+    const payload =
+      activity.payload && typeof activity.payload === "object"
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const requestId = parseApprovalRequestId(payload?.requestId);
+    const detail = typeof payload?.detail === "string" ? payload.detail : undefined;
+
+    if (activity.kind === "user-input.requested" && requestId) {
+      const questions = parseUserInputQuestions(payload);
+      if (!questions) {
+        continue;
+      }
+      openByRequestId.set(requestId, {
+        requestId,
+        createdAt: activity.createdAt,
+        questions,
+      });
+      continue;
+    }
+
+    if (activity.kind === "user-input.resolved" && requestId) {
+      openByRequestId.delete(requestId);
+      continue;
+    }
+
+    if (
+      activity.kind === "provider.user-input.respond.failed" &&
+      requestId &&
+      isStalePendingRequestFailureDetail(detail)
+    ) {
+      openByRequestId.delete(requestId);
+    }
+  }
+
+  return Arr.sortWith(openByRequestId.values(), (s) => new Date(s.createdAt), Order.Date);
+}
+
 export function setPendingUserInputCustomAnswer(
   draft: PendingUserInputDraftAnswer | undefined,
   customAnswer: string,
@@ -704,7 +1680,7 @@ export function isPendingUserInputOptionSelected(
 }
 
 export function togglePendingUserInputOptionSelection(
-  question: ThreadUserInputQuestion,
+  question: UserInputQuestion,
   draft: PendingUserInputDraftAnswer | undefined,
   optionLabel: string,
 ): PendingUserInputDraftAnswer {
@@ -731,7 +1707,7 @@ export function togglePendingUserInputOptionSelection(
 }
 
 export function buildPendingUserInputAnswers(
-  questions: ReadonlyArray<ThreadUserInputQuestion>,
+  questions: ReadonlyArray<UserInputQuestion>,
   draftAnswers: Record<string, PendingUserInputDraftAnswer>,
 ): Record<string, string | ReadonlyArray<string>> | null {
   const answers: Record<string, string | ReadonlyArray<string>> = {};
@@ -743,64 +1719,78 @@ export function buildPendingUserInputAnswers(
     }
     answers[question.id] = answer;
   }
+
   return answers;
 }
 
-/**
- * Projects the server-authored visible sequence into mobile row presentation.
- * It deliberately preserves the incoming order and never rebuilds chat from
- * separate message, plan, or work-entry collections.
- */
 export function buildThreadFeed(
-  visibleTurnItems: ReadonlyArray<OrchestrationV2ProjectedTurnItem>,
+  thread: OrchestrationThread,
+  options?: {
+    readonly loadedMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
+    readonly localMessages?: ReadonlyArray<OrchestrationThread["messages"][number]>;
+  },
 ): ThreadFeedEntry[] {
-  const entries: RawThreadFeedEntry[] = [];
-  for (const row of visibleTurnItems) {
-    const item = row.item;
-    if (turnItemIsWorkspacePreparation(item)) continue;
-    // Match the web timeline: only the terminal interrupt result is useful to
-    // users; the preceding request is transient bookkeeping.
-    if (item.type === "run_interrupt_request") {
-      continue;
-    }
-    const createdAt = DateTime.formatIso(item.startedAt ?? item.updatedAt);
-    if (item.type === "user_message" || item.type === "assistant_message") {
-      const updatedAt = DateTime.formatIso(item.updatedAt);
-      entries.push({
+  const loadedMessages = options?.loadedMessages ?? thread.messages;
+  const messages = options?.localMessages
+    ? [...loadedMessages, ...options.localMessages]
+    : loadedMessages;
+  const oldestLoadedMessageCreatedAt =
+    options?.loadedMessages !== undefined ? (loadedMessages[0]?.createdAt ?? null) : null;
+  const workLogEntries = deriveWorkLogEntries(thread.activities);
+  const entries = Arr.sortWith(
+    [
+      ...messages.map<RawThreadFeedEntry>((message) => ({
         type: "message",
-        id: item.messageId,
-        createdAt,
-        message: {
-          id: item.messageId,
-          role: item.type === "user_message" ? "user" : "assistant",
-          text: item.text,
-          attachments: item.type === "user_message" ? item.attachments : [],
-          runId: item.runId,
-          streaming: item.type === "assistant_message" && item.streaming,
-          ...(item.type === "user_message"
-            ? {
-                inputIntent: item.inputIntent,
-                createdBy: item.createdBy,
-                creationSource: item.creationSource,
-              }
-            : {}),
-          visibility: row.visibility,
-          sourceThreadId: row.sourceThreadId,
-          createdAt,
-          updatedAt,
-          projectedItem: row,
-        },
-      });
-      continue;
-    }
-    const activity = toFeedActivity(row);
-    entries.push({
-      type: "activity",
-      id: activity.id,
-      createdAt,
-      runId: item.runId,
-      activity,
-    });
-  }
+        id: message.id,
+        createdAt: message.createdAt,
+        message,
+      })),
+      ...workLogEntries
+        .filter((entry) => {
+          if (options?.loadedMessages === undefined) {
+            return true;
+          }
+          return (
+            oldestLoadedMessageCreatedAt === null || entry.createdAt >= oldestLoadedMessageCreatedAt
+          );
+        })
+        .map<RawThreadFeedEntry>((entry) => {
+          const summary = workEntryHeading(entry);
+          const detail = workEntryPreview(entry);
+          const getFullDetail = memoizeValue(() => buildWorkEntryExpandedBody(entry));
+          const getCopyText = memoizeValue(() =>
+            [summary, detail, getFullDetail()]
+              .filter((value, index, values): value is string => {
+                return Boolean(value) && values.indexOf(value) === index;
+              })
+              .join("\n"),
+          );
+          return {
+            type: "activity",
+            id: entry.id,
+            createdAt: entry.createdAt,
+            turnId: entry.turnId,
+            activity: {
+              id: entry.id,
+              createdAt: entry.createdAt,
+              turnId: entry.turnId,
+              summary,
+              detail,
+              canExpand: workEntryHasExpandedBody(entry),
+              getFullDetail,
+              getCopyText,
+              icon: workEntryIcon(entry),
+              toolLike: workLogEntryIsToolLike(entry),
+              status: workEntryStatus(entry),
+              ...(entry.toolLifecycleStatus ? { lifecycleStatus: entry.toolLifecycleStatus } : {}),
+              workEntry: entry,
+            },
+          };
+        }),
+    ],
+    (s) => new Date(s.createdAt),
+    Order.Date,
+  );
+
   return groupAdjacentActivities(entries);
 }

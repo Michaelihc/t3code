@@ -1,7 +1,7 @@
 import type {
+  ApprovalRequestId,
   ProviderApprovalDecision,
   ProviderApprovalOption,
-  RuntimeRequestId,
 } from "@t3tools/contracts";
 import { Pressable, View } from "react-native";
 
@@ -10,9 +10,9 @@ import type { PendingApproval } from "../../lib/threadActivity";
 
 export interface PendingApprovalCardProps {
   readonly approval: PendingApproval;
-  readonly respondingApprovalId: RuntimeRequestId | null;
+  readonly respondingApprovalId: ApprovalRequestId | null;
   readonly onRespond: (
-    requestId: RuntimeRequestId,
+    requestId: ApprovalRequestId,
     decision: ProviderApprovalDecision,
   ) => Promise<unknown>;
 }
@@ -27,25 +27,17 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
   const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
-  const canRespond = props.approval.responseCapability === "live";
-  const disabled = !canRespond || props.respondingApprovalId === props.approval.requestId;
   return (
-    <View className="gap-2.5 rounded-[20px] border border-neutral-200 bg-neutral-100 p-4 dark:border-white/6 dark:bg-neutral-900">
-      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-sky-700 dark:text-sky-300">
+    <View className="gap-2.5 rounded-[20px] border border-adaptive-neutral-200-white-a6 bg-adaptive-neutral-100-900 p-4">
+      <Text className="font-t3-bold text-2xs uppercase tracking-[1.1px] text-adaptive-sky-700-300">
         Approval needed
       </Text>
-      <Text className="font-t3-bold text-lg text-neutral-950 dark:text-neutral-50">
+      <Text className="font-t3-bold text-lg text-adaptive-neutral-950-50">
         {props.approval.appName ?? props.approval.requestKind}
       </Text>
       {props.approval.detail ? (
-        <Text className="font-sans text-sm leading-normal text-neutral-600 dark:text-neutral-400">
+        <Text className="font-sans text-sm leading-normal text-adaptive-neutral-600-400">
           {props.approval.detail}
-        </Text>
-      ) : null}
-      {!canRespond ? (
-        <Text className="font-sans text-sm leading-5 text-neutral-600 dark:text-neutral-400">
-          The provider process for this request is no longer available. Interrupt or restart the run
-          to continue.
         </Text>
       ) : null}
       <View className="flex-row flex-wrap gap-2.5">
@@ -56,8 +48,8 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
               option.decision === "accept"
                 ? "bg-blue-500"
                 : option.decision === "decline"
-                  ? "bg-rose-100 dark:bg-rose-500/18"
-                  : "bg-neutral-200 dark:bg-neutral-800"
+                  ? "bg-adaptive-rose-100-500-a18"
+                  : "bg-adaptive-neutral-200-800"
             }`}
             disabled={props.respondingApprovalId === props.approval.requestId}
             onPress={() => void props.onRespond(props.approval.requestId, option.decision)}
@@ -67,8 +59,8 @@ export function PendingApprovalCard(props: PendingApprovalCardProps) {
                 option.decision === "accept"
                   ? "font-t3-extrabold text-white"
                   : option.decision === "decline"
-                    ? "font-t3-bold text-rose-700 dark:text-rose-300"
-                    : "font-t3-bold text-neutral-950 dark:text-neutral-50"
+                    ? "font-t3-bold text-adaptive-rose-700-300"
+                    : "font-t3-bold text-adaptive-neutral-950-50"
               }`}
             >
               {option.label}

@@ -14,12 +14,6 @@ describe("PanelLayoutControls", () => {
         rightPanelAvailable={false}
         rightPanelOpen={false}
         rightPanelShortcutLabel={null}
-        showThreadPanelControl={false}
-        threadPanelOpen={false}
-        threadPanelPresentation="inline"
-        threadPanelShortcutLabel={null}
-        threadPanelHasAttention={false}
-        onToggleThreadPanel={() => {}}
         liveAgentCount={0}
         onToggleTerminal={() => {}}
         onToggleRightPanel={() => {}}

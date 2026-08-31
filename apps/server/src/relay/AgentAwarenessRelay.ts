@@ -1,8 +1,8 @@
 import type {
   EnvironmentId,
-  OrchestrationV2DomainEvent,
-  OrchestrationV2ThreadShell,
-  Project,
+  OrchestrationEvent,
+  OrchestrationProjectShell,
+  OrchestrationThreadShell,
   ThreadId,
 } from "@t3tools/contracts";
 import {
@@ -10,7 +10,7 @@ import {
   type RelayAgentActivityPublishProofPayload,
   type RelayAgentActivityState,
 } from "@t3tools/contracts/relay";
-import { projectThreadAwarenessV2 } from "@t3tools/shared/agentAwareness";
+import { projectThreadAwareness } from "@t3tools/shared/agentAwareness";
 import { makeDrainableWorker } from "@t3tools/shared/DrainableWorker";
 import { withRelayClientTracing } from "@t3tools/shared/relayTracing";
 import {
@@ -43,8 +43,8 @@ import {
 } from "../cloud/config.ts";
 import { getOrCreateEnvironmentKeyPairFromSecretStore } from "../cloud/environmentKeys.ts";
 import * as ServerEnvironment from "../environment/ServerEnvironment.ts";
-import * as ThreadManagement from "../orchestration-v2/ThreadManagementService.ts";
-import * as ProjectService from "../project/ProjectService.ts";
+import * as OrchestrationEngine from "../orchestration/Services/OrchestrationEngine.ts";
+import * as ProjectionSnapshotQuery from "../orchestration/Services/ProjectionSnapshotQuery.ts";
 import { forkParked } from "../serverActivation.ts";
 
 export class AgentAwarenessRelay extends Context.Service<
@@ -55,15 +55,43 @@ export class AgentAwarenessRelay extends Context.Service<
   }
 >()("t3/relay/AgentAwarenessRelay") {}
 
-export function eventThreadId(event: OrchestrationV2DomainEvent): ThreadId {
-  return event.threadId;
+export function eventThreadId(event: OrchestrationEvent): ThreadId | null {
+  const payload = event.payload as { readonly threadId?: unknown };
+  if (typeof payload.threadId === "string") {
+    return payload.threadId as ThreadId;
+  }
+  if (event.aggregateKind === "thread" && typeof event.aggregateId === "string") {
+    return event.aggregateId as ThreadId;
+  }
+  return null;
 }
 
-export function shouldPublishAgentAwarenessEvent(_event: OrchestrationV2DomainEvent): boolean {
-  // Publishing is identity-deduplicated below. Watching every V2 event keeps
-  // this consumer correct as the shell projection evolves without duplicating
-  // projection-specific relevance rules here.
-  return true;
+export function shouldPublishAgentAwarenessEvent(event: OrchestrationEvent): boolean {
+  switch (event.type) {
+    case "thread.message-sent":
+    case "thread.turn-start-requested":
+      // These events express intent to start work, but the shell still contains
+      // the previous turn's terminal state until the provider acknowledges the
+      // new turn. Publishing that snapshot can queue a fresh "Done" alert just
+      // before the real running state arrives. Provider lifecycle events publish
+      // the authoritative starting/running state instead.
+      return false;
+    case "thread.proposed-plan-upserted":
+    case "thread.runtime-mode-set":
+    case "thread.interaction-mode-set":
+      return false;
+    case "thread.activity-appended":
+      return (
+        event.payload.activity.kind === "approval.requested" ||
+        event.payload.activity.kind === "approval.resolved" ||
+        event.payload.activity.kind === "provider.approval.respond.failed" ||
+        event.payload.activity.kind === "user-input.requested" ||
+        event.payload.activity.kind === "user-input.resolved" ||
+        event.payload.activity.kind === "runtime.error"
+      );
+    default:
+      return true;
+  }
 }
 
 export function agentAwarenessPublishIdentity(state: RelayAgentActivityState | null): string {
@@ -185,7 +213,7 @@ const makePublishProof = Effect.fn("makePublishProof")(function* (input: {
 
 // Compact, log-safe view of the fields the awareness phase ladder reads.
 export function describeThreadShellForAwareness(
-  thread: Option.Option<OrchestrationV2ThreadShell>,
+  thread: Option.Option<OrchestrationThreadShell>,
 ): Record<string, unknown> {
   if (Option.isNone(thread)) {
     return { found: false };
@@ -193,20 +221,21 @@ export function describeThreadShellForAwareness(
   const shell = thread.value;
   return {
     found: true,
-    status: shell.status,
-    activityRunStatus: shell.activityRunStatus ?? null,
-    activeRunId: shell.activeRunId ?? null,
-    latestRunId: shell.latestRunId ?? null,
-    pendingRuntimeRequestKind: shell.pendingRuntimeRequest?.kind ?? null,
-    hasActionableProposedPlan: shell.hasActionableProposedPlan,
+    sessionStatus: shell.session?.status ?? null,
+    sessionActiveTurnId: shell.session?.activeTurnId ?? null,
+    latestTurnId: shell.latestTurn?.turnId ?? null,
+    latestTurnState: shell.latestTurn?.state ?? null,
+    latestTurnCompletedAt: shell.latestTurn?.completedAt ?? null,
+    hasPendingApprovals: shell.hasPendingApprovals,
+    hasPendingUserInput: shell.hasPendingUserInput,
   };
 }
 
 export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   readonly environmentId: EnvironmentId;
   readonly threadId: ThreadId;
-  readonly thread: Option.Option<OrchestrationV2ThreadShell>;
-  readonly project: Option.Option<Project>;
+  readonly thread: Option.Option<OrchestrationThreadShell>;
+  readonly project: Option.Option<OrchestrationProjectShell>;
 }): {
   readonly projectId: string | null;
   readonly state: RelayAgentActivityState | null;
@@ -229,7 +258,7 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
   return {
     projectId: input.thread.value.projectId,
     state: sanitizeRelayAgentActivityState(
-      projectThreadAwarenessV2({
+      projectThreadAwareness({
         environmentId: input.environmentId,
         project: input.project.value,
         thread: input.thread.value,
@@ -241,8 +270,8 @@ export function resolveAgentAwarenessRelayPublishSnapshot(input: {
 
 export function resolveAgentAwarenessRelayActiveThreadIds(input: {
   readonly environmentId: EnvironmentId;
-  readonly projects: ReadonlyArray<Pick<Project, "id" | "title">>;
-  readonly threads: ReadonlyArray<OrchestrationV2ThreadShell>;
+  readonly projects: ReadonlyArray<Pick<OrchestrationProjectShell, "id" | "title">>;
+  readonly threads: ReadonlyArray<OrchestrationThreadShell>;
 }): ReadonlyArray<ThreadId> {
   const projectById = new Map(input.projects.map((project) => [project.id, project]));
   return input.threads
@@ -252,7 +281,7 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
         return false;
       }
       return (
-        projectThreadAwarenessV2({
+        projectThreadAwareness({
           environmentId: input.environmentId,
           project,
           thread,
@@ -265,8 +294,8 @@ export function resolveAgentAwarenessRelayActiveThreadIds(input: {
 export const make = Effect.gen(function* () {
   const secrets = yield* ServerSecretStore.ServerSecretStore;
   const serverEnvironment = yield* ServerEnvironment.ServerEnvironment;
-  const threads = yield* ThreadManagement.ThreadManagementService;
-  const projects = yield* ProjectService.ProjectService;
+  const snapshotQuery = yield* ProjectionSnapshotQuery.ProjectionSnapshotQuery;
+  const orchestrationEngine = yield* OrchestrationEngine.OrchestrationEngineService;
   const crypto = yield* Crypto.Crypto;
   const cloudLinkKeyPair = yield* getOrCreateEnvironmentKeyPairFromSecretStore(secrets);
   const activeSnapshotPublishedRef = yield* Ref.make(false);
@@ -376,17 +405,10 @@ export const make = Effect.gen(function* () {
         });
       });
 
-    // Per-thread shell read: this publish runs for every activity-relevant
-    // domain event, so materializing the full shell here would make the cost
-    // of one thread's activity proportional to how many threads exist.
-    const threadShell = yield* threads.getThreadShell(threadId);
-    const thread =
-      threadShell === null || threadShell.archivedAt !== null
-        ? Option.none<OrchestrationV2ThreadShell>()
-        : Option.some(threadShell);
+    const thread = yield* snapshotQuery.getThreadShellById(threadId);
     const project = Option.isSome(thread)
-      ? yield* projects.getById(thread.value.projectId)
-      : Option.none<Project>();
+      ? yield* snapshotQuery.getProjectShellById(thread.value.projectId)
+      : Option.none<OrchestrationProjectShell>();
     const snapshot = resolveAgentAwarenessRelayPublishSnapshot({
       environmentId,
       threadId,
@@ -504,14 +526,11 @@ export const make = Effect.gen(function* () {
       return false;
     }
     const environmentId = yield* serverEnvironment.getEnvironmentId;
-    const [projectSnapshot, shellSnapshot] = yield* Effect.all([
-      projects.snapshot,
-      threads.getShellSnapshot(),
-    ]);
+    const snapshot = yield* snapshotQuery.getShellSnapshot();
     const activeThreadIds = resolveAgentAwarenessRelayActiveThreadIds({
       environmentId,
-      projects: projectSnapshot.projects,
-      threads: shellSnapshot.threads,
+      projects: snapshot.projects,
+      threads: snapshot.threads,
     });
     if (activeThreadIds.length === 0) {
       yield* Effect.logDebug("agent activity snapshot has no publishable threads");
@@ -588,8 +607,13 @@ export const make = Effect.gen(function* () {
         ),
       );
       yield* forkParked(
-        Stream.runForEach(threads.streamDomainEvents, (event) => {
+        Stream.runForEach(orchestrationEngine.streamDomainEvents, (event) => {
           const threadId = eventThreadId(event);
+          if (threadId === null) {
+            return Effect.logDebug("agent activity publishing ignored event without thread id", {
+              eventType: event.type,
+            });
+          }
           if (!shouldPublishAgentAwarenessEvent(event)) {
             return Effect.logDebug(
               "agent activity publishing ignored event without activity changes",

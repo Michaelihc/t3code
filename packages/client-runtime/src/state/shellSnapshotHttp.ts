@@ -1,4 +1,4 @@
-import type { OrchestrationV2ShellSnapshot } from "@t3tools/contracts";
+import type { OrchestrationShellSnapshot } from "@t3tools/contracts";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -58,7 +58,7 @@ export class ShellSnapshotLoader extends Context.Service<
   {
     readonly load: (
       prepared: PreparedConnection,
-    ) => Effect.Effect<Option.Option<OrchestrationV2ShellSnapshot>>;
+    ) => Effect.Effect<Option.Option<OrchestrationShellSnapshot>>;
   }
 >()("@t3tools/client-runtime/state/shellSnapshotHttp/ShellSnapshotLoader") {}
 
@@ -76,14 +76,14 @@ export const shellSnapshotLoaderLayer: Layer.Layer<
     return ShellSnapshotLoader.of({
       load: (prepared: PreparedConnection) =>
         fetchEnvironmentShellSnapshot({ prepared, signer }).pipe(
-          Effect.map(Option.some<OrchestrationV2ShellSnapshot>),
+          Effect.map(Option.some<OrchestrationShellSnapshot>),
           Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.catchCause((cause) =>
             Effect.logWarning(
               "Could not load the environment shell snapshot over HTTP; using the socket snapshot instead.",
             ).pipe(
               Effect.annotateLogs({ cause: Cause.pretty(cause) }),
-              Effect.as(Option.none<OrchestrationV2ShellSnapshot>()),
+              Effect.as(Option.none<OrchestrationShellSnapshot>()),
             ),
           ),
         ),

@@ -30,10 +30,10 @@ import {
 const isServerProviderUpdateError = Schema.is(ServerProviderUpdateError);
 
 const CODEX_DRIVER = ProviderDriverKind.make("codex");
-const NATIVE_CLI_DRIVER = ProviderDriverKind.make("nativeCli");
+const CURSOR_DRIVER = ProviderDriverKind.make("cursor");
 const OPENCODE_DRIVER = ProviderDriverKind.make("opencode");
 const CODEX_INSTANCE_ID = ProviderInstanceId.make("codex");
-const NATIVE_CLI_INSTANCE_ID = ProviderInstanceId.make("nativeCli");
+const CURSOR_INSTANCE_ID = ProviderInstanceId.make("cursor");
 const OPENCODE_INSTANCE_ID = ProviderInstanceId.make("opencode");
 const encoder = new TextEncoder();
 
@@ -44,13 +44,13 @@ const encoder = new TextEncoder();
 const NonWindowsPlatform = Layer.succeed(HostProcessPlatform, "linux");
 
 function lifecycleFor(provider: ProviderDriverKind): ProviderMaintenanceCapabilities {
-  if (provider === NATIVE_CLI_DRIVER) {
+  if (provider === CURSOR_DRIVER) {
     return makeProviderMaintenanceCapabilities({
       provider,
       packageName: null,
-      updateExecutable: "native-agent",
+      updateExecutable: "cursor-agent",
       updateArgs: ["update"],
-      updateLockKey: "native-agent",
+      updateLockKey: "cursor-agent",
     });
   }
   return makeProviderMaintenanceCapabilities({
@@ -79,10 +79,10 @@ const baseProvider: ServerProvider = {
   skills: [],
 };
 
-const baseNativeCliProvider: ServerProvider = {
+const baseCursorProvider: ServerProvider = {
   ...baseProvider,
-  instanceId: NATIVE_CLI_INSTANCE_ID,
-  driver: NATIVE_CLI_DRIVER,
+  instanceId: CURSOR_INSTANCE_ID,
+  driver: CURSOR_DRIVER,
 };
 
 const baseOpenCodeProvider: ServerProvider = {
@@ -220,13 +220,13 @@ describe("providerMaintenanceRunner", () => {
   it.effect("runs the allowlisted provider update command and records success", () => {
     const calls: Array<{ command: string; args: ReadonlyArray<string> }> = [];
     return Effect.gen(function* () {
-      const { registry, updateStatesRef } = yield* makeRegistry(baseNativeCliProvider);
+      const { registry, updateStatesRef } = yield* makeRegistry(baseCursorProvider);
       const updater = yield* makeTestRunner(registry);
 
-      const result = yield* updater.updateProvider(NATIVE_CLI_DRIVER);
+      const result = yield* updater.updateProvider(CURSOR_DRIVER);
       assert.deepStrictEqual(calls, [
         {
-          command: "native-agent",
+          command: "cursor-agent",
           args: ["update"],
         },
       ]);

@@ -1,5 +1,5 @@
 import type { ProviderDriverKind, ThreadId } from "@t3tools/contracts";
-import { causeErrorTag } from "@t3tools/shared/observability";
+import { causeErrorTag, errorTag } from "@t3tools/shared/observability";
 import * as Cause from "effect/Cause";
 import * as Crypto from "effect/Crypto";
 import * as DateTime from "effect/DateTime";
@@ -7,18 +7,46 @@ import * as Effect from "effect/Effect";
 import type * as EffectAcpProtocol from "effect-acp/protocol";
 
 import type { EventNdjsonLogger } from "../Layers/EventNdjsonLogger.ts";
-import {
-  structuralProtocolMethod,
-  summarizeNativeProtocolPayload,
-} from "../NativeProtocolLogging.ts";
 import type * as AcpSessionRuntime from "./AcpSessionRuntime.ts";
+
+function structuralMethod(value: string): string {
+  return value.length <= 128 && /^[A-Za-z][A-Za-z0-9._:/-]*$/.test(value) ? value : "unknown";
+}
+
+function summarizePayload(payload: unknown): Readonly<Record<string, unknown>> {
+  if (payload === null) return { valueType: "null" };
+  if (typeof payload === "string") {
+    return { valueType: "string", byteLength: new TextEncoder().encode(payload).byteLength };
+  }
+  if (payload instanceof Uint8Array) {
+    return { valueType: "bytes", byteLength: payload.byteLength };
+  }
+  if (Array.isArray(payload)) {
+    return { valueType: "array", itemCount: payload.length };
+  }
+  if (typeof payload !== "object") {
+    return { valueType: typeof payload };
+  }
+
+  try {
+    const record = payload as Record<string, unknown>;
+    return {
+      valueType: "object",
+      fieldCount: Object.keys(record).length,
+      ...(typeof record._tag === "string" ? { messageTag: errorTag(record) } : {}),
+      ...(typeof record.tag === "string" ? { method: structuralMethod(record.tag) } : {}),
+    };
+  } catch {
+    return { valueType: "object" };
+  }
+}
 
 function formatRequestLogPayload(event: AcpSessionRuntime.AcpSessionRequestLogEvent) {
   return {
-    method: structuralProtocolMethod(event.method),
+    method: structuralMethod(event.method),
     status: event.status,
-    request: summarizeNativeProtocolPayload(event.payload),
-    ...(event.result !== undefined ? { result: summarizeNativeProtocolPayload(event.result) } : {}),
+    request: summarizePayload(event.payload),
+    ...(event.result !== undefined ? { result: summarizePayload(event.result) } : {}),
     ...(event.cause !== undefined
       ? {
           errorTag: causeErrorTag(event.cause),
@@ -28,11 +56,11 @@ function formatRequestLogPayload(event: AcpSessionRuntime.AcpSessionRequestLogEv
   };
 }
 
-export function formatAcpProtocolLogPayload(event: EffectAcpProtocol.AcpProtocolLogEvent) {
+function formatProtocolLogPayload(event: EffectAcpProtocol.AcpProtocolLogEvent) {
   return {
     direction: event.direction,
     stage: event.stage,
-    payload: summarizeNativeProtocolPayload(event.payload),
+    payload: summarizePayload(event.payload),
   };
 }
 
@@ -91,7 +119,7 @@ export const makeAcpNativeLoggerFactory = Effect.fn("makeAcpNativeLoggerFactory"
               logger: (event: EffectAcpProtocol.AcpProtocolLogEvent) =>
                 writeNativeAcpLog({
                   kind: "protocol",
-                  payload: formatAcpProtocolLogPayload(event),
+                  payload: formatProtocolLogPayload(event),
                 }),
             } satisfies NonNullable<AcpSessionRuntime.AcpSessionRuntimeOptions["protocolLogging"]>,
           }

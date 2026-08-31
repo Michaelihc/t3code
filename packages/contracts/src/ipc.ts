@@ -77,13 +77,16 @@ import {
   PreviewAutomationWaitForInput,
 } from "./previewAutomation.ts";
 import type {
-  OrchestrationV2Command,
-  OrchestrationV2DispatchCommandResult,
-  OrchestrationV2GetThreadProjectionInput,
-  OrchestrationV2ShellStreamItem,
-  OrchestrationV2ThreadProjection,
-  OrchestrationV2ThreadStreamItem,
-} from "./orchestrationV2.ts";
+  ClientOrchestrationCommand,
+  OrchestrationGetFullThreadDiffInput,
+  OrchestrationGetFullThreadDiffResult,
+  OrchestrationGetTurnDiffInput,
+  OrchestrationGetTurnDiffResult,
+  OrchestrationShellSnapshot,
+  OrchestrationShellStreamItem,
+  OrchestrationSubscribeThreadInput,
+  OrchestrationThreadStreamItem,
+} from "./orchestration.ts";
 import { EnvironmentId } from "./baseSchemas.ts";
 import { AuthAccessTokenResult, AuthSessionState, AuthWebSocketTicketResult } from "./auth.ts";
 import { AdvertisedEndpoint } from "./remoteAccess.ts";
@@ -581,6 +584,12 @@ export const DesktopPreviewTabIdSchema = Schema.String.check(Schema.isTrimmed())
   Schema.isNonEmpty(),
 );
 
+export const DesktopPreviewAutomationStatusSchema = Schema.Struct({
+  ...PreviewAutomationStatus.fields,
+  tabId: Schema.NullOr(DesktopPreviewTabIdSchema),
+});
+export type DesktopPreviewAutomationStatus = typeof DesktopPreviewAutomationStatusSchema.Type;
+
 export const DesktopPreviewNavStatusSchema = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("Idle") }),
   Schema.Struct({
@@ -1060,6 +1069,8 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 
 export interface DesktopBridge {
   getAppBranding: () => DesktopAppBranding | null;
+  /** The desktop client's OS platform, read from Electron's preload process. */
+  getClientPlatform?: () => string;
   /**
    * The OS locale as a BCP-47 tag, which the renderer cannot read for itself:
    * the packaged app ships only the `en-US` Chromium locale pak, so
@@ -1214,7 +1225,7 @@ export interface DesktopPreviewBridge {
     onFrame: (listener: (frame: DesktopPreviewRecordingFrame) => void) => () => void;
   };
   automation: {
-    status: (tabId: string) => Promise<PreviewAutomationStatus>;
+    status: (tabId: string) => Promise<DesktopPreviewAutomationStatus>;
     snapshot: (tabId: string) => Promise<PreviewAutomationSnapshot>;
     click: (tabId: string, input: PreviewAutomationClickInput) => Promise<void>;
     type: (tabId: string, input: PreviewAutomationTypeInput) => Promise<void>;
@@ -1332,7 +1343,6 @@ export interface EnvironmentApi {
       callback: (status: VcsStatusResult) => void,
       options?: {
         onResubscribe?: () => void;
-        onError?: (message: string) => void;
       },
     ) => () => void;
   };
@@ -1348,26 +1358,24 @@ export interface EnvironmentApi {
       input: ReviewDiffFileContentsInput,
     ) => Promise<ReviewDiffFileContentsResult>;
   };
-  orchestrationV2: {
-    dispatchCommand: (
-      command: OrchestrationV2Command,
-    ) => Promise<OrchestrationV2DispatchCommandResult>;
-    getThreadProjection: (
-      input: OrchestrationV2GetThreadProjectionInput,
-    ) => Promise<OrchestrationV2ThreadProjection>;
+  orchestration: {
+    dispatchCommand: (command: ClientOrchestrationCommand) => Promise<{ sequence: number }>;
+    getTurnDiff: (input: OrchestrationGetTurnDiffInput) => Promise<OrchestrationGetTurnDiffResult>;
+    getFullThreadDiff: (
+      input: OrchestrationGetFullThreadDiffInput,
+    ) => Promise<OrchestrationGetFullThreadDiffResult>;
+    getArchivedShellSnapshot: () => Promise<OrchestrationShellSnapshot>;
     subscribeShell: (
-      callback: (event: OrchestrationV2ShellStreamItem) => void,
+      callback: (event: OrchestrationShellStreamItem) => void,
       options?: {
         onResubscribe?: () => void;
-        onError?: (message: string) => void;
       },
     ) => () => void;
     subscribeThread: (
-      input: OrchestrationV2GetThreadProjectionInput,
-      callback: (event: OrchestrationV2ThreadStreamItem) => void,
+      input: OrchestrationSubscribeThreadInput,
+      callback: (event: OrchestrationThreadStreamItem) => void,
       options?: {
         onResubscribe?: () => void;
-        onError?: (message: string) => void;
       },
     ) => () => void;
   };
