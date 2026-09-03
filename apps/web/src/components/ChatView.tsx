@@ -1398,13 +1398,13 @@ function ChatViewContent(props: ChatViewProps) {
   // Agents surface (#5219): on orchestration-v2 the panel model comes from the
   // projected subagent entities — the v2 leg of the spec's mapper swap. The
   // native-activity fold never runs on this branch.
-  const agentPanelModel = useMemo(
-    () =>
-      deriveAgentPanelModel({
-        agents: [],
-        v2Projection: projectedSubagentsToRuntime(serverProjection?.subagents ?? []),
-      }),
+  const runtimeSubagents = useMemo(
+    () => projectedSubagentsToRuntime(serverProjection?.subagents ?? []),
     [serverProjection?.subagents],
+  );
+  const agentPanelModel = useMemo(
+    () => deriveAgentPanelModel({ agents: [], v2Projection: runtimeSubagents }),
+    [runtimeSubagents],
   );
   const serverVisibleTurnItems = useThreadVisibleTurnItems(routeThreadDetailRef);
   const serverThreadHistory = useThreadHistory(routeThreadDetailRef);
@@ -7394,6 +7394,7 @@ function ChatViewContent(props: ChatViewProps) {
                 skills={activeProviderStatus?.skills ?? EMPTY_PROVIDER_SKILLS}
                 providerStatuses={providerStatuses}
                 runs={serverProjection?.runs ?? EMPTY_PROJECTION_RUNS}
+                subagents={runtimeSubagents}
                 anchorMessageId={timelineAnchorMessageId}
                 onAnchorReady={onTimelineAnchorReady}
                 onAnchorSizeChanged={onTimelineAnchorSizeChanged}

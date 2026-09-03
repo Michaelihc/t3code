@@ -11,6 +11,7 @@ import {
   type ThreadId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
@@ -131,6 +132,10 @@ import { V2ItemInspector } from "./V2ItemInspector";
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { isV2LifecycleItem, V2LifecycleRow, type HandoffTimelineRun } from "./V2LifecycleRow";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
+import {
+  claudeWorkflowScriptFromToolInput,
+  parseClaudeWorkflowScriptMeta,
+} from "./claudeWorkflowPresentation";
 
 import {
   buildInlineTerminalContextText,
@@ -165,6 +170,7 @@ interface TimelineRowSharedState {
   providerStatuses: ReadonlyArray<ServerProvider>;
   /** Projection runs, for recovering handoff models on legacy items. */
   runs: ReadonlyArray<HandoffTimelineRun>;
+  workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -211,6 +217,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
 } as const;
 const EMPTY_TIMELINE_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+const EMPTY_TIMELINE_SUBAGENTS: ReadonlyArray<RuntimeSubagent> = [];
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -260,6 +267,7 @@ interface MessagesTimelineProps {
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerStatuses?: ReadonlyArray<ServerProvider>;
   runs?: ReadonlyArray<HandoffTimelineRun>;
+  subagents?: ReadonlyArray<RuntimeSubagent>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -310,6 +318,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   skills = EMPTY_TIMELINE_SKILLS,
   providerStatuses = EMPTY_TIMELINE_PROVIDERS,
   runs: runsProp = EMPTY_TIMELINE_RUNS,
+  subagents = EMPTY_TIMELINE_SUBAGENTS,
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
@@ -331,6 +340,17 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
+  const workflowByToolUseId = useMemo(
+    () =>
+      new Map(
+        subagents.flatMap((subagent) =>
+          subagent.kind === "workflow" && subagent.toolUseId
+            ? [[subagent.toolUseId, subagent] as const]
+            : [],
+        ),
+      ),
+    [subagents],
+  );
 
   useEffect(() => {
     return () => {
@@ -588,6 +608,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
+      workflowByToolUseId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -611,6 +632,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
+      workflowByToolUseId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -2898,6 +2920,41 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
+function workflowElapsedLabel(workflow: RuntimeSubagent): string | null {
+  if (!workflow.startedAt) return null;
+  const start = Date.parse(workflow.startedAt);
+  const end = workflow.completedAt ? Date.parse(workflow.completedAt) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const seconds = Math.max(0, Math.floor((end - start) / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function WorkflowElapsed({ workflow }: { readonly workflow: RuntimeSubagent }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const live =
+    workflow.status === "pending" || workflow.status === "running" || workflow.status === "waiting";
+
+  useEffect(() => {
+    if (!live || !workflow.startedAt) return;
+    const update = () => {
+      if (textRef.current) textRef.current.textContent = workflowElapsedLabel(workflow);
+    };
+    update();
+    const interval = setInterval(update, 1_000);
+    return () => clearInterval(interval);
+  }, [live, workflow.completedAt, workflow.startedAt]);
+
+  const label = workflowElapsedLabel(workflow);
+  return label ? (
+    <span ref={textRef} className="font-mono text-[10px] tabular-nums">
+      {label}
+    </span>
+  ) : null;
+}
+
 const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
@@ -2907,16 +2964,36 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const activity = use(TimelineRowActivityCtx);
   const ctx = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
+  const projectedItem = workEntry.projectedItem?.item;
+  const workflowScript =
+    projectedItem?.type === "dynamic_tool"
+      ? claudeWorkflowScriptFromToolInput(projectedItem.toolName, projectedItem.input)
+      : null;
+  const workflowMeta = useMemo(
+    () => (workflowScript === null ? null : parseClaudeWorkflowScriptMeta(workflowScript)),
+    [workflowScript],
+  );
+  const workflowToolUseId =
+    projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
+  const workflow = workflowToolUseId ? ctx.workflowByToolUseId.get(workflowToolUseId) : undefined;
   const iconConfig = workToneIcon(workEntry.tone);
-  const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
+  const showFailedIndicator = workflow
+    ? workflow.status === "failed"
+    : workEntryDisplayIndicatesToolFailure(workEntry);
   const showWarningIndicator = false;
   const entryIconName = showFailedIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const toolPresentation = resolveTimelineToolPresentation(workEntry.toolTitle ?? workEntry.label);
   // Command rows read as the command itself; stdout and the full payload
   // stay behind the expander instead of leaking into the collapsed line.
   const command = workEntry.command?.trim().replaceAll(/\s+/g, " ");
-  const heading = command || (toolPresentation?.displayName ?? toolWorkEntryHeading(workEntry));
-  const rawPreview = command ? null : workEntryPreview(workEntry, workspaceRoot);
+  const heading =
+    command ||
+    workflow?.workflowName ||
+    workflowMeta?.name ||
+    (toolPresentation?.displayName ?? toolWorkEntryHeading(workEntry));
+  const rawPreview = command
+    ? null
+    : (workflowMeta?.description ?? workEntryPreview(workEntry, workspaceRoot));
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
@@ -2950,10 +3027,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         ? "text-secondary-label"
         : "font-medium text-foreground/82";
   const turnSettled = !activity.activeTurnInProgress;
-  const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
-  const showSuccessIndicator =
-    workEntryIndicatesToolSuccess(workEntry) ||
-    (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+  const showNeutralIndicator = workflow
+    ? workflow.status === "cancelled" || workflow.status === "interrupted"
+    : !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
+  const showSuccessIndicator = workflow
+    ? workflow.status === "completed"
+    : workEntryIndicatesToolSuccess(workEntry) ||
+      (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+  const showWorkflowLive =
+    workflow?.status === "pending" ||
+    workflow?.status === "running" ||
+    workflow?.status === "waiting";
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
@@ -3012,6 +3096,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
+            {workflow ? <WorkflowElapsed workflow={workflow} /> : null}
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               aria-hidden={!canExpand}
@@ -3027,7 +3112,21 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               ) : null}
             </span>
             <span className="flex size-4 shrink-0 items-center justify-center">
-              {showFailedIndicator ? (
+              {showWorkflowLive ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        className="flex size-4 items-center justify-center"
+                        aria-label="Workflow running"
+                      />
+                    }
+                  >
+                    <span className="size-1.5 rounded-full bg-info" aria-hidden />
+                  </TooltipTrigger>
+                  <TooltipPopup>Workflow running</TooltipPopup>
+                </Tooltip>
+              ) : showFailedIndicator ? (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -3085,6 +3184,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {workEntry.projectedItem ? (
             <V2ItemInspector
               projectedItem={workEntry.projectedItem}
+              workflow={workflow}
               environmentId={ctx.activeThreadEnvironmentId}
               cwd={ctx.markdownCwd}
               workspaceRoot={workspaceRoot}

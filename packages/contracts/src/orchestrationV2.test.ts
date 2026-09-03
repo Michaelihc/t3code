@@ -428,6 +428,18 @@ describe("orchestration V2 contracts", () => {
       prompt: "Inspect package.json",
       title: "Package audit",
       model: "gpt-5.4",
+      kind: "workflow_agent",
+      role: "researcher",
+      usage: { totalTokens: 1_024, toolUses: 3, durationMs: 2_500 },
+      lastToolName: "Read",
+      toolUseId: "toolu-workflow-1",
+      parentAgentId: "node-workflow-1",
+      agentIndex: 2,
+      phaseIndex: 1,
+      phaseTitle: "Survey",
+      attempt: 2,
+      workflowName: "package-survey",
+      phases: [{ index: 1, title: "Survey" }],
       status: "completed",
       progress: "Inspecting package metadata",
       result: "Package is private.",
@@ -463,6 +475,10 @@ describe("orchestration V2 contracts", () => {
 
     expect(subagent.origin).toBe("provider_native");
     expect(subagent.progress).toBe("Inspecting package metadata");
+    expect(subagent.kind).toBe("workflow_agent");
+    expect(subagent.usage?.totalTokens).toBe(1_024);
+    expect(subagent.parentAgentId).toBe("node-workflow-1");
+    expect(subagent.phases?.[0]?.title).toBe("Survey");
     expect(subagent.childThreadId).toBeNull();
     expect(turnItem.type).toBe("subagent");
     if (turnItem.type !== "subagent") throw new Error("expected subagent item");

@@ -46,6 +46,7 @@ import {
 } from "./providerPolicy.ts";
 import { ProviderDriverKind, ProviderInstanceId } from "./providerInstance.ts";
 import { OrchestrationProjectShell } from "./orchestrationProject.ts";
+import { RuntimeTaskUsage, TaskRunHandles, TaskWorkflowPhase } from "./providerRuntime.ts";
 
 export const OrchestrationV2Actor = Schema.Literals(["user", "agent", "system"]);
 export type OrchestrationV2Actor = typeof OrchestrationV2Actor.Type;
@@ -505,6 +506,23 @@ export const OrchestrationV2Subagent = Schema.Struct({
   prompt: Schema.String,
   title: Schema.NullOr(Schema.String),
   model: Schema.NullOr(Schema.String),
+  /** Provider-neutral identity and telemetry for native workflow projections. */
+  kind: Schema.optional(Schema.Literals(["subagent", "workflow", "workflow_agent"])),
+  role: Schema.optional(TrimmedNonEmptyString),
+  effort: Schema.optional(TrimmedNonEmptyString),
+  usage: Schema.optional(RuntimeTaskUsage),
+  lastToolName: Schema.optional(TrimmedNonEmptyString),
+  error: Schema.optional(Schema.String),
+  outputFile: Schema.optional(TrimmedNonEmptyString),
+  toolUseId: Schema.optional(TrimmedNonEmptyString),
+  parentAgentId: Schema.optional(NodeId),
+  agentIndex: Schema.optional(NonNegativeInt),
+  phaseIndex: Schema.optional(NonNegativeInt),
+  phaseTitle: Schema.optional(TrimmedNonEmptyString),
+  attempt: Schema.optional(NonNegativeInt),
+  workflowName: Schema.optional(TrimmedNonEmptyString),
+  phases: Schema.optional(Schema.Array(TaskWorkflowPhase)),
+  runHandles: Schema.optional(TaskRunHandles),
   // Parent-wake policy for app-owned tasks: "always" offers a continuation on
   // every terminal (async delegations; queue_after_active sequences it behind
   // a live parent run), "settled_only" offers only when the parent has no

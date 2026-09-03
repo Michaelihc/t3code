@@ -3419,6 +3419,165 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("projects Claude workflow progress as a coordinator and live member roster", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-sandbox-survey";
+        const toolUseId = "toolu-workflow-sandbox-survey";
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-progress"),
+            text: "Run the sandbox survey workflow.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Survey the sandbox project",
+            task_type: "local_workflow",
+            workflow_name: "sandbox-project-survey",
+            uuid: "00000000-0000-4000-8000-000000000151",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "2 agents active",
+            summary: "Surveying server and web paths",
+            usage: { total_tokens: 5_000, tool_uses: 9, duration_ms: 41_000 },
+            last_tool_name: "Read",
+            workflow_progress: [
+              { type: "workflow_phase", index: 1, title: "Survey", kind: "parallel" },
+              { type: "workflow_phase", index: 2, title: "Synthesize", kind: "serial" },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentId: "agent-server",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "progress",
+                startedAt: 1_788_400_000_000,
+                queuedAt: 1_788_400_000_000,
+                attempt: 1,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_041_000,
+                tokens: 3_000,
+                toolCalls: 6,
+                durationMs: 41_000,
+              },
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                queuedAt: 1_788_400_001_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastProgressAt: 1_788_400_035_000,
+                tokens: 2_000,
+                toolCalls: 3,
+                durationMs: 33_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000152",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+
+        yield* awaitUntil(() => subagentEvents().length >= 4, "workflow roster projected");
+        const coordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .find((subagent) => subagent.kind === "workflow" && subagent.phases !== undefined);
+        assert.equal(coordinator?.workflowName, "sandbox-project-survey");
+        assert.equal(coordinator?.toolUseId, toolUseId);
+        assert.deepEqual(coordinator?.phases, [
+          { index: 1, title: "Survey" },
+          { index: 2, title: "Synthesize" },
+        ]);
+        assert.deepEqual(coordinator?.usage, {
+          totalTokens: 5_000,
+          toolUses: 9,
+          durationMs: 41_000,
+        });
+
+        const members = subagentEvents()
+          .map((event) => event.subagent)
+          .filter((subagent) => subagent.kind === "workflow_agent");
+        assert.lengthOf(members, 2);
+        assert.deepInclude(members[0], {
+          title: "server-surveyor",
+          role: "Explore",
+          model: "claude-sonnet-4-6",
+          status: "running",
+          parentAgentId: coordinator?.id,
+          phaseIndex: 1,
+          phaseTitle: "Survey",
+          attempt: 1,
+          lastToolName: "Read",
+          progress: "Inspecting ClaudeAdapterV2",
+          usage: { totalTokens: 3_000, toolUses: 6, durationMs: 41_000 },
+        });
+        assert.deepInclude(members[1], {
+          title: "web-surveyor",
+          status: "completed",
+          attempt: 2,
+          result: "Located the existing workflow panel.",
+        });
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "completed",
+            output_file: "/tmp/workflow-sandbox-survey.output",
+            summary: "Survey complete",
+            uuid: "00000000-0000-4000-8000-000000000153",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow turn terminal");
+        const terminalCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.equal(terminalCoordinator?.status, "completed");
+        assert.equal(terminalCoordinator?.outputFile, "/tmp/workflow-sandbox-survey.output");
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("wakes and hydrates a subagent that completes after the root turn settled", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -4,17 +4,23 @@ import type {
   RunId,
   ThreadId,
 } from "@t3tools/contracts";
-import { ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
-import { memo, type ReactNode } from "react";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
+import { ChevronDownIcon, ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
+import { memo, useMemo, useState, type ReactNode } from "react";
 
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
 import { Button } from "../ui/button";
 import ChatMarkdown from "../ChatMarkdown";
+import {
+  claudeWorkflowScriptFromToolInput,
+  parseClaudeWorkflowScriptMeta,
+} from "./claudeWorkflowPresentation";
 import { resolveExternalWebLinkHref } from "./externalLinkContextMenu";
 
 interface V2ItemInspectorProps {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+  readonly workflow?: Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt"> | undefined;
   readonly environmentId: EnvironmentId;
   readonly cwd?: string | undefined;
   readonly workspaceRoot?: string | undefined;
@@ -60,6 +66,87 @@ function StructuredValue({ value }: { readonly value: unknown }) {
   );
 }
 
+function markdownCodeFence(source: string): string {
+  const longestRun = Math.max(0, ...Array.from(source.matchAll(/`+/g), (match) => match[0].length));
+  const fence = "`".repeat(Math.max(3, longestRun + 1));
+  return `${fence}typescript\n${source}\n${fence}`;
+}
+
+function WorkflowToolInspector(props: {
+  readonly item: Extract<OrchestrationV2ProjectedTurnItem["item"], { type: "dynamic_tool" }>;
+  readonly script: string;
+  readonly environmentId: EnvironmentId;
+  readonly threadId: ThreadId;
+  readonly cwd?: string | undefined;
+}) {
+  const [scriptExpanded, setScriptExpanded] = useState(false);
+  const meta = useMemo(() => parseClaudeWorkflowScriptMeta(props.script), [props.script]);
+  const inputWithoutScript =
+    typeof props.item.input === "object" && props.item.input !== null
+      ? Object.fromEntries(Object.entries(props.item.input).filter(([key]) => key !== "script"))
+      : undefined;
+  const hasOtherInput = inputWithoutScript && Object.keys(inputWithoutScript).length > 0;
+
+  return (
+    <div className="space-y-2">
+      {meta?.description ? (
+        <p className="max-w-2xl text-xs leading-relaxed text-muted-foreground">
+          {meta.description}
+        </p>
+      ) : null}
+      {meta && meta.phases.length > 0 ? (
+        <ol className="space-y-1.5 border-s border-border/55 ps-3">
+          {meta.phases.map((phase, index) => (
+            <li
+              key={`${phase.title}:${phase.detail ?? ""}`}
+              className="grid grid-cols-[1.25rem_minmax(0,1fr)] gap-1"
+            >
+              <span className="font-mono text-[10px] leading-5 text-muted-foreground/60">
+                {index + 1}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-xs font-medium text-foreground/85">{phase.title}</span>
+                {phase.detail ? (
+                  <span className="block text-[11px] leading-relaxed text-muted-foreground">
+                    {phase.detail}
+                  </span>
+                ) : null}
+              </span>
+            </li>
+          ))}
+        </ol>
+      ) : null}
+      {hasOtherInput ? <StructuredValue value={inputWithoutScript} /> : null}
+      {props.item.output !== undefined ? <StructuredValue value={props.item.output} /> : null}
+      <div className="rounded-md border border-border/45 bg-background/40">
+        <Button
+          type="button"
+          size="xs"
+          variant="ghost"
+          className="w-full justify-start rounded-md px-2 text-muted-foreground"
+          aria-expanded={scriptExpanded}
+          onClick={() => setScriptExpanded((expanded) => !expanded)}
+        >
+          <ChevronDownIcon
+            className={`size-3 transition-transform ${scriptExpanded ? "rotate-180" : ""}`}
+            aria-hidden
+          />
+          {scriptExpanded ? "Hide workflow script" : "Show workflow script"}
+        </Button>
+        {scriptExpanded ? (
+          <div className="max-h-96 overflow-auto border-t border-border/45 px-2 py-1.5 text-[11px]">
+            <ChatMarkdown
+              text={markdownCodeFence(props.script)}
+              cwd={props.cwd}
+              threadRef={{ environmentId: props.environmentId, threadId: props.threadId }}
+            />
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
 export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspectorProps) {
   const { item } = props.projectedItem;
   const support = useV2ItemSupport({
@@ -67,7 +154,13 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     sourceThreadId: props.projectedItem.sourceThreadId,
     sourceItemId: props.projectedItem.sourceItemId,
   });
-  const duration = durationLabel(item.startedAt, item.completedAt);
+  const duration = props.workflow
+    ? durationLabel(props.workflow.startedAt, props.workflow.completedAt)
+    : durationLabel(item.startedAt, item.completedAt);
+  const workflowScript =
+    item.type === "dynamic_tool"
+      ? claudeWorkflowScriptFromToolInput(item.toolName, item.input)
+      : null;
   const latestAttempt = support.attempts.at(-1) ?? null;
   const runtimeRequest = support.runtimeRequest;
 
@@ -75,7 +168,7 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     <div className="space-y-2 text-xs" data-v2-item-inspector={item.type}>
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-border/45 bg-muted/15 p-2 sm:grid-cols-3">
         <DataField label="Item">{item.type}</DataField>
-        <DataField label="Status">{item.status}</DataField>
+        <DataField label="Status">{props.workflow?.status ?? item.status}</DataField>
         {duration ? <DataField label="Duration">{duration}</DataField> : null}
         {support.run ? <DataField label="Run">{support.run.status}</DataField> : null}
         {latestAttempt ? (
@@ -224,7 +317,15 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         </ul>
       ) : null}
 
-      {item.type === "dynamic_tool" ? (
+      {item.type === "dynamic_tool" && workflowScript !== null ? (
+        <WorkflowToolInspector
+          item={item}
+          script={workflowScript}
+          environmentId={props.environmentId}
+          threadId={props.projectedItem.sourceThreadId}
+          cwd={props.cwd}
+        />
+      ) : item.type === "dynamic_tool" ? (
         <div className="grid gap-2 sm:grid-cols-2">
           <div>
             <p className="mb-1 text-[10px] font-medium tracking-wide uppercase text-muted-foreground">
