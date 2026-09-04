@@ -5110,9 +5110,23 @@ export function makeClaudeAdapterV2(
               message,
               activeContext: context,
             });
+            const registeredWorkflow = (yield* Ref.get(sessionSubagentsByTaskId)).get(
+              message.task_id,
+            );
+            // Multiple terminal notifications can already be queued when an
+            // idle workflow wakes a continuation. The first one owns the
+            // terminal edge and releases the workflow context; later copies
+            // must not re-attribute the same persisted item to the continuation.
+            const isDuplicateTerminalWorkflowNotification =
+              registeredWorkflow?.task.kind === "workflow" &&
+              registeredWorkflow.task.status !== "running";
             const notificationContext =
               (yield* Ref.get(sessionWorkflowContextByTaskId)).get(message.task_id) ?? context;
-            if (!wasBackgroundTask && !notificationContext.ignoredTaskIds.has(message.task_id)) {
+            if (
+              !wasBackgroundTask &&
+              !isDuplicateTerminalWorkflowNotification &&
+              !notificationContext.ignoredTaskIds.has(message.task_id)
+            ) {
               const outputFile = trimmedClaudeWorkflowString(message.output_file);
               const status =
                 message.status === "completed"

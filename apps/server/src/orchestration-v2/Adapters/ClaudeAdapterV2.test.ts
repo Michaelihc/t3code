@@ -4260,6 +4260,20 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "completed",
+            output_file: "/tmp/workflow-sandbox-survey.output",
+            summary: "Survey complete",
+            uuid: "00000000-0000-4000-8000-00000000015e",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
         yield* takeReceipt(
           harness.subagentReceipts,
           (event) =>
@@ -4279,6 +4293,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         yield* Queue.take(harness.terminalReceipts);
         assert.equal(harness.terminalEvents()[1]?.status, "failed");
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow" && event.subagent.status === "completed",
+          ).length,
+          1,
+        );
         const terminalCoordinator = subagentEvents()
           .map((event) => event.subagent)
           .findLast((subagent) => subagent.kind === "workflow");
