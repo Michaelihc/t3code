@@ -3449,6 +3449,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
               event.type === "subagent.updated",
           );
+        const nodeEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
+              event.type === "node.updated",
+          );
 
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -4243,24 +4248,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         yield* Queue.offer(
           harness.sdkMessages,
-          makeResultFrame({
-            uuid: "00000000-0000-4000-8000-00000000015b",
-            result: "The workflow is still finishing.",
-            subtype: "error_during_execution",
-            isError: true,
-            errors: ["The unrelated status turn failed."],
-          }),
-        );
-        yield* Queue.take(harness.terminalReceipts);
-        assert.equal(harness.terminalEvents()[1]?.status, "failed");
-        assert.equal(
-          subagentEvents()
-            .map((event) => event.subagent)
-            .findLast((subagent) => subagent.kind === "workflow")?.status,
-          "running",
-        );
-        yield* Queue.offer(
-          harness.sdkMessages,
           claudeSdkFrame({
             type: "system",
             subtype: "task_notification",
@@ -4273,28 +4260,25 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* Queue.take(harness.continuationReceipts);
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 3 &&
+            event.subagent.status === "completed",
+        );
         yield* Queue.offer(
           harness.sdkMessages,
           makeResultFrame({
-            uuid: "00000000-0000-4000-8000-000000000158",
-            result: "The workflow finished its delayed work.",
-          }),
-        );
-        yield* harness.runtime.startTurn(
-          makeClaudeTestTurnInput({
-            threadId: harness.threadId,
-            providerThread: harness.providerThread,
-            now,
-            attemptId: RunAttemptId.make("attempt-claude-workflow-continuation"),
-            text: "Workflow completed.",
-            attachments: [],
-            providerTurnOrdinal: 3,
-            messageCreatedBy: "agent",
-            messageCreationSource: "provider",
+            uuid: "00000000-0000-4000-8000-00000000015b",
+            result: "The workflow is still finishing.",
+            subtype: "error_during_execution",
+            isError: true,
+            errors: ["The unrelated status turn failed."],
           }),
         );
         yield* Queue.take(harness.terminalReceipts);
+        assert.equal(harness.terminalEvents()[1]?.status, "failed");
         const terminalCoordinator = subagentEvents()
           .map((event) => event.subagent)
           .findLast((subagent) => subagent.kind === "workflow");
@@ -4317,6 +4301,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(latestMembers.get(1)?.runId, members[0]?.runId);
         assert.equal(latestMembers.get(2)?.runId, members[1]?.runId);
         assert.equal(latestMembers.get(3)?.runId, members[0]?.runId);
+        const ownerProviderTurnId = nodeEvents().find((event) => event.node.id === members[0]?.id)
+          ?.node.providerTurnId;
+        assert.isNotNull(ownerProviderTurnId);
+        assert.equal(
+          nodeEvents().findLast((event) => event.node.id === latestMembers.get(3)?.id)?.node
+            .providerTurnId,
+          ownerProviderTurnId,
+        );
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),

@@ -5110,7 +5110,9 @@ export function makeClaudeAdapterV2(
               message,
               activeContext: context,
             });
-            if (!wasBackgroundTask && !context.ignoredTaskIds.has(message.task_id)) {
+            const notificationContext =
+              (yield* Ref.get(sessionWorkflowContextByTaskId)).get(message.task_id) ?? context;
+            if (!wasBackgroundTask && !notificationContext.ignoredTaskIds.has(message.task_id)) {
               const outputFile = trimmedClaudeWorkflowString(message.output_file);
               const status =
                 message.status === "completed"
@@ -5119,7 +5121,7 @@ export function makeClaudeAdapterV2(
                     ? "cancelled"
                     : "failed";
               yield* updateClaudeSubagentNode({
-                context,
+                context: notificationContext,
                 taskId: message.task_id,
                 ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
                 result: message.summary,
@@ -5127,7 +5129,7 @@ export function makeClaudeAdapterV2(
                 status,
               });
               yield* terminalizeClaudeWorkflowMembers({
-                context,
+                context: notificationContext,
                 taskId: message.task_id,
                 status,
               });
