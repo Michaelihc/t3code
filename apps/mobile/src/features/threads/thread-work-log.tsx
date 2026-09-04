@@ -4,7 +4,15 @@ import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { MaskedView } from "@expo/ui/community/masked-view";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
-import { useEffect, useId, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ComponentProps,
+} from "react";
 import { AccessibilityInfo, AppState, type ColorValue, Pressable, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
@@ -41,9 +49,10 @@ import {
 } from "./thread-activity-row-presentation";
 import {
   workflowElapsedLabel,
-  workflowGroupForProjectedItem,
   workflowIsLive,
   workflowMembers,
+  workflowToolUseIdForProjectedItem,
+  type MobileWorkflowGroupStore,
 } from "./mobile-workflow-presentation";
 
 const SHIMMER_WIDTH = 72;
@@ -506,7 +515,7 @@ export function visibleWorkLogActivities(
 
 export function ThreadWorkLog(props: {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
-  readonly workflowGroups: ReadonlyArray<AgentPanelWorkflowGroup>;
+  readonly workflowStore: MobileWorkflowGroupStore;
   readonly copiedRowId: string | null;
   readonly currentThreadId: ThreadId;
   readonly environmentId: EnvironmentId;
@@ -516,6 +525,24 @@ export function ThreadWorkLog(props: {
   readonly onToggleRow: (rowId: string) => void;
   readonly workspaceRoot?: string | null;
 }) {
+  const workflowToolUseIds = useMemo(
+    () =>
+      props.activities.flatMap((activity) => {
+        const toolUseId = workflowToolUseIdForProjectedItem(activity.projectedItem);
+        return toolUseId === null ? [] : [toolUseId];
+      }),
+    [props.activities],
+  );
+  const subscribeToWorkflows = useCallback(
+    (listener: () => void) => props.workflowStore.subscribe(workflowToolUseIds, listener),
+    [props.workflowStore, workflowToolUseIds],
+  );
+  const getWorkflowSnapshot = useCallback(
+    () => props.workflowStore.snapshot(workflowToolUseIds),
+    [props.workflowStore, workflowToolUseIds],
+  );
+  useSyncExternalStore(subscribeToWorkflows, getWorkflowSnapshot, getWorkflowSnapshot);
+
   const rows = visibleWorkLogActivities(props.activities).map((activity) => ({
     ...activity,
     detail: compactActivityDetail(activity.detail),
@@ -529,10 +556,7 @@ export function ThreadWorkLog(props: {
     <View className="-mx-1 mb-1 px-1 py-0">
       <View className="gap-px">
         {rows.map((row) => {
-          const workflowGroup = workflowGroupForProjectedItem(
-            row.projectedItem,
-            props.workflowGroups,
-          );
+          const workflowGroup = props.workflowStore.groupForProjectedItem(row.projectedItem);
           const expanded = props.expandedRows[row.id] ?? false;
           const canExpand = row.canExpand || workflowGroup !== null;
           const displayText = workflowGroup

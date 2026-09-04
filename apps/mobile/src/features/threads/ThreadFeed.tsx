@@ -132,6 +132,7 @@ import {
   ThreadWorkLog,
 } from "./thread-work-log";
 import type { AgentPanelWorkflowGroup } from "@t3tools/client-runtime/state/subagentRuntime";
+import { MobileWorkflowGroupStore } from "./mobile-workflow-presentation";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { assetEnvironment, useAssetUrl, useAssetUrlState } from "../../state/assets";
@@ -1297,12 +1298,7 @@ function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
   props: Pick<
     ThreadFeedProps,
-    | "environmentId"
-    | "onUseArtifactTemplate"
-    | "skills"
-    | "threadId"
-    | "workflowGroups"
-    | "workspaceRoot"
+    "environmentId" | "onUseArtifactTemplate" | "skills" | "threadId" | "workspaceRoot"
   > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -1322,6 +1318,7 @@ function renderFeedEntry(
     readonly reviewCommentBubbleWidth: number;
     readonly userBubbleMaxWidth: number;
     readonly threadTitle: string;
+    readonly workflowStore: MobileWorkflowGroupStore;
   },
 ) {
   const entry = info.item;
@@ -1554,7 +1551,7 @@ function renderFeedEntry(
   return (
     <ThreadWorkLog
       activities={entry.activities}
-      workflowGroups={props.workflowGroups}
+      workflowStore={props.workflowStore}
       copiedRowId={props.copiedRowId}
       currentThreadId={props.threadId}
       environmentId={props.environmentId}
@@ -1872,6 +1869,15 @@ function ThreadFeedPlaceholder(props: {
 
 export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
   const navigation = useNavigation();
+  const workflowStoreRef = useRef<MobileWorkflowGroupStore | null>(null);
+  if (workflowStoreRef.current === null) {
+    workflowStoreRef.current = new MobileWorkflowGroupStore(props.workflowGroups);
+  }
+  const workflowStore = workflowStoreRef.current;
+  useLayoutEffect(
+    () => workflowStore.replace(props.workflowGroups),
+    [props.workflowGroups, workflowStore],
+  );
   const copyFeedbackTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
@@ -2417,7 +2423,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         {renderFeedEntry(info, {
           environmentId: props.environmentId,
           threadId: props.threadId,
-          workflowGroups: props.workflowGroups,
+          workflowStore,
           copiedRowId,
           expandedWorkRows,
           terminalAssistantMessageIds,
@@ -2462,12 +2468,12 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onToggleWorkRow,
       props.environmentId,
       props.threadId,
-      props.workflowGroups,
       props.threadTitle,
       props.onUseArtifactTemplate,
       props.skills,
       props.workspaceRoot,
       renderMarkdownImage,
+      workflowStore,
     ],
   );
 

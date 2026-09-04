@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, it, vi } from "vite-plus/test";
 
 import type {
   AgentPanelWorkflowGroup,
@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import {
+  MobileWorkflowGroupStore,
   workflowElapsedLabel,
   workflowGroupForProjectedItem,
   workflowMembers,
@@ -102,5 +103,33 @@ describe("mobile workflow presentation", () => {
 
   it("uses the coordinator lifecycle rather than the early tool completion", () => {
     expect(workflowElapsedLabel(workflow)).toBe("1m 41s");
+  });
+
+  it("notifies only rows subscribed to the workflow that changed", () => {
+    const store = new MobileWorkflowGroupStore([group]);
+    const surveyListener = vi.fn();
+    const otherListener = vi.fn();
+    const unsubscribeSurvey = store.subscribe(["toolu_workflow"], surveyListener);
+    const unsubscribeOther = store.subscribe(["toolu_other"], otherListener);
+    const surveySnapshot = store.snapshot(["toolu_workflow"]);
+
+    const updatedGroup = {
+      ...group,
+      workflow: runtimeSubagent({
+        ...workflow,
+        status: "running",
+        completedAt: null,
+        updatedAt: "2026-09-04T00:01:42.000Z",
+      }),
+    } satisfies AgentPanelWorkflowGroup;
+    store.replace([updatedGroup]);
+
+    expect(store.snapshot(["toolu_workflow"])).toBeGreaterThan(surveySnapshot);
+    expect(store.groupForProjectedItem(projectedWorkflow())).toBe(updatedGroup);
+    expect(surveyListener).toHaveBeenCalledTimes(1);
+    expect(otherListener).not.toHaveBeenCalled();
+
+    unsubscribeSurvey();
+    unsubscribeOther();
   });
 });
