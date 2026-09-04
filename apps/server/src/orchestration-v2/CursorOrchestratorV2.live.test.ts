@@ -19,6 +19,8 @@ import * as HostPowerMonitor from "../background/HostPowerMonitor.ts";
 import { ServerConfig } from "../config.ts";
 import { SqlitePersistenceMemory } from "../persistence/Layers/Sqlite.ts";
 import * as ModelManifest from "../provider/ModelManifest.ts";
+import { AntigravityInstallation } from "../provider/AntigravityInstallation.ts";
+import * as CodexResetCredit from "../provider/Layers/codexResetCredit.ts";
 import { ProviderInstanceRegistryHydrationLive } from "../provider/Layers/ProviderInstanceRegistryHydration.ts";
 import {
   NoOpProviderEventLoggers,
@@ -66,6 +68,12 @@ const providerInstanceRegistryLayer = ProviderInstanceRegistryHydrationLive.pipe
       OpenCodeRuntimeLive.pipe(Layer.provide(NodeServices.layer)),
       Layer.succeed(ProviderEventLoggers, NoOpProviderEventLoggers),
       ModelManifest.layerTest,
+      AntigravityInstallation.layer.pipe(
+        Layer.provide(serverConfigLayer),
+        Layer.provide(FetchHttpClient.layer),
+        Layer.provide(NodeServices.layer),
+      ),
+      CodexResetCredit.layerTest,
     ),
   ),
 );

@@ -133,6 +133,9 @@ export type ProviderSessionManagerV2Error = typeof ProviderSessionManagerV2Error
 
 export interface ProviderSessionManagerV2Shape {
   readonly shutdown: Effect.Effect<void>;
+  readonly closeProviderInstance: (
+    providerInstanceId: ProviderInstanceId,
+  ) => Effect.Effect<void, ProviderSessionManagerV2Error>;
   readonly open: (input: {
     readonly threadId: ThreadId;
     readonly providerSessionId: ProviderSessionId;
@@ -1535,6 +1538,21 @@ export const layerWithOptions = (
               return exposedRuntime;
             }),
           ),
+        closeProviderInstance: (providerInstanceId) =>
+          Effect.gen(function* () {
+            const active = [...(yield* Ref.get(sessions)).values()].filter(
+              (entry) => entry.runtime.instanceId === providerInstanceId,
+            );
+            yield* Effect.forEach(
+              active,
+              (entry) =>
+                releaseEntry({
+                  providerSessionId: entry.runtime.providerSessionId,
+                  reason: "manual_shutdown",
+                }),
+              { discard: true },
+            );
+          }),
         get: (providerSessionId) =>
           Effect.gen(function* () {
             const entry = (yield* Ref.get(sessions)).get(sessionKey(providerSessionId));

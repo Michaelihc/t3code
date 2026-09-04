@@ -147,6 +147,7 @@ function makeHarness(options: HarnessOptions = {}) {
               workspaceRoot: project.workspaceRoot,
               defaultModelSelection: project.defaultModelSelection,
               defaultThreadEnvMode: null,
+              autoPull: false,
               scripts: project.scripts,
               createdAt: project.createdAt,
               updatedAt: project.updatedAt,

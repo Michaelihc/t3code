@@ -12,6 +12,7 @@ const capabilities = (input?: {
   readonly steer?: boolean;
   readonly restartSteer?: boolean;
   readonly nativeFork?: boolean;
+  readonly activeFork?: boolean;
   readonly portableFork?: boolean;
 }) =>
   ({
@@ -23,6 +24,7 @@ const capabilities = (input?: {
     threads: {
       canForkThread: input?.nativeFork ?? false,
       canForkFromTurn: input?.nativeFork ?? false,
+      canForkActiveTurn: input?.activeFork ?? false,
     },
     identity: { nativeThreadIds: input?.nativeFork ? "strong" : "none" },
     context: { supportsFullThreadHandoff: input?.portableFork ?? false },
@@ -311,6 +313,28 @@ describe("thread workflows", () => {
         projectedItem: {
           item: { type: "assistant_message", runId: "run", status: "running" },
         } as never,
+      }),
+    ).toBe(false);
+    expect(
+      canForkProjectedAssistantItem({
+        projectedItem: {
+          item: { type: "assistant_message", runId: "run", status: "running" },
+        } as never,
+        capabilities: capabilities({ nativeFork: true, activeFork: true }),
+      }),
+    ).toBe(true);
+    expect(
+      canForkProjectedAssistantItem({
+        projectedItem,
+        activeRunId: "run" as never,
+        capabilities: capabilities({ nativeFork: true, activeFork: true }),
+      }),
+    ).toBe(true);
+    expect(
+      canForkProjectedAssistantItem({
+        projectedItem,
+        activeRunId: "run" as never,
+        capabilities: capabilities({ nativeFork: true }),
       }),
     ).toBe(false);
   });

@@ -3,6 +3,7 @@ import type {
   OrchestrationV2ProjectedTurnItem,
   OrchestrationV2ProviderCapabilities,
   OrchestrationV2ThreadProjection,
+  RunId,
 } from "@t3tools/contracts";
 import { copySorted } from "@t3tools/shared/Array";
 
@@ -127,11 +128,20 @@ export function deriveThreadQueueWorkflowState(projection: Projection): ThreadQu
 export function canForkProjectedAssistantItem(input: {
   readonly projectedItem: OrchestrationV2ProjectedTurnItem;
   readonly capabilities?: OrchestrationV2ProviderCapabilities | undefined;
+  readonly activeRunId?: RunId | null | undefined;
 }): boolean {
   const item = input.projectedItem.item;
-  if (item.type !== "assistant_message" || item.runId === null || item.status !== "completed") {
+  if (item.type !== "assistant_message" || item.runId === null) {
     return false;
   }
+  if (
+    item.runId === input.activeRunId ||
+    item.status === "running" ||
+    item.status === "waiting"
+  ) {
+    return input.capabilities?.threads.canForkActiveTurn === true;
+  }
+  if (item.status !== "completed") return false;
   if (input.capabilities === undefined) {
     // Historical and inherited rows may outlive their provider-session record.
     // Keep the portable server-side fallback available when capability evidence

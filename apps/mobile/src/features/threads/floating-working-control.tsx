@@ -1,6 +1,6 @@
 import { GlassContainer, GlassView } from "expo-glass-effect";
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Text as SystemText, View } from "react-native";
+import { Text as SystemText, View } from "react-native";
 import Animated, {
   Easing,
   FadeIn,
@@ -13,7 +13,6 @@ import Animated, {
 import { withUniwind } from "uniwind";
 
 import { AppText as Text } from "../../components/AppText";
-import { SymbolView } from "../../components/AppSymbol";
 import { ControlPill } from "../../components/ControlPill";
 import { NATIVE_LIQUID_GLASS_SUPPORTED } from "../../native/native-glass";
 
@@ -41,18 +40,9 @@ const AnimatedGlassView = Animated.createAnimatedComponent(UniwindGlassView);
 
 export const FLOATING_WORKING_CONTROL_COVERAGE = CONTROL_HEIGHT + CONTROL_COMPOSER_GAP;
 
-/**
- * What the floating pill says. Syncing and working share one element so the
- * label swaps in place instead of one pill fading out for another.
- */
-export type FloatingWorkingStatus =
-  | { readonly kind: "working"; readonly startedAt: string }
-  | { readonly kind: "syncing"; readonly label: string }
-  | { readonly kind: "compacting" };
-
 export function FloatingWorkingControl(props: {
   readonly colorScheme: "light" | "dark";
-  readonly status: FloatingWorkingStatus | null;
+  readonly startedAt: string | null;
   readonly showScrollToEnd: boolean;
   readonly onScrollToEnd: () => void;
 }) {
@@ -72,7 +62,7 @@ export function FloatingWorkingControl(props: {
     opacity: separationProgress.value,
   }));
 
-  if (props.status === null && !props.showScrollToEnd) {
+  if (props.startedAt === null && !props.showScrollToEnd) {
     return null;
   }
 
@@ -84,7 +74,7 @@ export function FloatingWorkingControl(props: {
       entering={NATIVE_LIQUID_GLASS_SUPPORTED ? undefined : CONTROL_ENTERING}
       exiting={NATIVE_LIQUID_GLASS_SUPPORTED ? undefined : CONTROL_EXITING}
     >
-      {props.status !== null && NATIVE_LIQUID_GLASS_SUPPORTED ? (
+      {props.startedAt !== null && NATIVE_LIQUID_GLASS_SUPPORTED ? (
         <UniwindGlassContainer
           spacing={GLASS_MERGE_SPACING}
           pointerEvents="box-none"
@@ -97,7 +87,7 @@ export function FloatingWorkingControl(props: {
             className="h-11 justify-center overflow-hidden rounded-full"
             style={timerStyle}
           >
-            <FloatingStatusLabel status={props.status} />
+            <WorkingDuration startedAt={props.startedAt} />
           </AnimatedGlassView>
 
           <AnimatedGlassView
@@ -115,14 +105,14 @@ export function FloatingWorkingControl(props: {
             </Animated.View>
           </AnimatedGlassView>
         </UniwindGlassContainer>
-      ) : props.status !== null ? (
+      ) : props.startedAt !== null ? (
         <View pointerEvents="box-none" className="flex-row items-center gap-4">
           <Animated.View
             pointerEvents="none"
             className="h-11 justify-center rounded-full border border-border bg-card shadow-md shadow-black/10"
             style={timerStyle}
           >
-            <FloatingStatusLabel status={props.status} />
+            <WorkingDuration startedAt={props.startedAt} />
           </Animated.View>
 
           <Animated.View
@@ -161,43 +151,6 @@ export function FloatingWorkingControl(props: {
       )}
     </Animated.View>
   );
-}
-
-function CompactingLabel() {
-  return (
-    <View
-      accessible
-      accessibilityLabel="Compacting"
-      className="h-11 flex-row items-center gap-1.5 px-4"
-    >
-      <SymbolView
-        name="arrow.down.right.and.arrow.up.left"
-        size={13}
-        tintColorClassName="foreground"
-        type="monochrome"
-      />
-      <Text className="font-t3-medium text-xs text-foreground">Compacting…</Text>
-    </View>
-  );
-}
-
-function FloatingStatusLabel(props: { readonly status: FloatingWorkingStatus }) {
-  if (props.status.kind === "syncing") {
-    return (
-      <View
-        accessible
-        accessibilityLabel={props.status.label}
-        className="h-11 flex-row items-center gap-2 px-4"
-      >
-        <ActivityIndicator size="small" colorClassName="accent-icon-muted" />
-        <Text className="font-t3-medium text-xs text-foreground">{props.status.label}</Text>
-      </View>
-    );
-  }
-  if (props.status.kind === "compacting") {
-    return <CompactingLabel />;
-  }
-  return <WorkingDuration startedAt={props.status.startedAt} />;
 }
 
 function WorkingDuration(props: { readonly startedAt: string }) {

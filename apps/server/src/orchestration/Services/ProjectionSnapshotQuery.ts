@@ -6,7 +6,7 @@
  *
  * @module ProjectionSnapshotQuery
  */
-import type { CheckpointRef, ProjectId, ThreadId } from "@t3tools/contracts";
+import type { ApprovalRequestId, CheckpointRef, ProjectId, ThreadId } from "@t3tools/contracts";
 import type {
   OrchestrationCheckpointSummary,
   OrchestrationProject,

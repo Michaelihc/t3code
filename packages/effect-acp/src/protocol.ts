@@ -55,6 +55,9 @@ export interface AcpPatchedProtocolOptions {
   readonly logIncoming?: boolean;
   readonly logOutgoing?: boolean;
   readonly logger?: (event: AcpProtocolLogEvent) => Effect.Effect<void, never>;
+  readonly transformSessionUpdate?: (
+    notification: AcpSchema.SessionNotification,
+  ) => AcpSchema.SessionNotification;
   readonly onIncomingRequest?: (
     requestId: string,
     method: string,
@@ -122,9 +125,6 @@ const encodeJsonRpcNotification = Schema.encodeUnknownExit(
     }),
   ),
 );
-
-const isEffectRpcRequestId = (requestId: AcpError.AcpRequestId): boolean =>
-  typeof requestId === "number" && Number.isSafeInteger(requestId);
 
 const isEffectRpcRequestId = (requestId: AcpError.AcpRequestId): boolean =>
   typeof requestId === "number" && Number.isSafeInteger(requestId);
@@ -201,6 +201,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
         payload: typeof encoded === "string" ? encoded : new TextDecoder().decode(encoded),
       });
 
+      yield* ensureActive;
       const acknowledgement =
         message._tag === "Exit" ? yield* Deferred.make<void, AcpError.AcpError>() : undefined;
       const admissionError = yield* Ref.modify(outgoingWriterState, (state) => {
@@ -793,6 +794,7 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     }
     const encoded = `${exit.value}\n`;
     yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
+    yield* ensureActive;
     // FIFO queue admission preserves wire ordering against later requests
     // (a session/prompt sent after session/cancel cannot overtake it).
     yield* Queue.offer(outgoing, { payload: encoded }).pipe(

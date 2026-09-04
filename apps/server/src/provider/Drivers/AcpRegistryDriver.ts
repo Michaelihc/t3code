@@ -136,6 +136,7 @@ export const AcpRegistryDriver: ProviderDriver<AcpRegistrySettings, AcpRegistryD
           getSnapshot: Effect.sync(currentSnapshot),
           refresh: Effect.sync(currentSnapshot),
           streamChanges: Stream.empty,
+          applyUsageLimits: () => Effect.void,
         },
         orchestrationAdapter,
         textGeneration: makeUnsupportedTextGeneration(),

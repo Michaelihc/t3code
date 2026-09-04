@@ -26,11 +26,13 @@ import { toastManager } from "../ui/toast";
 import { handoffPrompt, handoffReviewComments, readableFailure } from "./pullRequestDetail.logic";
 
 const ACTION_SUCCESS_LABELS: Record<PullRequestAction, string> = {
+  "approve-workflows": "Workflows approved",
   merge: "Pull request merged",
   ready: "Marked ready for review",
   draft: "Converted to draft",
   close: "Pull request closed",
   reopen: "Pull request reopened",
+  revert: "Pull request reverted",
   "update-branch": "Branch updated with the base branch",
   "enable-auto-merge": "Auto-merge enabled",
   "disable-auto-merge": "Auto-merge disabled",
@@ -38,11 +40,13 @@ const ACTION_SUCCESS_LABELS: Record<PullRequestAction, string> = {
 
 /** Said as the thing that did not happen, rather than as the operation that returned an error. */
 const ACTION_FAILURE_LABELS: Record<PullRequestAction, string> = {
+  "approve-workflows": "Could not approve workflows",
   merge: "Could not merge this pull request",
   ready: "Could not mark this ready for review",
   draft: "Could not convert this to a draft",
   close: "Could not close this pull request",
   reopen: "Could not reopen this pull request",
+  revert: "Could not revert this pull request",
   "update-branch": "Could not update this branch",
   "enable-auto-merge": "Could not enable auto-merge",
   "disable-auto-merge": "Could not disable auto-merge",
@@ -50,6 +54,7 @@ const ACTION_FAILURE_LABELS: Record<PullRequestAction, string> = {
 
 /** What to try, for the times the host says only that it refused. */
 const ACTION_FAILURE_HINTS: Record<PullRequestAction, string> = {
+  "approve-workflows": "The host refused it. Check that you have permission to approve workflows.",
   merge:
     "The host refused the merge. Check that you have write access, that the checks it requires have passed, and that the branch is not conflicting.",
   ready: "The host refused it. Check that you have write access to this repository.",
@@ -57,6 +62,8 @@ const ACTION_FAILURE_HINTS: Record<PullRequestAction, string> = {
   close: "The host refused it. Check that you have write access, or that you opened it.",
   reopen:
     "The host refused it. Check that you have write access, and that the branch still exists.",
+  revert:
+    "The host refused it. Check that you have write access and that the merge can be reverted.",
   "update-branch":
     "The host refused it. Check that you have write access, and that the base branch has not diverged in a way the host cannot merge.",
   "enable-auto-merge":

@@ -1,12 +1,8 @@
 import {
-  ANTIGRAVITY_DEFAULT_MODEL,
-  CheckpointRef,
   EnvironmentId,
   MessageId,
   ProjectId,
-  ProviderDriverKind,
   ProviderInstanceId,
-  type ServerProvider,
   ThreadId,
   RunId,
   TurnItemId,
@@ -21,7 +17,6 @@ import { makeThreadFixture } from "../test-fixtures";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
-  agentControlledBrowserCloseConfirmation,
   branchMismatchKey,
   buildExpiredTerminalContextToastCopy,
   createLocalDispatchSnapshot,
@@ -30,6 +25,7 @@ import {
   dismissBranchMismatchForSession,
   getStartedThreadModelChangeBlockReason,
   isVideoPreviewRequestCurrent,
+  hasEnvironmentReconnectWarningGraceElapsed,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
   reconcileMountedTerminalThreadIds,
@@ -46,106 +42,11 @@ import {
   toolGroupConsumesUpwardNavigation,
 } from "./ChatView.logic";
 
-describe("agent browser close confirmation", () => {
-  const surfaces = [
-    { id: "browser:one", kind: "preview", resourceId: "tab-1" },
-    { id: "browser:two", kind: "preview", resourceId: "tab-2" },
-    { id: "diff", kind: "diff" },
-  ] satisfies RightPanelSurface[];
-
-  it("only warns for browsers under active agent control", () => {
-    expect(
-      agentControlledBrowserCloseConfirmation(surfaces, {
-        "tab-1": { controller: "none" },
-        "tab-2": { controller: "human" },
-      }),
-    ).toBeNull();
-
-    expect(
-      agentControlledBrowserCloseConfirmation([surfaces[0]!], {
-        "tab-1": { controller: "agent" },
-      }),
-    ).toBe(
-      [
-        "Close browser while the agent is using it?",
-        "The agent is actively controlling this browser. Closing it may interrupt the current browser action.",
-      ].join("\n"),
-    );
-  });
-
-  it("counts every agent-controlled browser in a bulk close", () => {
-    expect(
-      agentControlledBrowserCloseConfirmation(surfaces, {
-        "tab-1": { controller: "agent" },
-        "tab-2": { controller: "agent" },
-      }),
-    ).toContain("Close 2 browsers");
-  });
-});
-
-describe("floating browser preview", () => {
-  it("only hides the duplicate while the same browser is rendered in the panel", () => {
-    expect(shouldRenderPreviewMiniPlayer(null, null)).toBe(false);
-    expect(
-      shouldRenderPreviewMiniPlayer("tab-1", {
-        id: "browser:one",
-        kind: "preview",
-        resourceId: "tab-1",
-      }),
-    ).toBe(false);
-    expect(
-      shouldRenderPreviewMiniPlayer("tab-1", {
-        id: "browser:two",
-        kind: "preview",
-        resourceId: "tab-2",
-      }),
-    ).toBe(true);
-    expect(shouldRenderPreviewMiniPlayer("tab-1", { id: "diff", kind: "diff" })).toBe(true);
-  });
-});
-
-describe("proactive panels", () => {
-  it("opens a pull request only after a newly observed link appears", () => {
-    expect(shouldOpenProactivePullRequest(undefined, "project:repo:42")).toBe(false);
-    expect(shouldOpenProactivePullRequest(null, "project:repo:42")).toBe(true);
-    expect(shouldOpenProactivePullRequest("project:repo:42", "project:repo:42")).toBe(false);
-    expect(shouldOpenProactivePullRequest("project:repo:42", null)).toBe(false);
-  });
-
-  it("opens the diff only when the observed running turn settles", () => {
-    const turnId = TurnId.make("turn-1");
-    expect(
-      shouldOpenProactiveTurnDiff({
-        previousRunningTurnId: undefined,
-        runningTurnId: null,
-        settledTurnId: turnId,
-        turnCompleted: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldOpenProactiveTurnDiff({
-        previousRunningTurnId: turnId,
-        runningTurnId: null,
-        settledTurnId: turnId,
-        turnCompleted: true,
-      }),
-    ).toBe(true);
-    expect(
-      shouldOpenProactiveTurnDiff({
-        previousRunningTurnId: turnId,
-        runningTurnId: TurnId.make("turn-2"),
-        settledTurnId: turnId,
-        turnCompleted: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldOpenProactiveTurnDiff({
-        previousRunningTurnId: turnId,
-        runningTurnId: null,
-        settledTurnId: turnId,
-        turnCompleted: false,
-      }),
-    ).toBe(false);
+describe("isVideoPreviewRequestCurrent", () => {
+  it("rejects changed threads and replaced previews", () => {
+    expect(isVideoPreviewRequestCurrent("thread-1", "thread-2", 1, 1)).toBe(false);
+    expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 1, 2)).toBe(false);
+    expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 2, 2)).toBe(true);
   });
 });
 
@@ -984,43 +885,7 @@ describe("hasServerAcknowledgedLocalDispatch", () => {
 
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingApproval: true })).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, hasPendingUserInput: true })).toBe(true);
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...common,
-        latestTurnStartFailureId: "turn-start-failure-1",
-      }),
-    ).toBe(true);
     expect(hasServerAcknowledgedLocalDispatch({ ...common, threadError: "failed" })).toBe(true);
-  });
-
-  it("acknowledges only a new turn-start failure", () => {
-    const localDispatch = {
-      ...createLocalDispatchSnapshot(makeThread()),
-      latestTurnStartFailureId: "turn-start-failure-old",
-    };
-    const common = {
-      localDispatch,
-      phase: "ready" as const,
-      latestTurn: null,
-      latestUserMessageId: localDispatch.latestUserMessageId,
-      session: null,
-      hasPendingApproval: false,
-      hasPendingUserInput: false,
-      threadError: null,
-    };
-
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...common,
-        latestTurnStartFailureId: "turn-start-failure-old",
-      }),
-    ).toBe(false);
-    expect(
-      hasServerAcknowledgedLocalDispatch({
-        ...common,
-        latestTurnStartFailureId: "turn-start-failure-new",
-      }),
-    ).toBe(true);
   });
 });
 

@@ -277,8 +277,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
               </Text>
               <View className="gap-2">
                 {question.options.map((option) => {
-                  const optionValue = option.value ?? option.label.trim();
-                  const selected = isPendingUserInputOptionSelected(question, draft, optionValue);
+                  const selected = isPendingUserInputOptionSelected(draft, option.label);
                   const description =
                     option.description !== option.label ? option.description : undefined;
                   return (
@@ -295,7 +294,7 @@ export function PendingUserInputCard(props: PendingUserInputCardProps) {
                         props.onSelectOption(
                           props.pendingUserInput.requestId,
                           question,
-                          optionValue,
+                          option.label,
                         )
                       }
                     >

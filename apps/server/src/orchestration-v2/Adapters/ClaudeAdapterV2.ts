@@ -191,6 +191,7 @@ export const ClaudeProviderCapabilitiesV2 = {
     canRollbackThread: true,
     canForkThread: true,
     canForkFromTurn: true,
+    canForkActiveTurn: false,
     canForkFromSubagentThread: false,
     exposesNativeThreadId: true,
   },

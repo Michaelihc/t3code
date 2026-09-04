@@ -38,7 +38,7 @@ function setUserInputDraftOption(
       [question.id]: togglePendingUserInputOptionSelection(
         question,
         current[requestKey]?.[question.id],
-        value,
+        label,
       ),
     },
   });
@@ -46,7 +46,7 @@ function setUserInputDraftOption(
 
 function setUserInputDraftCustomAnswer(
   requestKey: string,
-  question: UserInputQuestion,
+  questionId: string,
   customAnswer: string,
 ): void {
   const current = appAtomRegistry.get(userInputDraftsByRequestKeyAtom);
@@ -54,9 +54,8 @@ function setUserInputDraftCustomAnswer(
     ...current,
     [requestKey]: {
       ...current[requestKey],
-      [question.id]: setPendingUserInputCustomAnswer(
-        question,
-        current[requestKey]?.[question.id],
+      [questionId]: setPendingUserInputCustomAnswer(
+        current[requestKey]?.[questionId],
         customAnswer,
       ),
     },
@@ -106,7 +105,7 @@ export function useSelectedThreadRequests() {
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftOption(requestKey, question, value);
+      setUserInputDraftOption(requestKey, question, label);
     },
     [selectedThreadShell],
   );
@@ -118,9 +117,9 @@ export function useSelectedThreadRequests() {
       }
 
       const requestKey = scopedRequestKey(selectedThreadShell.environmentId, requestId);
-      setUserInputDraftCustomAnswer(requestKey, question, customAnswer);
+      setUserInputDraftCustomAnswer(requestKey, questionId, customAnswer);
     },
-    [activePendingUserInputs, selectedThreadShell],
+    [selectedThreadShell],
   );
 
   const onRespondToApproval = useCallback(

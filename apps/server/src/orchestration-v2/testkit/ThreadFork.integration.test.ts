@@ -715,7 +715,7 @@ describe("orchestration V2 thread fork", () => {
   );
 
   it.effect(
-    "rolls back a Codex native fork when forking from an earlier completed source turn",
+    "forks a Codex native thread through an earlier completed source turn",
     () =>
       Effect.gen(function* () {
         const rawTranscript = yield* readTranscript(PRIOR_TURN_TRANSCRIPT_PATH);

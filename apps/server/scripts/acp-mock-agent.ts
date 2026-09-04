@@ -299,23 +299,34 @@ function configOptions(): ReadonlyArray<AcpSchema.SessionConfigOption> {
   ];
 }
 
-const availableModes: ReadonlyArray<AcpSchema.SessionMode> = [
-  {
-    id: "ask",
-    name: "Ask",
-    description: "Request permission before making any changes",
-  },
-  {
-    id: "architect",
-    name: "Architect",
-    description: "Design and plan software systems without implementation",
-  },
-  {
-    id: "code",
-    name: "Code",
-    description: "Write and modify code with full tool access",
-  },
-];
+const antigravityModels = [
+  { modelId: "gemini-test-low", name: "Gemini Test Low" },
+  { modelId: "gemini-test-high", name: "Gemini Test High" },
+] satisfies ReadonlyArray<AcpSchema.ModelInfo>;
+
+const availableModes: ReadonlyArray<AcpSchema.SessionMode> = antigravityProfile
+  ? [
+      { id: "default", name: "Default" },
+      { id: "auto_edit", name: "Auto edit" },
+      { id: "yolo", name: "YOLO" },
+    ]
+  : [
+      {
+        id: "ask",
+        name: "Ask",
+        description: "Request permission before making any changes",
+      },
+      {
+        id: "architect",
+        name: "Architect",
+        description: "Design and plan software systems without implementation",
+      },
+      {
+        id: "code",
+        name: "Code",
+        description: "Write and modify code with full tool access",
+      },
+    ];
 
 function modeState(): AcpSchema.SessionModeState {
   return {

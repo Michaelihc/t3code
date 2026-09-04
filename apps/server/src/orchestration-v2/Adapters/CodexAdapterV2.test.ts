@@ -1245,6 +1245,110 @@ describe("CodexAdapterV2 post-settle continuation", () => {
         event.type === "message.updated" && event.message.role === "assistant",
     );
 
+  it.effect("forks the latest native state and injects a model-visible live-fork notice", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const scenario = "codex-live-fork-notice";
+        const nativeThreadId = `native-${scenario}-source`;
+        const forkedNativeThreadId = `native-${scenario}-target`;
+        const targetThreadId = ThreadId.make(`thread-${scenario}-target`);
+        const notice =
+          "You are a fork created while the original agent is still working. Do not resume by default.";
+        const transcript = makeCodexReplayTranscript({
+          scenario,
+          entries: [
+            ...codexReplayPreamble({
+              nativeThreadId,
+              nativeTurnId: "unused-turn",
+              prompt: "unused-prompt",
+            }).slice(0, 5),
+            {
+              type: "expect_outbound",
+              label: "thread/fork",
+              frame: {
+                id: 3,
+                method: "thread/fork",
+                params: {
+                  threadId: nativeThreadId,
+                  cwd: "/workspace",
+                  model: "gpt-5.4",
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/fork",
+              frame: {
+                id: 3,
+                result: {
+                  thread: {
+                    id: forkedNativeThreadId,
+                    sessionId: forkedNativeThreadId,
+                    forkedFromId: nativeThreadId,
+                    preview: "",
+                    ephemeral: false,
+                    modelProvider: "openai",
+                    createdAt: 1782622441,
+                    updatedAt: 1782622441,
+                    status: { type: "idle" },
+                    path: `/tmp/${forkedNativeThreadId}.jsonl`,
+                    cwd: "/workspace",
+                    cliVersion: "0.144.0",
+                    source: "vscode",
+                    turns: [],
+                  },
+                  model: "gpt-5.4",
+                  modelProvider: "openai",
+                  serviceTier: null,
+                  cwd: "/workspace",
+                  instructionSources: [],
+                  approvalPolicy: "on-request",
+                  approvalsReviewer: "user",
+                  sandbox: { type: "workspaceWrite", writableRoots: [], networkAccess: false },
+                  reasoningEffort: "medium",
+                },
+              },
+            },
+            {
+              type: "expect_outbound",
+              label: "thread/inject_items",
+              frame: {
+                id: 4,
+                method: "thread/inject_items",
+                params: {
+                  threadId: forkedNativeThreadId,
+                  items: [
+                    {
+                      type: "message",
+                      role: "developer",
+                      content: [{ type: "input_text", text: notice }],
+                    },
+                  ],
+                },
+              },
+            },
+            {
+              type: "emit_inbound",
+              label: "thread/inject_items",
+              frame: { id: 4, result: {} },
+            },
+          ],
+        });
+        const harness = yield* makeCodexReplayHarness(transcript);
+
+        const forked = yield* harness.runtime.forkThread({
+          sourceProviderThread: harness.providerThread,
+          targetThreadId,
+          modelSelection: CODEX_TEST_MODEL_SELECTION,
+          runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
+          modelVisibleNotice: notice,
+        });
+
+        assert.equal(forked.nativeThreadRef?.nativeId, forkedNativeThreadId);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("resumes a provider thread without requesting or decoding its history", () =>
     Effect.scoped(
       Effect.gen(function* () {

@@ -3,15 +3,13 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 
+import { ProviderSessionManagerV2 } from "../../orchestration-v2/ProviderSessionManager.ts";
 import { ProviderAuthService } from "../Services/ProviderAuthService.ts";
 import { ProviderInstanceRegistry } from "../Services/ProviderInstanceRegistry.ts";
-import { ProviderService } from "../Services/ProviderService.ts";
-import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
 
 export const makeProviderAuthService = Effect.gen(function* () {
   const registry = yield* ProviderInstanceRegistry;
-  const providers = yield* ProviderService;
-  const directory = yield* ProviderSessionDirectory;
+  const providerSessions = yield* ProviderSessionManagerV2;
 
   const getController = Effect.fn("ProviderAuthService.getController")(function* (
     instanceId: ProviderInstanceId,
@@ -33,43 +31,15 @@ export const makeProviderAuthService = Effect.gen(function* () {
   const stopSessions = Effect.fn("ProviderAuthService.stopSessions")(function* (
     instanceId: ProviderInstanceId,
   ) {
-    const bindings = yield* directory.listBindings().pipe(
+    yield* providerSessions.closeProviderInstance(instanceId).pipe(
       Effect.mapError(
         () =>
           new ProviderSetupError({
             instanceId,
             operation: "stopSessions",
-            detail: "Could not read the provider's active sessions. Try again.",
+            detail: "Could not stop all sessions for this provider. Try again.",
           }),
       ),
-    );
-    const sessions = yield* providers.listSessions();
-    const threadIds = new Set(
-      bindings
-        .filter(
-          (binding) => binding.providerInstanceId === instanceId && binding.status !== "stopped",
-        )
-        .map((binding) => binding.threadId),
-    );
-    for (const session of sessions) {
-      if (session.providerInstanceId === instanceId) {
-        threadIds.add(session.threadId);
-      }
-    }
-    yield* Effect.forEach(
-      threadIds,
-      (threadId) =>
-        providers.stopSession({ threadId }).pipe(
-          Effect.mapError(
-            () =>
-              new ProviderSetupError({
-                instanceId,
-                operation: "stopSessions",
-                detail: "Could not stop all sessions for this provider. Try again.",
-              }),
-          ),
-        ),
-      { discard: true },
     );
   });
 

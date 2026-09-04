@@ -146,3 +146,44 @@ it.effect("keeps a fork awake when its source thread is snoozed", () =>
     });
   }).pipe(Effect.provide(layer)),
 );
+
+it.effect("plans an active snapshot without attaching the target to a mutating source run", () =>
+  Effect.gen(function* () {
+    const sourceThread = makeSourceThread();
+    const sourceRun = { ...makeCompletedSourceRun(), status: "running" as const, completedAt: null };
+    const sourceProviderThreadId = ProviderThreadId.make("provider-thread:fork-snoozed-source");
+    const sourceProviderThread = {
+      id: sourceProviderThreadId,
+      nativeThreadRef: { id: "native-active-thread", strength: "strong" },
+    } as never;
+    const sourceProjection = {
+      thread: sourceThread,
+      runs: [sourceRun],
+    } as unknown as OrchestrationV2ThreadProjection;
+    const service = yield* ThreadForkServiceV2;
+    const result = yield* service.plan({
+      sourceProjection,
+      sourceRun,
+      sourceProviderThread,
+      canonicalSourcePoint: {
+        threadId: sourceThreadId,
+        runId: sourceRunId,
+      },
+      transferId: ContextTransferId.make("context-transfer:active-fork"),
+      targetThreadId,
+      createdBy: "user",
+      creationSource: "web",
+      createdAt: forkCreatedAt,
+      activeSnapshot: true,
+    });
+
+    assert.deepEqual(result.targetThread.forkedFrom, {
+      type: "provider_thread",
+      providerThreadId: sourceProviderThreadId,
+    });
+    assert.deepEqual(result.transfer.sourcePoint, {
+      threadId: sourceThreadId,
+      runId: sourceRunId,
+    });
+  }).pipe(Effect.provide(layer)),
+);

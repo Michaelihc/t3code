@@ -17,16 +17,14 @@ export interface PendingApprovalCardProps {
   ) => Promise<unknown>;
 }
 
-const DEFAULT_APPROVAL_OPTIONS: ReadonlyArray<ProviderApprovalOption> = [
+const DEFAULT_APPROVAL_OPTIONS = [
   { decision: "accept", label: "Allow once" },
   { decision: "acceptForSession", label: "Allow session" },
   { decision: "decline", label: "Decline" },
-];
+] satisfies ReadonlyArray<ProviderApprovalOption>;
 
 export function PendingApprovalCard(props: PendingApprovalCardProps) {
-  const options: ReadonlyArray<ProviderApprovalOption> =
-    props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
-  const warning = options.find((option) => option.warning)?.warning;
+  const options = props.approval.options ?? DEFAULT_APPROVAL_OPTIONS;
   // Opaque for the same reason as PendingUserInputCard: nothing blurs the feed
   // behind this card, so a translucent surface bleeds messages through it.
   const canRespond = props.approval.responseCapability === "live";

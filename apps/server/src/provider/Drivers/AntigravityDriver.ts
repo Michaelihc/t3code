@@ -9,10 +9,16 @@ import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcessSpawner from "effect/unstable/process/ChildProcessSpawner";
-import type { AcpError } from "effect-acp/errors";
+import * as EffectAcpErrors from "effect-acp/errors";
 
 import * as BackgroundPolicy from "../../background/BackgroundPolicy.ts";
 import { ServerConfig } from "../../config.ts";
+import {
+  AcpProviderCapabilitiesV2,
+  makeAcpAdapterV2,
+  type AcpAdapterV2RuntimeInput,
+} from "../../orchestration-v2/Adapters/AcpAdapterV2.ts";
+import { IdAllocatorV2 } from "../../orchestration-v2/IdAllocator.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import {
   isAntigravityTextGenerationAvailable,
@@ -38,9 +44,9 @@ import type { AcpSessionRuntime, AcpSessionRuntimeStartResult } from "../acp/Acp
 import type { ServerProviderDraft } from "../providerSnapshot.ts";
 import { removeAntigravitySessionFiles } from "../acp/AntigravitySessionFiles.ts";
 import { ProviderDriverError } from "../Errors.ts";
-import { makeAntigravityAdapter } from "../Layers/AntigravityAdapter.ts";
 import { makeAntigravityProvider } from "../Layers/AntigravityProvider.ts";
 import { ProviderEventLoggers } from "../Layers/ProviderEventLoggers.ts";
+import { makeAcpNativeLoggerFactory } from "../acp/AcpNativeLogging.ts";
 import * as ModelManifest from "../ModelManifest.ts";
 import {
   defaultProviderContinuationIdentity,
@@ -60,6 +66,7 @@ export type AntigravityDriverEnv =
   | ChildProcessSpawner.ChildProcessSpawner
   | Crypto.Crypto
   | FileSystem.FileSystem
+  | IdAllocatorV2
   | ModelManifest.ModelManifest
   | Path.Path
   | ProviderEventLoggers
@@ -81,6 +88,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const serverConfig = yield* ServerConfig;
       const installation = yield* AntigravityInstallation;
       const loggers = yield* ProviderEventLoggers;
+      const idAllocator = yield* IdAllocatorV2;
       const modelManifest = yield* ModelManifest.ModelManifest;
       const settings = { ...config, enabled } satisfies AntigravitySettings;
       const auth: AntigravityAuthConfig = {
@@ -120,7 +128,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
         input: Omit<AntigravityAcpRuntimeInput, "spawn" | "childProcessSpawner">,
       ): Effect.fn.Return<
         AcpSessionRuntime["Service"],
-        AcpError | ProviderSetupError,
+        EffectAcpErrors.AcpError | ProviderSetupError,
         Scope.Scope
       > {
         if (authConfigIssue !== null) {
@@ -296,16 +304,44 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
       const defaultModel = modelManifest.current.pipe(
         Effect.map((manifest) => ModelManifest.manifestDefaultModel(manifest, DRIVER)),
       );
-      const adapter = yield* makeAntigravityAdapter(settings, {
+      const makeNativeLogger = yield* makeAcpNativeLoggerFactory();
+      const makeOrchestrationRuntime = (
+        input: AcpAdapterV2RuntimeInput,
+      ): Effect.Effect<
+        AcpSessionRuntime["Service"],
+        EffectAcpErrors.AcpError,
+        Scope.Scope
+      > =>
+        Effect.gen(function* () {
+          const runtimeScope = yield* Scope.Scope;
+          return yield* authFlow.withProcess(
+            Scope.close(runtimeScope, Exit.void),
+            makeRuntime({ ...input, clientFileSystem: false }),
+          );
+        }).pipe(
+          Effect.mapError((cause) =>
+            "_tag" in cause && cause._tag !== "ProviderSetupError"
+              ? cause
+              : new EffectAcpErrors.AcpSpawnError({ command: DRIVER, cause }),
+          ),
+        );
+      const orchestrationAdapter = makeAcpAdapterV2({
         instanceId,
-        makeRuntime,
-        withProcess: authFlow.withProcess,
-        defaultModel,
-        onSessionStarted: provider.onSessionStarted,
-        onConfigOptionsUpdated: provider.onConfigOptionsUpdated,
-        onAvailableCommands: provider.onAvailableCommands,
-        onAuthRequired: provider.onAuthRequired,
-        ...(loggers.native ? { nativeEventLogger: loggers.native } : {}),
+        crypto,
+        fileSystem,
+        idAllocator,
+        serverConfig,
+        flavor: {
+          driver: DRIVER,
+          capabilities: AcpProviderCapabilitiesV2,
+          makeRuntime: makeOrchestrationRuntime,
+        },
+        nativeLogging: (threadId) =>
+          makeNativeLogger({
+            nativeEventLogger: loggers.native,
+            provider: DRIVER,
+            threadId,
+          }),
       });
       const textGeneration = yield* makeAntigravityTextGeneration({
         profileDirectory,
@@ -390,7 +426,7 @@ export const AntigravityDriver: ProviderDriver<AntigravitySettings, AntigravityD
                     }),
                 ),
               ),
-        adapter,
+        orchestrationAdapter,
         textGeneration,
         auth: authFlow.controller,
         refreshModels,

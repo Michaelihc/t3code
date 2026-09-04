@@ -1,4 +1,4 @@
-import type { OrchestrationThreadShell, ProjectId } from "@t3tools/contracts";
+import type { ProjectId } from "@t3tools/contracts";
 import type { SidebarProjectSortOrder, SidebarThreadSortOrder } from "@t3tools/contracts/settings";
 import * as Arr from "effect/Array";
 import * as Order from "effect/Order";
@@ -19,10 +19,21 @@ export function toSortableTimestamp(iso: string | undefined): number | null {
   return Number.isFinite(ms) ? ms : null;
 }
 
-export type SettledThreadTimestampInput = Pick<
-  OrchestrationThreadShell,
-  "settledAt" | "latestUserMessageAt" | "latestTurn" | "updatedAt"
->;
+interface ThreadSettlementRunTimestamp {
+  readonly requestedAt?: string | null;
+  readonly startedAt?: string | null;
+  readonly completedAt?: string | null;
+}
+
+export interface SettledThreadTimestampInput {
+  readonly settledAt?: string | null;
+  readonly latestUserMessageAt?: string | null;
+  /** Legacy orchestration shell. */
+  readonly latestTurn?: ThreadSettlementRunTimestamp | null;
+  /** Orchestration V2 environment shell. */
+  readonly latestRun?: ThreadSettlementRunTimestamp | null;
+  readonly updatedAt: string;
+}
 
 /** The timestamp a settled row sorts and labels by on every client: settledAt
     when stamped, otherwise the latest message or turn stamp, then updatedAt. */
@@ -33,11 +44,12 @@ export function resolveSettledThreadTimestamp(thread: SettledThreadTimestampInpu
 
   let latest: string | null = null;
   let latestMs = Number.NEGATIVE_INFINITY;
+  const latestRun = thread.latestTurn ?? thread.latestRun;
   for (const candidate of [
     thread.latestUserMessageAt,
-    thread.latestTurn?.requestedAt,
-    thread.latestTurn?.startedAt,
-    thread.latestTurn?.completedAt,
+    latestRun?.requestedAt,
+    latestRun?.startedAt,
+    latestRun?.completedAt,
   ]) {
     const parsed = toSortableTimestamp(candidate ?? undefined);
     if (candidate != null && parsed !== null && parsed > latestMs) {

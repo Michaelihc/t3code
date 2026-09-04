@@ -92,6 +92,9 @@ export interface AcpSessionRuntimeOptions {
   readonly resumeMethod?: "load" | "resume";
   readonly sessionLoadTimeout?: Duration.Input;
   readonly sessionLoadReplayIdleGap?: Duration.Input;
+  /** Native cancellation waits for the prompt response and the event consumer to drain. */
+  readonly cancelBehavior?: "interrupt" | "wait-for-prompt";
+  readonly cancelTimeout?: Duration.Input;
   readonly interruptPromptOnCancel?: boolean;
   /** Optional provider metadata forwarded on `session/cancel`. */
   readonly cancelMeta?: EffectAcpSchema.CancelNotification["_meta"];
@@ -1360,7 +1363,9 @@ export const make = (
     const stderrFailure = yield* Deferred.make<never, EffectAcpErrors.AcpError>();
     const runtimeClosed = yield* Deferred.make<void>();
     const promptSerializationSemaphore = yield* Semaphore.make(1);
+    const promptDispatchSemaphore = yield* Semaphore.make(1);
     const sessionLoadSemaphore = yield* Semaphore.make(1);
+    const activePromptRef = yield* Ref.make<Option.Option<AcpActivePrompt>>(Option.none());
     const activePromptFiberRef = yield* Ref.make<
       Option.Option<Fiber.Fiber<EffectAcpSchema.PromptResponse, EffectAcpErrors.AcpError>>
     >(Option.none());
@@ -1512,6 +1517,26 @@ export const make = (
             }),
         ),
       );
+
+    yield* child.stderr.pipe(
+      Stream.decodeText(),
+      Stream.runForEach((chunk) =>
+        (options.onStderr
+          ? options.onStderr(chunk.slice(-maxStderrChunkLength))
+          : Effect.void
+        ).pipe(
+          Effect.catch((error) =>
+            Effect.gen(function* () {
+              yield* Deferred.fail(stderrFailure, error);
+              yield* recordTermination(error);
+              yield* child.kill({ forceKillAfter: "1 second" }).pipe(Effect.ignore);
+            }),
+          ),
+        ),
+      ),
+      Effect.ignore,
+      Effect.forkIn(runtimeScope),
+    );
 
     const posixOwnershipLedger = new Map<string, AcpOwnedPosixProcess>();
     const posixOwnershipFrontier = new Map<number, AcpOwnedPosixProcess>();
@@ -1668,7 +1693,6 @@ export const make = (
         ...(options.transformSessionUpdate
           ? { transformSessionUpdate: options.transformSessionUpdate }
           : {}),
-        onTermination: recordTermination,
         ...(options.protocolLogging?.logIncoming !== undefined
           ? { logIncoming: options.protocolLogging.logIncoming }
           : {}),
@@ -1678,7 +1702,8 @@ export const make = (
         ...(options.protocolLogging?.logger ? { logger: options.protocolLogging.logger } : {}),
         ...(options.onIncomingRequest ? { onIncomingRequest: options.onIncomingRequest } : {}),
         onTermination: (error) =>
-          (options.onTermination?.(error) ?? Effect.void).pipe(
+          recordTermination(error).pipe(
+            Effect.andThen(options.onTermination?.(error) ?? Effect.void),
             Effect.ensuring(
               Scope.close(runtimeScope, Exit.fail(error)).pipe(Effect.forkDetach, Effect.asVoid),
             ),
@@ -1704,48 +1729,58 @@ export const make = (
       });
 
     yield* acp.handleSessionUpdate((notification) =>
-      Effect.gen(function* () {
-        const gate = yield* Ref.get(sessionLoadGateRef);
-        // A different session can still have an in-flight prompt while this
-        // load replays history, so quarantine only the loading session.
-        if (
-          Option.isSome(gate) &&
-          gate.value.active &&
-          notification.sessionId === gate.value.sessionId
-        ) {
-          if (sessionUpdateCountsAsLoadReplayActivity(notification, gate.value.sessionId)) {
-            const lastActivityAtMillis = yield* Clock.currentTimeMillis;
-            yield* Ref.set(
-              sessionLoadGateRef,
-              Option.some({
-                ...gate.value,
-                lastActivityAtMillis,
-              }),
-            );
+      notificationSemaphore.withPermit(
+        Effect.gen(function* () {
+          if (Option.isSome(yield* Ref.get(terminationErrorRef))) return;
+          const gate = yield* Ref.get(sessionLoadGateRef);
+          // A different session can still have an in-flight prompt while this
+          // load replays history, so quarantine only the loading session.
+          if (
+            Option.isSome(gate) &&
+            gate.value.active &&
+            notification.sessionId === gate.value.sessionId
+          ) {
+            if (sessionUpdateCountsAsLoadReplayActivity(notification, gate.value.sessionId)) {
+              const lastActivityAtMillis = yield* Clock.currentTimeMillis;
+              yield* Ref.set(
+                sessionLoadGateRef,
+                Option.some({ ...gate.value, lastActivityAtMillis }),
+              );
+            }
+            return;
           }
-          return;
-        }
-        if (sessionUpdateIsReplay(notification)) {
-          return;
-        }
-        const startState = yield* Ref.get(startStateRef);
-        // One runtime projects one root ACP session. Child-session updates need
-        // explicit lineage routing and must never be flattened into this stream.
-        if (
-          startState._tag !== "Started" ||
-          notification.sessionId !== startState.result.sessionId
-        ) {
-          return;
-        }
-        yield* handleSessionUpdate({
-          queue: eventQueue,
-          modeStateRef,
-          toolCallsRef,
-          assistantSegmentRef,
-          assistantItemRuntimeId,
-          params: notification,
-        });
-      }),
+          if (sessionUpdateIsReplay(notification)) return;
+          const startState = yield* Ref.get(startStateRef);
+          if (startState._tag === "Starting") {
+            if (isStartupMetadataUpdate(notification)) {
+              yield* Ref.update(startupMetadataRef, (current) =>
+                [
+                  ...current.filter(
+                    (previous) =>
+                      previous.sessionId !== notification.sessionId ||
+                      previous.update.sessionUpdate !== notification.update.sessionUpdate,
+                  ),
+                  notification,
+                ].slice(-maxStartupMetadataUpdates),
+              );
+            }
+            return;
+          }
+          // One runtime projects one root ACP session. Child-session updates need
+          // explicit lineage routing and must never be flattened into this stream.
+          if (
+            startState._tag !== "Started" ||
+            notification.sessionId !== startState.result.sessionId
+          ) {
+            return;
+          }
+          yield* processSessionUpdate(notification);
+        }),
+      ),
+    );
+    yield* Scope.addFinalizer(
+      runtimeScope,
+      Ref.set(stoppingRef, true).pipe(Effect.andThen(Deferred.succeed(runtimeClosed, undefined))),
     );
     const initializeClientCapabilities = {
       fs: {
@@ -2329,6 +2364,7 @@ export const make = (
                 ).pipe(Effect.forkIn(runtimeScope));
                 const active = { fiber, completed } satisfies AcpActivePrompt;
                 yield* Ref.set(activePromptRef, Option.some(active));
+                yield* Ref.set(activePromptFiberRef, Option.some(fiber));
                 if (promptOptions?.dispatched) {
                   yield* Deferred.succeed(promptOptions.dispatched, undefined);
                 }
@@ -2365,33 +2401,37 @@ export const make = (
                 }
                 yield* Fiber.interrupt(activePrompt.fiber).pipe(Effect.ignore);
                 yield* Ref.set(activePromptRef, Option.none());
+                yield* Ref.set(activePromptFiberRef, Option.none());
                 yield* Deferred.succeed(activePrompt.completed, undefined);
               }),
           ),
         ),
-      cancel: getStartedState.pipe(
-        Effect.flatMap((started) =>
-          options.interruptPromptOnCancel === false
-            ? acp.agent.cancel({
-                sessionId: started.sessionId,
-                ...(options.cancelMeta === undefined ? {} : { _meta: options.cancelMeta }),
-              })
-            : Effect.gen(function* () {
-                const activePromptFiber = yield* Ref.get(activePromptFiberRef);
-                if (Option.isSome(activePromptFiber)) {
-                  yield* Fiber.interrupt(activePromptFiber.value).pipe(Effect.ignore);
-                }
-                // Await the notification write so a replacement session/prompt
-                // cannot race ahead of session/cancel on the wire.
-                yield* acp.agent
-                  .cancel({
-                    sessionId: started.sessionId,
-                    ...(options.cancelMeta === undefined ? {} : { _meta: options.cancelMeta }),
-                  })
-                  .pipe(Effect.ignore);
-              }),
-        ),
-      ),
+      cancel:
+        options.cancelBehavior === "wait-for-prompt"
+          ? promptDispatchSemaphore.withPermit(cancel)
+          : getStartedState.pipe(
+              Effect.flatMap((started) =>
+                options.interruptPromptOnCancel === false
+                  ? acp.agent.cancel({
+                      sessionId: started.sessionId,
+                      ...(options.cancelMeta === undefined ? {} : { _meta: options.cancelMeta }),
+                    })
+                  : Effect.gen(function* () {
+                      const activePromptFiber = yield* Ref.get(activePromptFiberRef);
+                      if (Option.isSome(activePromptFiber)) {
+                        yield* Fiber.interrupt(activePromptFiber.value).pipe(Effect.ignore);
+                      }
+                      // Await the notification write so a replacement session/prompt
+                      // cannot race ahead of session/cancel on the wire.
+                      yield* acp.agent
+                        .cancel({
+                          sessionId: started.sessionId,
+                          ...(options.cancelMeta === undefined ? {} : { _meta: options.cancelMeta }),
+                        })
+                        .pipe(Effect.ignore);
+                    }),
+              ),
+            ),
       ...(options.ownDetachedProcessGroup === true ? { terminateProcessGroup } : {}),
       setMode: (modeId) =>
         Ref.get(modeStateRef).pipe(

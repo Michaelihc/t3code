@@ -76,6 +76,7 @@ export const GrokProviderCapabilitiesV2 = {
     canReadThreadSnapshot: true,
     canForkThread: false,
     canForkFromTurn: false,
+    canForkActiveTurn: false,
   },
   subagents: {
     ...AcpProviderCapabilitiesV2.subagents,

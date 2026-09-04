@@ -43,6 +43,16 @@ Your answers are sent as a new message. They reach the current turn while Codex 
 start a new turn if it has finished. Unanswered questions stay available after you reconnect.
 This works in the web, desktop, and mobile apps. Codex must support async questions.
 
+## Fork while Codex works
+
+Use **Fork current progress** below a streaming response to create a new, idle task from what Codex
+has done so far. The original task keeps running. The fork receives a frozen copy of the transcript
+at that moment and is told that the final inherited turn is incomplete, so it does not continue the
+work until you send it a message.
+
+This is available for Codex in the web, desktop, and mobile apps. Completed responses keep the
+regular **Fork from this response** action.
+
 ## Sub-agent models
 
 The web and desktop Agents panel shows each sub-agent's model and reasoning effort when Codex

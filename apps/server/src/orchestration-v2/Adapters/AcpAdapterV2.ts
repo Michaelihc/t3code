@@ -405,6 +405,7 @@ export const AcpProviderCapabilitiesV2 = {
     canRollbackThread: false,
     canForkThread: false,
     canForkFromTurn: false,
+    canForkActiveTurn: false,
     canForkFromSubagentThread: false,
     exposesNativeThreadId: true,
   },
@@ -505,6 +506,7 @@ function negotiatedCapabilities(
       canReadThreadSnapshot: canLoad,
       canForkThread: canFork,
       canForkFromTurn: false,
+      canForkActiveTurn: false,
     },
     tools: {
       ...base.tools,

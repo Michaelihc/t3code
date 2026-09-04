@@ -187,6 +187,7 @@ export interface ForkThreadFromRunInput extends CommandMetadata {
   readonly sourceThreadId: ThreadId;
   readonly targetThreadId: ThreadId;
   readonly runId: RunId;
+  readonly includeCurrentProgress?: boolean;
   readonly title?: string;
 }
 
@@ -786,7 +787,10 @@ export const forkThreadFromRun = Effect.fn("EnvironmentCommands.forkThreadFromRu
     creationSource: input.creationSource ?? "web",
     sourceThreadId: input.sourceThreadId,
     targetThreadId: input.targetThreadId,
-    sourcePoint: { type: "run", runId: input.runId },
+    sourcePoint: {
+      type: input.includeCurrentProgress ? "active_run" : "run",
+      runId: input.runId,
+    },
     ...(input.title === undefined ? {} : { title: input.title }),
   });
 });

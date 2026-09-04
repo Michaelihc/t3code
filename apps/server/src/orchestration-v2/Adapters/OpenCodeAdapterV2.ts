@@ -159,6 +159,7 @@ export const OpenCodeProviderCapabilitiesV2 = {
     canRollbackThread: true,
     canForkThread: true,
     canForkFromTurn: true,
+    canForkActiveTurn: false,
     canForkFromSubagentThread: true,
     exposesNativeThreadId: true,
   },

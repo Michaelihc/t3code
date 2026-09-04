@@ -418,6 +418,13 @@ describe("V2 environment commands", () => {
           targetThreadId: ThreadId.make("thread-fork"),
           runId: RunId.make("run-1"),
         }).pipe(provide);
+        yield* forkThreadFromRun({
+          commandId: CommandId.make("fork-active"),
+          sourceThreadId: v2ThreadId,
+          targetThreadId: ThreadId.make("thread-fork-active"),
+          runId: RunId.make("run-active"),
+          includeCurrentProgress: true,
+        }).pipe(provide);
         yield* mergeThreadBack({
           commandId: CommandId.make("merge"),
           sourceThreadId: ThreadId.make("thread-fork"),
@@ -468,6 +475,7 @@ describe("V2 environment commands", () => {
 
         expect(commands).toMatchObject([
           { type: "thread.fork", sourcePoint: { type: "run", runId: "run-1" } },
+          { type: "thread.fork", sourcePoint: { type: "active_run", runId: "run-active" } },
           { type: "thread.merge_back", sourcePoint: { type: "run", runId: "run-2" } },
           { type: "queued-run.reorder", runId: "run-3", beforeRunId: "run-4" },
           {
@@ -485,7 +493,7 @@ describe("V2 environment commands", () => {
           },
         ]);
         // A text-only edit must not send an attachments replacement list.
-        expect(commands[5]).not.toHaveProperty("attachments");
+        expect(commands[6]).not.toHaveProperty("attachments");
       }).pipe(Effect.provide(TEST_CRYPTO_LAYER)),
   );
 

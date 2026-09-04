@@ -29,7 +29,10 @@ describe("summarizeToolGroup", () => {
           command: "git status",
         },
       ]),
-    ).toBe("Used Chrome integration and ran 1 command");
+    ).toEqual({
+      summary: "Used Chrome integration and ran 1 command",
+      hasFailure: false,
+    });
   });
 
   it("omits the integration suffix for special browser and computer sources", () => {
@@ -46,7 +49,10 @@ describe("summarizeToolGroup", () => {
           toolSource: { key: "computer-use", name: "Computer Use", kind: "computer" },
         },
       ]),
-    ).toBe("Used Browser and Computer Use");
+    ).toEqual({
+      summary: "Used Browser and Computer Use",
+      hasFailure: false,
+    });
   });
 });
 

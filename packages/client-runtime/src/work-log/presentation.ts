@@ -3,7 +3,9 @@ import {
   type AssetResource,
   type OrchestrationV2TurnItem,
   type ThreadId,
+  type ToolActivitySource,
 } from "@t3tools/contracts";
+import { resolveMediaSource } from "@t3tools/client-runtime/media-source";
 import {
   resolveT3McpToolSummaryAction,
   type T3McpToolSummaryAction,
@@ -25,8 +27,8 @@ export type WorkLogToolLifecycleStatus =
   | "stopped";
 
 export interface WorkLogPresentationEntry {
-  readonly id: string;
-  readonly createdAt: string;
+  readonly id?: string;
+  readonly createdAt?: string;
   readonly label: string;
   readonly tone: "thinking" | "tool" | "info" | "error";
   readonly command?: string;
@@ -40,6 +42,7 @@ export interface WorkLogPresentationEntry {
   readonly itemType?: OrchestrationV2TurnItem["type"];
   readonly toolLifecycleStatus?: WorkLogToolLifecycleStatus;
   readonly structuredPayload?: OrchestrationV2TurnItem;
+  readonly toolSource?: ToolActivitySource;
 }
 
 export type ToolGroupAction =
@@ -125,7 +128,9 @@ function resolveT3McpToolPresentation(value: string | undefined, status: string 
             ? `Declined to ${action.toLowerCase()}`
             : status === "stopped"
               ? `Stopped ${running.toLowerCase()}`
-              : running;
+              : status === undefined
+                ? running
+                : action;
 
   return {
     displayName: `${verb} ${detail}`,
@@ -507,6 +512,8 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
   summary: string;
   hasFailure: boolean;
 } {
+  const sources = new Map<string, ToolActivitySource>();
+  const sourceEntries: WorkLogPresentationEntry[] = [];
   const groups = new Map<
     ToolGroupAction | T3McpToolSummaryAction,
     {
@@ -516,6 +523,11 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
     }
   >();
   for (const entry of entries) {
+    if (entry.toolSource) {
+      sources.set(entry.toolSource.key, entry.toolSource);
+      sourceEntries.push(entry);
+      continue;
+    }
     const item = entry.structuredPayload;
     const t3Action = resolveT3McpToolSummaryAction(
       (item?.type === "dynamic_tool" ? item.toolName : null) ?? entry.toolTitle ?? entry.label,
@@ -526,20 +538,44 @@ export function summarizeToolGroup(entries: ReadonlyArray<WorkLogPresentationEnt
     if (group) group.entries.push(entry);
     else groups.set(key, { action, t3Action, entries: [entry] });
   }
-  const summaries = [...groups].map(([action, group], index) => ({
-    index,
-    count: group.entries.length,
-    priority: summaryActionPriority(action),
-    ...(group.t3Action
-      ? summarizeT3ToolCalls(group.t3Action, group.entries.map(t3ToolSummaryCall))
-      : {
-          label: toolGroupActionLabel(
-            group.action,
-            toolGroupActionCount(group.action, group.entries),
-          ),
-          failedCount: group.entries.filter(workEntryDisplayIndicatesToolFailure).length,
-        }),
-  }));
+  const sourceSummary = (() => {
+    if (sources.size === 0) return [];
+    const sourceValues = [...sources.values()];
+    const sourceNames = sourceValues.map((source) => source.name);
+    const formattedNames =
+      sourceNames.length < 2
+        ? sourceNames[0]!
+        : sourceNames.length === 2
+          ? sourceNames.join(" and ")
+          : `${sourceNames.slice(0, -1).join(", ")}, and ${sourceNames.at(-1)}`;
+    const allIntegrations = sourceValues.every((source) => source.kind === "integration");
+    return [
+      {
+        index: -1,
+        count: sourceEntries.length,
+        priority: -1,
+        label: `Used ${formattedNames}${allIntegrations ? ` ${sources.size === 1 ? "integration" : "integrations"}` : ""}`,
+        failedCount: sourceEntries.filter(workEntryDisplayIndicatesToolFailure).length,
+      },
+    ];
+  })();
+  const summaries = [
+    ...sourceSummary,
+    ...[...groups].map(([action, group], index) => ({
+      index,
+      count: group.entries.length,
+      priority: summaryActionPriority(action),
+      ...(group.t3Action
+        ? summarizeT3ToolCalls(group.t3Action, group.entries.map(t3ToolSummaryCall))
+        : {
+            label: toolGroupActionLabel(
+              group.action,
+              toolGroupActionCount(group.action, group.entries),
+            ),
+            failedCount: group.entries.filter(workEntryDisplayIndicatesToolFailure).length,
+          }),
+    })),
+  ];
   const selected = [...summaries]
     .sort((a, b) => a.priority - b.priority || a.index - b.index)
     .slice(0, 2)

@@ -1,9 +1,10 @@
-import { EventId } from "@t3tools/contracts";
+import { EventId, MessageId, UserInputRequestedPayload } from "@t3tools/contracts";
 import {
   type OrchestrationCommand,
   type OrchestrationEvent,
   type OrchestrationReadModel,
   type OrchestrationThread,
+  type OrchestrationThreadActivity,
 } from "@t3tools/contracts/legacy-orchestration";
 import * as DateTime from "effect/DateTime";
 import * as Crypto from "effect/Crypto";

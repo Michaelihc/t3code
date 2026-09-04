@@ -97,7 +97,7 @@ const PROJECT_ICON_COLOR_BY_NAME: Record<ProjectIconName, ProjectIconColor> = {
 export function ProjectFavicon(input: {
   environmentId: EnvironmentId;
   cwd: string;
-  projectName: string;
+  projectName?: string | undefined;
   faviconPath?: string | null | undefined;
   projectIcon?: ProjectIconOverride | null | undefined;
   className?: string | undefined;
@@ -129,7 +129,7 @@ export function ProjectFavicon(input: {
   }
   const automaticIconName = input.fallbackIcon
     ? null
-    : selectProjectIcon(input.projectName, input.cwd);
+    : selectProjectIcon(input.projectName ?? input.cwd, input.cwd);
   const FallbackIcon =
     input.fallbackIcon ??
     (automaticIconName?.kind === "lucide" ? PROJECT_ICONS[automaticIconName.icon] : undefined);

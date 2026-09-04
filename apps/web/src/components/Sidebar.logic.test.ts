@@ -406,22 +406,6 @@ describe("hasUnseenCompletion", () => {
       }),
     ).toBe(false);
   });
-
-  it("recognizes a server-tracked completion without a local visit marker", () => {
-    const lastVisitedAt = resolveThreadLastVisitedAt("2026-03-09T10:04:00.000Z", undefined);
-
-    expect(
-      hasUnseenCompletion({
-        hasActionableProposedPlan: false,
-        hasPendingApprovals: false,
-        hasPendingUserInput: false,
-        interactionMode: "default",
-        latestRun: makeLatestRun(),
-        lastVisitedAt,
-        runtime: null,
-      }),
-    ).toBe(true);
-  });
 });
 
 describe("createThreadJumpHintVisibilityController", () => {

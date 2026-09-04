@@ -73,8 +73,15 @@ export interface ProviderInstance {
   readonly enabled: boolean;
   readonly snapshot: ServerProviderShape;
   readonly snapshotForCwd?: (cwd: string) => Effect.Effect<ServerProvider, ProviderDriverError>;
+  readonly refreshModels?: () => Effect.Effect<void, ProviderDriverError>;
+  /** Redeem one account-level rate-limit reset credit, then refresh the snapshot. */
+  readonly consumeResetCredit?: () => Effect.Effect<
+    ProviderConsumeResetCreditOutcome,
+    ProviderDriverError
+  >;
   readonly orchestrationAdapter: ProviderAdapterV2Shape;
   readonly textGeneration: TextGeneration["Service"];
+  readonly auth?: ProviderAuthController;
 }
 
 export interface ProviderContinuationIdentity {

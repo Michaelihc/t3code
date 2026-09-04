@@ -46,7 +46,6 @@ describe("AnnotatableCodeView", () => {
         composerDraftTarget={"draft-test" as never}
         options={{}}
         renderHeaderPrefix={() => null}
-        renderHeaderFilenameSuffix={() => null}
       />,
     );
 

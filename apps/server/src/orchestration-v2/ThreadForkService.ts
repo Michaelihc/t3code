@@ -42,6 +42,7 @@ export interface ThreadForkServiceV2Shape {
     readonly createdBy: OrchestrationV2Actor;
     readonly creationSource: OrchestrationV2CreationSource;
     readonly createdAt: DateTime.Utc;
+    readonly activeSnapshot?: boolean;
   }) => Effect.Effect<ThreadForkPlanV2, ThreadForkPlanError>;
 }
 
@@ -55,7 +56,10 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
   ThreadForkServiceV2.of({
     plan: (input) =>
       Effect.gen(function* () {
-        if (input.sourceRun.status !== "completed") {
+        const sourceRunIsForkable = input.activeSnapshot
+          ? input.sourceRun.status === "running" || input.sourceRun.status === "waiting"
+          : input.sourceRun.status === "completed";
+        if (!sourceRunIsForkable) {
           return yield* new ThreadForkPlanError({
             sourceThreadId: input.sourceProjection.thread.id,
             targetThreadId: input.targetThreadId,
@@ -74,11 +78,17 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
             relationshipToParent: "fork",
             rootThreadId: input.sourceProjection.thread.lineage.rootThreadId,
           },
-          forkedFrom: {
-            type: "run",
-            threadId: input.sourceProjection.thread.id,
-            runId: input.sourceRun.id,
-          },
+          forkedFrom:
+            input.activeSnapshot && input.sourceProviderThread !== undefined
+              ? {
+                  type: "provider_thread",
+                  providerThreadId: input.sourceProviderThread.id,
+                }
+              : {
+                  type: "run",
+                  threadId: input.sourceProjection.thread.id,
+                  runId: input.sourceRun.id,
+                },
           createdAt: input.createdAt,
           updatedAt: input.createdAt,
           archivedAt: null,

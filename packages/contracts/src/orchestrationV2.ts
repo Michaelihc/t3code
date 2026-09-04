@@ -108,9 +108,18 @@ export type OrchestrationV2ContextSourcePoint = typeof OrchestrationV2ContextSou
 export const OrchestrationV2ThreadForkSourcePoint = Schema.Union([
   Schema.Struct({ type: Schema.Literal("latest_stable") }),
   Schema.Struct({ type: Schema.Literal("run"), runId: RunId }),
+  Schema.Struct({ type: Schema.Literal("active_run"), runId: RunId }),
   Schema.Struct({ type: Schema.Literal("checkpoint"), checkpointId: CheckpointId }),
 ]);
 export type OrchestrationV2ThreadForkSourcePoint = typeof OrchestrationV2ThreadForkSourcePoint.Type;
+
+export const OrchestrationV2ThreadMergeBackSourcePoint = Schema.Union([
+  Schema.Struct({ type: Schema.Literal("latest_stable") }),
+  Schema.Struct({ type: Schema.Literal("run"), runId: RunId }),
+  Schema.Struct({ type: Schema.Literal("checkpoint"), checkpointId: CheckpointId }),
+]);
+export type OrchestrationV2ThreadMergeBackSourcePoint =
+  typeof OrchestrationV2ThreadMergeBackSourcePoint.Type;
 
 export const OrchestrationV2ContextTransferResolution = Schema.Union([
   Schema.Struct({
@@ -179,6 +188,10 @@ export const OrchestrationV2ThreadCapabilities = Schema.Struct({
   canRollbackThread: Schema.Boolean,
   canForkThread: Schema.Boolean,
   canForkFromTurn: Schema.Boolean,
+  // Optional on the wire so persisted provider-session capabilities from older servers decode.
+  canForkActiveTurn: Schema.optional(Schema.Boolean).pipe(
+    Schema.withDecodingDefault(Effect.succeed(false)),
+  ),
   canForkFromSubagentThread: Schema.Boolean,
   exposesNativeThreadId: Schema.Boolean,
 });
@@ -2253,7 +2266,7 @@ export const OrchestrationV2Command = Schema.Union([
     commandId: CommandId,
     sourceThreadId: ThreadId,
     targetThreadId: ThreadId,
-    sourcePoint: OrchestrationV2ThreadForkSourcePoint,
+    sourcePoint: OrchestrationV2ThreadMergeBackSourcePoint,
     createdAt: Schema.optional(Schema.DateTimeUtc),
   }),
   Schema.Struct({

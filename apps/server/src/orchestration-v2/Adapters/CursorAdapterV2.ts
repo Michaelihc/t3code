@@ -112,6 +112,7 @@ export const CursorProviderCapabilitiesV2 = {
     canRollbackThread: false,
     canForkThread: false,
     canForkFromTurn: false,
+    canForkActiveTurn: false,
     canForkFromSubagentThread: false,
     exposesNativeThreadId: true,
   },

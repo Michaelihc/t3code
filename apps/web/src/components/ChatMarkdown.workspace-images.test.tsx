@@ -5,8 +5,6 @@ import { beforeEach, describe, expect, it, vi } from "vite-plus/test";
 const testState = vi.hoisted(() => ({
   resources: [] as Array<unknown>,
   assetState: "success" as "success" | "loading" | "failure",
-  editorEnvironmentIds: [] as Array<unknown>,
-  remoteEnvironmentIds: [] as Array<unknown>,
 }));
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
@@ -26,23 +24,23 @@ vi.mock("../state/session", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../state/session")>()),
   usePreparedConnection: () => ({ _tag: "Loading" }),
 }));
-vi.mock("../editorPreferences", () => ({
-  useOpenInPreferredEditor: (environmentId: unknown) => {
-    testState.editorEnvironmentIds.push(environmentId);
-    return vi.fn();
-  },
-  usePreferredEditor: () => ["vscode", vi.fn()],
+vi.mock("../state/entities", () => ({
+  readThreadShell: () => null,
+  useProjects: () => [],
 }));
 vi.mock("../remoteOpen", () => ({
-  useRemoteOpenResolution: (environmentId: unknown) => {
-    testState.remoteEnvironmentIds.push(environmentId);
-    return {
-      isResolved: true,
-      state: { mode: "local-exec", localExecutionUnavailableReason: null },
-    };
-  },
+  useRemoteOpenResolution: () => ({ state: { mode: "local-exec" }, isResolved: true }),
 }));
-vi.mock("~/lib/openPullRequestLink", () => ({ useOpenChangeRequestLink: () => vi.fn() }));
+vi.mock("../editorPreferences", () => ({
+  useOpenInPreferredEditor: () => vi.fn(),
+  usePreferredEditor: () => [null, vi.fn()],
+}));
+vi.mock("~/lib/openPullRequestLink", () => ({
+  findProjectForChangeRequest: () => undefined,
+  matchesLinkedPullRequestUrl: () => false,
+  parseChangeRequestUrl: () => null,
+  useOpenChangeRequestLink: () => vi.fn(),
+}));
 
 import ChatMarkdown from "./ChatMarkdown";
 import { FileMarkdownPreview } from "./files/FileMarkdownPreview";
@@ -94,8 +92,6 @@ describe("ChatMarkdown workspace images", () => {
   beforeEach(() => {
     testState.resources = [];
     testState.assetState = "success";
-    testState.editorEnvironmentIds = [];
-    testState.remoteEnvironmentIds = [];
   });
 
   it.each([
@@ -118,8 +114,16 @@ describe("ChatMarkdown workspace images", () => {
     ]);
   });
 
-  it("loads relative workspace paths through signed asset URLs", () => {
-    const html = render("![relative](.t3/workspace-image.svg)");
+  it("loads every Windows workspace path form through a signed asset URL", () => {
+    const imagePath = "C:/Users/shawn/project/.t3/workspace-image.svg";
+    const html = render(
+      [
+        "![relative](.t3/workspace-image.svg)",
+        `![absolute](${imagePath})`,
+        `![file URL](file:///${imagePath})`,
+        "![UNC file URL](file://server/share/workspace-image.svg)",
+      ].join("\n\n"),
+    );
 
     expect(testState.resources).toEqual([
       {
@@ -132,15 +136,26 @@ describe("ChatMarkdown workspace images", () => {
       {
         _tag: "media-file",
         threadId: threadRef.threadId,
-        path: "C:/Users/shawn/project/.t3/workspace-image.svg",
+        path: "\\\\server\\share\\workspace-image.svg",
       },
+    ]);
+    expect(html.match(/https:\/\/signed\.test\/workspace-image\.svg/g)).toHaveLength(4);
+    expect(html.match(/max-w-\[min\(100%,30rem\)\]/g)).toHaveLength(4);
+    expect(html.match(/max-h-\[30rem\]/g)).toHaveLength(4);
+    expect(html).not.toContain("Image unavailable");
+  });
+
+  it("normalizes a drive-absolute src in raw image HTML", () => {
+    const html = render(String.raw`<img src="D:\screens\workspace-image.svg" alt="raw">`);
+
+    expect(testState.resources).toEqual([
       {
         _tag: "media-file",
         threadId: threadRef.threadId,
         path: "D:/screens/workspace-image.svg",
       },
     ]);
-    expect(html.match(/https:\/\/signed\.test\/workspace-image\.svg/g)).toHaveLength(2);
+    expect(html).toContain("https://signed.test/workspace-image.svg");
   });
 
   it("keeps a tall image placeholder and loaded image at the same proportional bounds", () => {
@@ -246,6 +261,7 @@ describe("ChatMarkdown workspace images", () => {
 
   it("uses a static bounded-width placeholder while a signed asset URL loads", () => {
     testState.assetState = "loading";
+
     const html = render("![loading](.t3/workspace-image.svg)");
     const className = /<span[^>]*aria-label="Loading image"[^>]*class="([^"]*)"/.exec(html)?.[1];
 
@@ -254,25 +270,31 @@ describe("ChatMarkdown workspace images", () => {
     expect(className?.split(" ")).toContain("w-64");
   });
 
-  it("keeps remote images directly loadable", () => {
-    const html = render("![remote](https://example.com/image.png)");
-    expect(testState.resources).toEqual([]);
-    expect(html).toContain('src="https://example.com/image.png"');
-    expect(html).toContain("max-h-[30rem]");
-  });
-
-  it("uses the markdown owner's environment for file actions", () => {
-    const owningEnvironmentId = EnvironmentId.make("env-pull-request");
-
-    renderToStaticMarkup(
-      <ChatMarkdown
-        cwd="/workspace/project"
-        environmentId={owningEnvironmentId}
-        text="[Open](src/main.ts)"
-      />,
+  it("never passes a workspace source to a raw image when thread context is unavailable", () => {
+    const html = renderWithoutThread(
+      "![file URL](file:///C:/Users/shawn/project/workspace-image.svg)",
     );
 
-    expect(testState.editorEnvironmentIds).toEqual([owningEnvironmentId]);
-    expect(testState.remoteEnvironmentIds).toEqual([owningEnvironmentId]);
+    expect(testState.resources).toEqual([]);
+    expect(html).toContain("Image unavailable");
+    expect(html).not.toContain("file://");
+  });
+
+  it("blocks unsupported image schemes instead of passing them to a raw image", () => {
+    const html = render("![unsupported](content://media/image/1)");
+
+    expect(testState.resources).toEqual([]);
+    expect(html).toContain("Image unavailable");
+    expect(html).not.toContain("content://");
+  });
+
+  it("keeps remote images directly loadable", () => {
+    const html = render("![remote](https://example.com/image.png)");
+
+    expect(testState.resources).toEqual([]);
+    expect(html).toContain('src="https://example.com/image.png"');
+    expect(html).toContain("max-w-[min(100%,30rem)]");
+    expect(html).toContain("max-h-[30rem]");
+    expect(html).not.toContain("Image unavailable");
   });
 });

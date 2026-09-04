@@ -1,7 +1,7 @@
 import {
   type ChatAttachment,
   CommandId,
-  type MessageId,
+  MessageId,
   type ModelSelection,
   OrchestrationV2Command,
   type OrchestrationV2AppThread,
@@ -28,6 +28,7 @@ import {
   type ProviderSessionId,
   RunId,
   ThreadId,
+  TurnItemId,
 } from "@t3tools/contracts";
 import { modelSelectionsEqual } from "@t3tools/shared/model";
 import * as Context from "effect/Context";
@@ -372,6 +373,7 @@ function runForSourcePoint(
     case "latest_stable":
       return latestStableRun(projection);
     case "run":
+    case "active_run":
       return projection.runs.find((run) => run.id === sourcePoint.runId) ?? null;
     case "checkpoint": {
       const checkpoint = projection.checkpoints.find(
@@ -426,6 +428,76 @@ function contextSourcePointForRun(
     ...(providerTurn?.nativeTurnRef === null || providerTurn?.nativeTurnRef === undefined
       ? {}
       : { providerTurnRef: providerTurn.nativeTurnRef }),
+  };
+}
+
+const LIVE_FORK_MODEL_NOTICE =
+  "You are a fork created while the original agent is still working. The inherited final turn is an incomplete snapshot. Do not resume or continue that work unless the user explicitly asks you to.";
+
+function snapshotTurnItemForLiveFork(input: {
+  readonly item: OrchestrationV2TurnItem;
+  readonly targetThreadId: ThreadId;
+  readonly position: number;
+  readonly capturedAt: DateTime.Utc;
+}): OrchestrationV2TurnItem {
+  const common = {
+    id: TurnItemId.make(
+      `turn-item:live-fork:${input.targetThreadId}:${input.position}:${input.item.id}`,
+    ),
+    threadId: input.targetThreadId,
+    runId: null,
+    nodeId: null,
+    providerThreadId: null,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: input.position,
+    status: input.item.status === "failed" ? ("failed" as const) : ("completed" as const),
+    completedAt: input.item.completedAt ?? input.capturedAt,
+  };
+  switch (input.item.type) {
+    case "user_message":
+    case "assistant_message":
+      return {
+        ...input.item,
+        ...common,
+        messageId: MessageId.make(`message:live-fork:${input.targetThreadId}:${input.position}`),
+        ...(input.item.type === "assistant_message" ? { streaming: false as const } : {}),
+      } as OrchestrationV2TurnItem;
+    case "reasoning":
+      return { ...input.item, ...common, streaming: false } as OrchestrationV2TurnItem;
+    case "proposed_plan":
+      return { ...input.item, ...common, streaming: false } as OrchestrationV2TurnItem;
+    default:
+      return { ...input.item, ...common } as OrchestrationV2TurnItem;
+  }
+}
+
+function liveForkMarker(input: {
+  readonly sourceProviderThread: OrchestrationV2ProviderThread;
+  readonly targetProviderThread: OrchestrationV2ProviderThread;
+  readonly targetThreadId: ThreadId;
+  readonly ordinal: number;
+  readonly capturedAt: DateTime.Utc;
+}): OrchestrationV2TurnItem {
+  return {
+    id: TurnItemId.make(`turn-item:live-fork-marker:${input.targetThreadId}`),
+    threadId: input.targetThreadId,
+    runId: null,
+    nodeId: null,
+    providerThreadId: input.targetProviderThread.id,
+    providerTurnId: null,
+    nativeItemRef: null,
+    parentItemId: null,
+    ordinal: input.ordinal,
+    status: "completed",
+    title: "Forked during active response",
+    startedAt: null,
+    completedAt: input.capturedAt,
+    updatedAt: input.capturedAt,
+    type: "fork",
+    source: { type: "provider_thread", providerThreadId: input.sourceProviderThread.id },
+    targetThreadId: input.targetThreadId,
   };
 }
 
@@ -2072,14 +2144,27 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `No stable source run was found for fork source ${command.sourcePoint.type}.`,
       });
     }
-    if (sourceRun.status !== "completed") {
+    const activeSnapshot = command.sourcePoint.type === "active_run";
+    const sourceRunIsForkable = activeSnapshot
+      ? sourceRun.status === "running" || sourceRun.status === "waiting"
+      : sourceRun.status === "completed";
+    if (!sourceRunIsForkable) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Fork source run ${sourceRun.id} is ${sourceRun.status}; only completed runs are supported.`,
+        cause: activeSnapshot
+          ? `Active fork source run ${sourceRun.id} is ${sourceRun.status}; only running or waiting runs are supported.`
+          : `Fork source run ${sourceRun.id} is ${sourceRun.status}; only completed runs are supported.`,
       });
     }
     const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
+    if (activeSnapshot && sourceProviderThread === undefined) {
+      return yield* new OrchestratorDispatchError({
+        commandId: command.commandId,
+        commandType: command.type,
+        cause: `Active fork source run ${sourceRun.id} has no provider thread.`,
+      });
+    }
     const now = command.createdAt ?? (yield* DateTime.now);
     const emitEvent = emit(events, command);
     const transferId = yield* mapDispatchError(command)(
@@ -2101,8 +2186,74 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         createdBy: command.createdBy,
         creationSource: command.creationSource,
         createdAt: now,
+        activeSnapshot,
       })
       .pipe(mapDispatchError(command));
+
+    const liveFork = activeSnapshot
+      ? yield* Effect.gen(function* () {
+          const activeSourceProviderThread = sourceProviderThread!;
+          if (activeSourceProviderThread.providerSessionId === null) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Provider thread ${activeSourceProviderThread.id} has no active session.`,
+            });
+          }
+          const sourceSession = yield* providerSessions
+            .get(activeSourceProviderThread.providerSessionId)
+            .pipe(mapDispatchError(command));
+          if (Option.isNone(sourceSession)) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Provider session ${activeSourceProviderThread.providerSessionId} is not active.`,
+            });
+          }
+          if (sourceSession.value.providerSession.capabilities.threads.canForkActiveTurn !== true) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Provider ${sourceSession.value.driver} cannot fork an active turn.`,
+            });
+          }
+          const resolvedRuntimePolicy = yield* runtimePolicy
+            .resolve({ thread: sourceProjection.thread, modelSelection: sourceRun.modelSelection })
+            .pipe(mapDispatchError(command));
+          const targetProviderThread = yield* sourceSession.value
+            .forkThread({
+              sourceProviderThread: activeSourceProviderThread,
+              sourceProviderTurns: sourceProjection.providerTurns,
+              targetThreadId: command.targetThreadId,
+              modelSelection: sourceRun.modelSelection,
+              runtimePolicy: resolvedRuntimePolicy,
+              modelVisibleNotice: LIVE_FORK_MODEL_NOTICE,
+            })
+            .pipe(mapDispatchError(command));
+          const nativeThreadRef = targetProviderThread.nativeThreadRef;
+          if (nativeThreadRef === null) {
+            return yield* new OrchestratorDispatchError({
+              commandId: command.commandId,
+              commandType: command.type,
+              cause: `Provider ${sourceSession.value.driver} did not return a native thread reference for the active fork.`,
+            });
+          }
+          const snapshotItems = sourceProjection.visibleTurnItems.map((row, position) =>
+            snapshotTurnItemForLiveFork({
+              item: row.item,
+              targetThreadId: command.targetThreadId,
+              position,
+              capturedAt: now,
+            }),
+          );
+          return {
+            sourceSession: sourceSession.value,
+            targetProviderThread: { ...targetProviderThread, status: "idle" as const },
+            nativeThreadRef,
+            snapshotItems,
+          };
+        })
+      : null;
 
     yield* emitEvent({
       type: "thread.created",
@@ -2111,13 +2262,64 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       occurredAt: now,
       payload: targetThread,
     });
+    const emittedTransfer: OrchestrationV2ContextTransfer =
+      liveFork === null
+        ? transfer
+        : {
+            ...transfer,
+            targetProviderInstanceId: sourceRun.providerInstanceId,
+            status: "consumed",
+            resolution: {
+              strategy: "native_fork",
+              providerThreadRef: liveFork.nativeThreadRef,
+            },
+            error: null,
+            updatedAt: now,
+            consumedAt: now,
+          };
     yield* emitEvent({
       type: "context-transfer.created",
       threadId: command.targetThreadId,
       providerInstanceId: sourceRun.providerInstanceId,
       occurredAt: now,
-      payload: transfer,
+      payload: emittedTransfer,
     });
+    if (liveFork !== null) {
+      yield* emitEvent({
+        type: "provider-session.attached",
+        threadId: command.targetThreadId,
+        driver: liveFork.sourceSession.driver,
+        providerInstanceId: sourceRun.providerInstanceId,
+        occurredAt: now,
+        payload: liveFork.sourceSession.providerSession,
+      });
+      yield* emitEvent({
+        type: "provider-thread.updated",
+        threadId: command.targetThreadId,
+        driver: liveFork.sourceSession.driver,
+        providerInstanceId: sourceRun.providerInstanceId,
+        occurredAt: now,
+        payload: liveFork.targetProviderThread,
+      });
+      for (const item of [
+        ...liveFork.snapshotItems,
+        liveForkMarker({
+          sourceProviderThread: sourceProviderThread!,
+          targetProviderThread: liveFork.targetProviderThread,
+          targetThreadId: command.targetThreadId,
+          ordinal: liveFork.snapshotItems.length,
+          capturedAt: now,
+        }),
+      ]) {
+        yield* emitEvent({
+          type: "turn-item.updated",
+          threadId: command.targetThreadId,
+          providerInstanceId: sourceRun.providerInstanceId,
+          occurredAt: now,
+          payload: item,
+        });
+      }
+    }
   });
 
   const dispatchThreadMergeBack = Effect.fn("orchestrationV2.dispatch.threadMergeBack")(function* (

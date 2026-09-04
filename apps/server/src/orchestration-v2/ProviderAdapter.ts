@@ -456,6 +456,8 @@ export interface ProviderAdapterV2ForkThreadInput {
   readonly sourceProviderThread: OrchestrationV2ProviderThread;
   readonly sourceProviderTurns?: ReadonlyArray<OrchestrationV2ProviderTurn>;
   readonly providerTurnId?: ProviderTurnId;
+  /** Appended to the native fork as model-visible developer context without starting a turn. */
+  readonly modelVisibleNotice?: string;
   readonly targetThreadId: ThreadId;
   readonly ownerNodeId?: NodeId;
   readonly modelSelection?: ModelSelection;

@@ -485,7 +485,13 @@ export function PullRequestDetailPanel({
   /** Page-owned detail columns use this to clear the selected pull request. */
   onClose?: () => void;
   /** Keeps surrounding inferred thread state in step with refreshed host state. */
-  onStateChange?: (status: { repository: string; number: number; state: PullRequestState }) => void;
+  onStateChange?: (status: {
+    projectId: string;
+    repository: string;
+    number: number;
+    state: PullRequestState;
+    isDraft: boolean;
+  }) => void;
   /**
    * Beside a thread, the checkout affordance disappears: the panel is showing that thread's
    * own pull request, so the branch is already under the reader's feet — and checking it out
@@ -702,11 +708,13 @@ export function PullRequestDetailPanel({
   useLayoutEffect(() => {
     if (!resolvedCoreDetail) return;
     onStateChange?.({
+      projectId: reference.projectId,
       repository: resolvedCoreDetail.repository,
       number: resolvedCoreDetail.number,
       state: resolvedCoreDetail.state,
+      isDraft: resolvedCoreDetail.isDraft,
     });
-  }, [onStateChange, resolvedCoreDetail]);
+  }, [onStateChange, reference.projectId, resolvedCoreDetail]);
   // Core detail is cheap enough to re-read while this stays open. Activity is heavier, so the
   // revision effect above reads it only after this same pull request reports a change. Keyed by
   // the pull request rather than by the panel, because this one panel shows a different pull
