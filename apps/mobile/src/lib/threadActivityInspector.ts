@@ -221,7 +221,11 @@ export function buildThreadActivityInspector(
       }
       break;
     case "dynamic_tool":
-      addBlock(blocks, "Input", withoutWorkflowScript(item.input));
+      addBlock(
+        blocks,
+        "Input",
+        workflowScript === null ? item.input : withoutWorkflowScript(item.input),
+      );
       addBlock(blocks, "Output", item.output);
       break;
     case "approval_request":

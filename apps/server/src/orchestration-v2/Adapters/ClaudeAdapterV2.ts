@@ -4781,7 +4781,9 @@ export function makeClaudeAdapterV2(
           readonly nativeThreadId: string;
           readonly message: ClaudeTaskProgressMessage;
         }) {
-          const { context, message } = input;
+          const { message } = input;
+          const context =
+            (yield* Ref.get(sessionWorkflowContextByTaskId)).get(message.task_id) ?? input.context;
           const workflowEntries = claudeWorkflowProgressEntries(message);
           const progress =
             trimmedClaudeWorkflowString(message.summary) ?? message.description.trim();

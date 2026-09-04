@@ -4003,14 +4003,59 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         yield* Queue.offer(
           harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Synthesis continued during an unrelated user turn",
+            usage: { total_tokens: 5_900, tool_uses: 14, duration_ms: 95_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 3,
+                label: "synthesizer",
+                phaseIndex: 2,
+                phaseTitle: "Synthesize",
+                state: "progress",
+                startedAt: 1_788_400_090_000,
+                lastToolName: "Write",
+                lastToolSummary: "Still combining survey results",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015d",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" &&
+                event.subagent.progress === "Still combining survey results",
+            ),
+          "workflow progress during unrelated turn",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
           makeResultFrame({
             uuid: "00000000-0000-4000-8000-00000000015b",
             result: "The workflow is still finishing.",
+            subtype: "error_during_execution",
+            isError: true,
+            errors: ["The unrelated status turn failed."],
           }),
         );
         yield* awaitUntil(
           () => harness.terminalEvents().length === 2,
           "workflow user turn terminal",
+        );
+        assert.equal(harness.terminalEvents()[1]?.status, "failed");
+        assert.equal(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast((subagent) => subagent.kind === "workflow")?.status,
+          "running",
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -4066,7 +4111,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(latestMembers.get(2)?.status, "completed");
         assert.equal(latestMembers.get(3)?.status, "completed");
         assert.equal(latestMembers.get(3)?.title, "synthesizer");
-        assert.equal(latestMembers.get(3)?.progress, "Combining survey results");
+        assert.equal(latestMembers.get(3)?.progress, "Still combining survey results");
         assert.isNotNull(latestMembers.get(1)?.completedAt);
         assert.isNotNull(latestMembers.get(2)?.completedAt);
         assert.isNotNull(latestMembers.get(3)?.completedAt);

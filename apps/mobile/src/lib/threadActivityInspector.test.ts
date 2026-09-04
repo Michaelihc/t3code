@@ -173,6 +173,24 @@ describe("buildThreadActivityInspector", () => {
       ]),
     );
     expect(dynamicModel.structuredDetails).toContain('"type": "dynamic_tool"');
+
+    const scriptedDynamicTool: OrchestrationV2TurnItem = {
+      ...itemBase("scripted-dynamic"),
+      type: "dynamic_tool",
+      toolName: "custom",
+      input: { script: "echo visible" },
+    };
+    const scriptedDynamicModel = buildThreadActivityInspector(
+      activityFor(scriptedDynamicTool),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+    );
+    expect(scriptedDynamicModel.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Input", value: expect.stringContaining("echo visible") }),
+      ]),
+    );
+    expect(scriptedDynamicModel.structuredDetails).toContain("echo visible");
   });
 
   it("uses the workflow coordinator lifecycle for a workflow tool", () => {

@@ -3,11 +3,11 @@ import {
   type EnvironmentId,
   type MessageId,
   type OrchestrationV2TurnItem,
+  RunId,
   type RunAttemptId,
   type ScopedThreadRef,
   type ServerProvider,
   type ServerProviderSkill,
-  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
@@ -369,14 +369,10 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   }, [subagents]);
   const workflowSummaryByRunId = useMemo(() => {
     const summaries = new Map<RunId, ClaudeWorkflowFoldSummary[]>();
-    for (const timelineEntry of timelineEntries) {
-      if (timelineEntry.kind !== "work") continue;
-      const item = timelineEntry.entry.projectedItem?.item;
-      if (item?.type !== "dynamic_tool") continue;
-      const toolUseId = item.nativeItemRef?.nativeId;
-      const workflow = toolUseId ? workflowByToolUseId.get(toolUseId) : undefined;
-      const runId = item.runId ?? timelineEntry.entry.runId;
-      if (!workflow || !runId) continue;
+    for (const workflow of subagents) {
+      if (workflow.kind !== "workflow") continue;
+      if (!workflow.runId) continue;
+      const runId = RunId.make(workflow.runId);
       const summary = {
         name: workflow.workflowName ?? workflow.title,
         agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
@@ -386,7 +382,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       summaries.set(runId, [...(summaries.get(runId) ?? []), summary]);
     }
     return summaries;
-  }, [timelineEntries, workflowAgentCountByParentId, workflowByToolUseId]);
+  }, [subagents, workflowAgentCountByParentId]);
   const workflowState = useMemo<TimelineWorkflowState>(
     () => ({
       workflowByToolUseId,
