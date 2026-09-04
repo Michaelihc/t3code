@@ -3691,6 +3691,14 @@ export function makeClaudeAdapterV2(
                   )
                 : now,
             );
+            if (
+              entry.attempt !== undefined &&
+              entry.attempt === existing?.attempt &&
+              entry.lastProgressAt !== undefined &&
+              DateTime.toEpochMillis(reportedUpdatedAt) < DateTime.toEpochMillis(existing.updatedAt)
+            ) {
+              continue;
+            }
             const updatedAt =
               !resetTelemetry &&
               existing !== undefined &&

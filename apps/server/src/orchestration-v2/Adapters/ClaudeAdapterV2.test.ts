@@ -3905,6 +3905,62 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         assert.equal(DateTime.toEpochMillis(sameStatusRetry.startedAt), 1_788_400_075_000);
         assert.equal(DateTime.toEpochMillis(sameStatusRetry.completedAt), 1_788_400_077_000);
+        const beforeOlderSameAttemptTerminal = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "An older terminal snapshot from the same attempt arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 77_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                attempt: 5,
+                lastProgressAt: 1_788_400_076_000,
+                resultPreview: "Stale success",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Older-terminal marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000016e",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Older-terminal marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeOlderSameAttemptTerminal,
+        );
+        assert.deepInclude(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast(
+              (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+            ),
+          { status: "failed", error: "The later retry failed too" },
+        );
         const beforeSameAttemptActiveCount = subagentEvents().filter(
           (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
         ).length;

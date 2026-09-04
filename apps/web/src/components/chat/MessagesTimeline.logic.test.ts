@@ -1512,6 +1512,71 @@ describe("deriveMessagesTimelineRows", () => {
       isLastExpandedToolGroupEntry: true,
     });
   });
+
+  it("keeps Workflow tools out of collapsed web work groups", () => {
+    const timelineEntries = [
+      {
+        id: "work-entry-before",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:01Z",
+        entry: {
+          id: "work-before",
+          createdAt: "2026-01-01T00:00:01Z",
+          label: "Read file",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          toolLifecycleStatus: "completed" as const,
+        },
+      },
+      {
+        id: "work-entry-workflow",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:02Z",
+        entry: {
+          id: "work-workflow",
+          createdAt: "2026-01-01T00:00:02Z",
+          label: "Workflow complete",
+          tone: "tool" as const,
+          itemType: "dynamic_tool" as const,
+          toolLifecycleStatus: "completed" as const,
+          projectedItem: {
+            item: { type: "dynamic_tool", toolName: "Workflow" },
+          } as never,
+        },
+      },
+      {
+        id: "work-entry-after",
+        kind: "work" as const,
+        createdAt: "2026-01-01T00:00:03Z",
+        entry: {
+          id: "work-after",
+          createdAt: "2026-01-01T00:00:03Z",
+          label: "Ran command",
+          tone: "tool" as const,
+          itemType: "command_execution" as const,
+          toolLifecycleStatus: "completed" as const,
+        },
+      },
+    ];
+
+    const rows = deriveMessagesTimelineRows({
+      timelineEntries,
+      isWorking: false,
+      turnDiffSummaryByAssistantMessageId: new Map(),
+      revertTurnCountByUserMessageId: new Map(),
+    });
+
+    expect(rows.map((row) => row.id)).toEqual([
+      "work-toggle:work-entry-before",
+      "work-entry-workflow",
+      "work-toggle:work-entry-after",
+    ]);
+    expect(rows[1]).toMatchObject({
+      kind: "work",
+      groupedEntries: [expect.objectContaining({ id: "work-workflow" })],
+      isExpandedToolGroupEntry: false,
+    });
+  });
 });
 
 describe("computeStableMessagesTimelineRows", () => {

@@ -188,6 +188,15 @@ describe("mobile workflow presentation", () => {
 
     expect(store.snapshot(["toolu_workflow"])).toBeGreaterThan(metadataSnapshot);
     expect(surveyListener).toHaveBeenCalledTimes(2);
+    expect(runListener).toHaveBeenCalledTimes(1);
+
+    const memberCountGroup = {
+      ...metadataGroup,
+      unphasedMembers: [runtimeSubagent({ id: "workflow:survey:orphan", phaseIndex: null })],
+    } satisfies AgentPanelWorkflowGroup;
+    store.replace([memberCountGroup]);
+
+    expect(surveyListener).toHaveBeenCalledTimes(3);
     expect(runListener).toHaveBeenCalledTimes(2);
 
     unsubscribeSurvey();

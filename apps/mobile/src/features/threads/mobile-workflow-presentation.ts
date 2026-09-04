@@ -57,6 +57,18 @@ function workflowGroupRevision(group: AgentPanelWorkflowGroup): string {
   ].join("\u0000");
 }
 
+function workflowRunSummaryRevision(group: AgentPanelWorkflowGroup): string {
+  return [
+    group.workflow.id,
+    group.workflow.status,
+    group.workflow.workflowName,
+    group.workflow.title,
+    group.workflow.startedAt,
+    group.workflow.completedAt,
+    workflowMembers(group).length,
+  ].join("\u0000");
+}
+
 /** Keyed bridge that updates only work-log rows containing the changed workflow. */
 export class MobileWorkflowGroupStore {
   readonly #groups = new Map<string, AgentPanelWorkflowGroup>();
@@ -91,7 +103,7 @@ export class MobileWorkflowGroupStore {
     const nextRunRevisions = new Map(
       [...nextGroupsByRunId].map(([runId, runGroups]) => [
         runId,
-        runGroups.map(workflowGroupRevision).join("\u0001"),
+        runGroups.map(workflowRunSummaryRevision).join("\u0001"),
       ]),
     );
 
