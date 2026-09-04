@@ -171,6 +171,11 @@ interface TimelineRowSharedState {
   /** Projection runs, for recovering handoff models on legacy items. */
   runs: ReadonlyArray<HandoffTimelineRun>;
   workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
+  workflowAgentCountByParentId: ReadonlyMap<string, number>;
+  workflowSummaryByRunId: ReadonlyMap<
+    RunId,
+    { readonly name: string; readonly agentCount: number }
+  >;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -351,6 +356,31 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       ),
     [subagents],
   );
+  const workflowAgentCountByParentId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const subagent of subagents) {
+      if (subagent.kind !== "workflow_agent" || !subagent.parentAgentId) continue;
+      counts.set(subagent.parentAgentId, (counts.get(subagent.parentAgentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [subagents]);
+  const workflowSummaryByRunId = useMemo(() => {
+    const summaries = new Map<RunId, { readonly name: string; readonly agentCount: number }>();
+    for (const timelineEntry of timelineEntries) {
+      if (timelineEntry.kind !== "work") continue;
+      const item = timelineEntry.entry.projectedItem?.item;
+      if (item?.type !== "dynamic_tool") continue;
+      const toolUseId = item.nativeItemRef?.nativeId;
+      const workflow = toolUseId ? workflowByToolUseId.get(toolUseId) : undefined;
+      const runId = item.runId ?? timelineEntry.entry.runId;
+      if (!workflow || !runId) continue;
+      summaries.set(runId, {
+        name: workflow.workflowName ?? workflow.title,
+        agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
+      });
+    }
+    return summaries;
+  }, [timelineEntries, workflowAgentCountByParentId, workflowByToolUseId]);
 
   useEffect(() => {
     return () => {
@@ -609,6 +639,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerStatuses,
       runs,
       workflowByToolUseId,
+      workflowAgentCountByParentId,
+      workflowSummaryByRunId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -633,6 +665,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       providerStatuses,
       runs,
       workflowByToolUseId,
+      workflowAgentCountByParentId,
+      workflowSummaryByRunId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -1437,6 +1471,21 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
+  const workflowSummary = ctx.workflowSummaryByRunId.get(row.runId);
+  const duration = row.label.startsWith("Worked for ")
+    ? row.label.slice("Worked for ".length)
+    : null;
+  const label = workflowSummary
+    ? [
+        `Workflow ${workflowSummary.name}`,
+        workflowSummary.agentCount > 0
+          ? `${workflowSummary.agentCount} ${workflowSummary.agentCount === 1 ? "agent" : "agents"}`
+          : null,
+        duration,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" · ")
+    : row.label;
 
   return (
     <div className="pb-2 pt-1">
@@ -1447,7 +1496,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         onClick={() => ctx.onToggleTurnFold(row.runId)}
         className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-xs text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
-        <span>{row.label}</span>
+        <span>{label}</span>
         <Icon className="size-3.5" />
       </button>
     </div>
@@ -2976,6 +3025,9 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const workflowToolUseId =
     projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
   const workflow = workflowToolUseId ? ctx.workflowByToolUseId.get(workflowToolUseId) : undefined;
+  const workflowAgentCount = workflow
+    ? (ctx.workflowAgentCountByParentId.get(workflow.id) ?? 0)
+    : 0;
   const iconConfig = workToneIcon(workEntry.tone);
   const showFailedIndicator = workflow
     ? workflow.status === "failed"
@@ -3096,6 +3148,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
+            {workflowAgentCount > 0 ? (
+              <span className="pr-1 text-[10px] tabular-nums">
+                {workflowAgentCount} {workflowAgentCount === 1 ? "agent" : "agents"}
+              </span>
+            ) : null}
             {workflow ? <WorkflowElapsed workflow={workflow} /> : null}
             <span
               className="flex size-4 shrink-0 items-center justify-center"
