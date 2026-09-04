@@ -3009,25 +3009,35 @@ function WorkflowElapsed({ workflow }: { readonly workflow: RuntimeSubagent }) {
   ) : null;
 }
 
-const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+interface SimpleWorkEntryRowProps {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry?: boolean;
-}) {
-  const { workEntry, workspaceRoot, isExpandedToolGroupEntry = false } = props;
-  const activity = use(TimelineRowActivityCtx);
-  const ctx = use(TimelineRowCtx);
-  const workflowCtx = use(TimelineWorkflowCtx);
-  const [expanded, setExpanded] = useState(false);
-  const projectedItem = workEntry.projectedItem?.item;
+}
+
+const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: SimpleWorkEntryRowProps) {
+  const projectedItem = props.workEntry.projectedItem?.item;
   const workflowScript =
     projectedItem?.type === "dynamic_tool"
       ? claudeWorkflowScriptFromToolInput(projectedItem.toolName, projectedItem.input)
       : null;
-  const workflowMeta = useMemo(
-    () => (workflowScript === null ? null : parseClaudeWorkflowScriptMeta(workflowScript)),
-    [workflowScript],
+  return workflowScript === null ? (
+    <SimpleWorkEntryRowContent
+      {...props}
+      workflow={undefined}
+      workflowAgentCount={0}
+      workflowScript={null}
+    />
+  ) : (
+    <WorkflowSimpleWorkEntryRow {...props} workflowScript={workflowScript} />
   );
+});
+
+const WorkflowSimpleWorkEntryRow = memo(function WorkflowSimpleWorkEntryRow(
+  props: SimpleWorkEntryRowProps & { workflowScript: string },
+) {
+  const workflowCtx = use(TimelineWorkflowCtx);
+  const projectedItem = props.workEntry.projectedItem?.item;
   const workflowToolUseId =
     projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
   const workflow = workflowToolUseId
@@ -3036,6 +3046,31 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const workflowAgentCount = workflow
     ? (workflowCtx.workflowAgentCountByParentId.get(workflow.id) ?? 0)
     : 0;
+  return (
+    <SimpleWorkEntryRowContent
+      {...props}
+      workflow={workflow}
+      workflowAgentCount={workflowAgentCount}
+    />
+  );
+});
+
+function SimpleWorkEntryRowContent(
+  props: SimpleWorkEntryRowProps & {
+    workflow: RuntimeSubagent | undefined;
+    workflowAgentCount: number;
+    workflowScript: string | null;
+  },
+) {
+  const { workEntry, workspaceRoot, isExpandedToolGroupEntry = false } = props;
+  const { workflow, workflowAgentCount, workflowScript } = props;
+  const activity = use(TimelineRowActivityCtx);
+  const ctx = use(TimelineRowCtx);
+  const [expanded, setExpanded] = useState(false);
+  const workflowMeta = useMemo(
+    () => (workflowScript === null ? null : parseClaudeWorkflowScriptMeta(workflowScript)),
+    [workflowScript],
+  );
   const iconConfig = workToneIcon(workEntry.tone);
   const showFailedIndicator = workflow
     ? workflow.status === "failed"
@@ -3264,4 +3299,4 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ) : null}
     </div>
   );
-});
+}

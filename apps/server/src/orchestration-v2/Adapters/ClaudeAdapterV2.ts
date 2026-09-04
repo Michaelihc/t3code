@@ -1270,6 +1270,14 @@ function claudeWorkflowProgressEntries(
   return Array.isArray(value) ? value.filter(isClaudeWorkflowProgressEntry) : [];
 }
 
+function isClaudeWorkflowProgressMessage(message: SDKMessage): boolean {
+  return (
+    message.type === "system" &&
+    message.subtype === "task_progress" &&
+    claudeWorkflowProgressEntries(message).length > 0
+  );
+}
+
 function trimmedClaudeWorkflowString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
 }
@@ -3688,7 +3696,7 @@ export function makeClaudeAdapterV2(
               return { ...resetTask, result: null, startedAt };
             })();
             const completedAt = terminal
-              ? existing?.status === status && existing.completedAt !== null
+              ? !resetTelemetry && existing?.status === status && existing.completedAt !== null
                 ? existing.completedAt
                 : updatedAt
               : null;
@@ -5583,9 +5591,33 @@ export function makeClaudeAdapterV2(
               }),
             });
             if (userMessage !== null) {
-              // A user turn that races a wake leaves the buffer alone: the
-              // continuation run the worker queued behind this run drains it
-              // afterwards with correct attribution.
+              // Progress frames do not request a continuation by themselves.
+              // If a user turn wins the race before the terminal notification,
+              // attach those snapshots now so they cannot be stranded in a
+              // buffer that the later live notification will never drain.
+              const workflowProgress = yield* Ref.modify(wakeBuffers, (current) => {
+                const entry = current.get(nativeThreadId);
+                if (entry === undefined) {
+                  return [[] as ReadonlyArray<SDKMessage>, current] as const;
+                }
+                const progress = entry.messages.filter(isClaudeWorkflowProgressMessage);
+                if (progress.length === 0) {
+                  return [progress, current] as const;
+                }
+                const remaining = entry.messages.filter(
+                  (message) => !isClaudeWorkflowProgressMessage(message),
+                );
+                const updated = new Map(current);
+                if (remaining.length === 0) {
+                  updated.delete(nativeThreadId);
+                } else {
+                  updated.set(nativeThreadId, { ...entry, messages: remaining });
+                }
+                return [progress, updated] as const;
+              });
+              for (const message of workflowProgress) {
+                yield* handleSdkMessage({ query: querySession.query, message });
+              }
               yield* querySession.query.offer(userMessage);
               return;
             }

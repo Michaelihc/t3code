@@ -3804,6 +3804,58 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             subtype: "task_progress",
             task_id: taskId,
             tool_use_id: toolUseId,
+            description: "A later retry also failed",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 77_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                attempt: 5,
+                startedAt: 1_788_400_075_000,
+                durationMs: 2_000,
+                error: "The later retry failed too",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015a",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" &&
+                event.subagent.agentIndex === 2 &&
+                event.subagent.attempt === 5,
+            ),
+          "same-status workflow retry projected",
+        );
+        const sameStatusRetry = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(sameStatusRetry?.status, "failed");
+        assert.equal(sameStatusRetry?.attempt, 5);
+        if (sameStatusRetry?.startedAt === undefined || sameStatusRetry.startedAt === null) {
+          throw new Error("Expected the same-status workflow retry to adopt its own start time.");
+        }
+        if (sameStatusRetry.completedAt === null) {
+          throw new Error(
+            "Expected the same-status workflow retry to adopt its own completion time.",
+          );
+        }
+        assert.equal(DateTime.toEpochMillis(sameStatusRetry.startedAt), 1_788_400_075_000);
+        assert.equal(DateTime.toEpochMillis(sameStatusRetry.completedAt), 1_788_400_077_000);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
             description: "Retrying without attempt telemetry",
             usage: { total_tokens: 5_500, tool_uses: 12, duration_ms: 80_000 },
             workflow_progress: [
@@ -3847,9 +3899,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(attemptLessRetry, "progress");
         assert.notProperty(attemptLessRetry, "usage");
 
-        // Let the root settle first. The notification is then buffered and
-        // replayed into a fresh continuation context, which must rehydrate and
-        // terminalize the original synthetic workflow members.
+        // Let the root settle first. Late workflow progress can race with a
+        // normal user turn before the terminal notification arrives; the user
+        // turn must drain that progress without consuming the later wake.
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root terminal");
         yield* Queue.offer(
@@ -3877,6 +3929,36 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             uuid: "00000000-0000-4000-8000-000000000159",
             session_id: WAKE_NATIVE_SESSION,
           }),
+        );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-user-race"),
+            text: "What is the workflow status?",
+            attachments: [],
+            providerTurnOrdinal: 2,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
+            ),
+          "late workflow progress drained into user turn",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-00000000015b",
+            result: "The workflow is still finishing.",
+          }),
+        );
+        yield* awaitUntil(
+          () => harness.terminalEvents().length === 2,
+          "workflow user turn terminal",
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -3908,13 +3990,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attemptId: RunAttemptId.make("attempt-claude-workflow-continuation"),
             text: "Workflow completed.",
             attachments: [],
-            providerTurnOrdinal: 2,
+            providerTurnOrdinal: 3,
             messageCreatedBy: "agent",
             messageCreationSource: "provider",
           }),
         );
         yield* awaitUntil(
-          () => harness.terminalEvents().length === 2,
+          () => harness.terminalEvents().length === 3,
           "workflow continuation terminal",
         );
         const terminalCoordinator = subagentEvents()
