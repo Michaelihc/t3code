@@ -3905,6 +3905,61 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         assert.equal(DateTime.toEpochMillis(sameStatusRetry.startedAt), 1_788_400_075_000);
         assert.equal(DateTime.toEpochMillis(sameStatusRetry.completedAt), 1_788_400_077_000);
+        const beforeSameAttemptActiveCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A delayed active frame from the completed attempt arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 78_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                attempt: 5,
+                startedAt: 1_788_400_075_000,
+                lastToolSummary: "Stale same-attempt progress",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Same-attempt marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000016a",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Same-attempt marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeSameAttemptActiveCount,
+        );
+        assert.equal(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2)
+            ?.status,
+          "failed",
+        );
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -3966,6 +4021,36 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         // interfere with the eventual terminal wake notification.
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* Queue.take(harness.terminalReceipts);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Synthesis is still running",
+            summary: "Progress-only idle update",
+            usage: { total_tokens: 5_650, tool_uses: 13, duration_ms: 85_000 },
+            last_tool_name: "Read",
+            workflow_progress: [],
+            uuid: "00000000-0000-4000-8000-00000000016b",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow" &&
+            event.subagent.progress === "Progress-only idle update",
+        );
+        const idleProgressOnlyCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepInclude(idleProgressOnlyCoordinator, {
+          progress: "Progress-only idle update",
+          lastToolName: "Read",
+          usage: { totalTokens: 5_650, toolUses: 13, durationMs: 85_000 },
+        });
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({

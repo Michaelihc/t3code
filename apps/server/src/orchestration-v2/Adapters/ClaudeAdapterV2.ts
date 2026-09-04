@@ -1274,14 +1274,8 @@ function claudeWorkflowProgressEntries(
   return Array.isArray(value) ? value.filter(isClaudeWorkflowProgressEntry) : [];
 }
 
-function isClaudeWorkflowProgressMessage(
-  message: SDKMessage,
-): message is ClaudeTaskProgressMessage {
-  return (
-    message.type === "system" &&
-    message.subtype === "task_progress" &&
-    claudeWorkflowProgressEntries(message).length > 0
-  );
+function isClaudeTaskProgressMessage(message: SDKMessage): message is ClaudeTaskProgressMessage {
+  return message.type === "system" && message.subtype === "task_progress";
 }
 
 function trimmedClaudeWorkflowString(value: unknown): string | undefined {
@@ -3639,6 +3633,13 @@ export function makeClaudeAdapterV2(
                 existing.status === "failed" ||
                 existing.status === "cancelled" ||
                 existing.status === "interrupted");
+            if (
+              terminalToActive &&
+              entry.attempt !== undefined &&
+              entry.attempt === existing.attempt
+            ) {
+              continue;
+            }
             const resetTelemetry = attemptIncreased || terminalToActive;
             const nativeItemId = `${input.taskId}:workflow-agent:${entry.index}`;
             const nodeId =
@@ -4572,9 +4573,7 @@ export function makeClaudeAdapterV2(
             message.subtype === "task_started" &&
             (yield* Ref.get(sessionSubagentsByTaskId)).has(message.task_id);
           const isKnownWorkflowProgress =
-            message.type === "system" &&
-            message.subtype === "task_progress" &&
-            claudeWorkflowProgressEntries(message).length > 0 &&
+            isClaudeTaskProgressMessage(message) &&
             ((workflow) =>
               workflow?.task.kind === "workflow" && workflow.task.status === "running")(
               (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id),
@@ -4864,7 +4863,7 @@ export function makeClaudeAdapterV2(
           const message = input.message;
           const context = yield* Ref.get(activeTurn);
           if (context === null) {
-            if (isClaudeWorkflowProgressMessage(message)) {
+            if (isClaudeTaskProgressMessage(message)) {
               const workflowContext = (yield* Ref.get(sessionWorkflowContextByTaskId)).get(
                 message.task_id,
               );
@@ -5777,12 +5776,12 @@ export function makeClaudeAdapterV2(
                 if (entry === undefined) {
                   return [[] as ReadonlyArray<SDKMessage>, current] as const;
                 }
-                const progress = entry.messages.filter(isClaudeWorkflowProgressMessage);
+                const progress = entry.messages.filter(isClaudeTaskProgressMessage);
                 if (progress.length === 0) {
                   return [progress, current] as const;
                 }
                 const remaining = entry.messages.filter(
-                  (message) => !isClaudeWorkflowProgressMessage(message),
+                  (message) => !isClaudeTaskProgressMessage(message),
                 );
                 const updated = new Map(current);
                 if (remaining.length === 0) {
