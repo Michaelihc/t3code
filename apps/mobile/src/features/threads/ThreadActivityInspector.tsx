@@ -18,6 +18,35 @@ import { threadEnvironment } from "../../state/threads";
 import { useAtomCommand } from "../../state/use-atom-command";
 import { useV2ItemSupport } from "../../state/v2-item-support";
 import { buildThreadActivityFileParams } from "./threadActivityFileNavigation";
+import { workflowElapsedLabel, workflowIsLive } from "./mobile-workflow-presentation";
+
+type InspectorWorkflow = Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt">;
+
+function InspectorField(props: { readonly label: string; readonly value: string }) {
+  return (
+    <View className="min-w-[42%] flex-1 gap-0.5">
+      <Text className="font-t3-medium text-3xs uppercase tracking-wide text-foreground-muted opacity-60">
+        {props.label}
+      </Text>
+      <Text selectable className="text-2xs leading-4 text-foreground">
+        {props.value}
+      </Text>
+    </View>
+  );
+}
+
+function WorkflowDurationField(props: { readonly workflow: InspectorWorkflow }) {
+  const live = workflowIsLive(props.workflow);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [live]);
+
+  const duration = workflowElapsedLabel(props.workflow, now);
+  return duration ? <InspectorField label="Duration" value={duration} /> : null;
+}
 
 export function ThreadActivityInspector(props: {
   readonly activity: ThreadFeedActivity;
@@ -45,26 +74,10 @@ export function ThreadActivityInspector(props: {
     () => (workflowScript === null ? null : parseClaudeWorkflowScriptMeta(workflowScript)),
     [workflowScript],
   );
-  const workflowLive =
-    props.workflow?.status === "pending" ||
-    props.workflow?.status === "running" ||
-    props.workflow?.status === "waiting";
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!workflowLive) return;
-    const interval = setInterval(() => setNow(Date.now()), 1_000);
-    return () => clearInterval(interval);
-  }, [workflowLive]);
   const model = useMemo(
     () =>
-      buildThreadActivityInspector(
-        props.activity,
-        support,
-        props.currentThreadId,
-        props.workflow,
-        now,
-      ),
-    [now, props.activity, props.currentThreadId, props.workflow, support],
+      buildThreadActivityInspector(props.activity, support, props.currentThreadId, props.workflow),
+    [props.activity, props.currentThreadId, props.workflow, support],
   );
   const revertCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     label: "checkpoint rollback",
@@ -76,16 +89,13 @@ export function ThreadActivityInspector(props: {
   return (
     <View className="gap-3">
       <View className="flex-row flex-wrap gap-x-4 gap-y-2 rounded-lg border border-adaptive-neutral-300-a60-white-a12 bg-adaptive-black-a2p5-white-a2p5 p-2.5">
-        {model.fields.map((field) => (
-          <View key={`${field.label}:${field.value}`} className="min-w-[42%] flex-1 gap-0.5">
-            <Text className="font-t3-medium text-3xs uppercase tracking-wide text-foreground-muted opacity-60">
-              {field.label}
-            </Text>
-            <Text selectable className="text-2xs leading-4 text-foreground">
-              {field.value}
-            </Text>
-          </View>
-        ))}
+        {model.fields.map((field) =>
+          field.label === "Duration" && props.workflow ? (
+            <WorkflowDurationField key="Duration" workflow={props.workflow} />
+          ) : (
+            <InspectorField key={`${field.label}:${field.value}`} {...field} />
+          ),
+        )}
       </View>
 
       {workflowMeta?.description ? (

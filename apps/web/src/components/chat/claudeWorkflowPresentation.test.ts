@@ -35,6 +35,31 @@ describe("parseClaudeWorkflowScriptMeta", () => {
     expect(parseClaudeWorkflowScriptMeta("export const run = () => 1")).toBeNull();
     expect(parseClaudeWorkflowScriptMeta("export const meta = { name: getName() }")).toBeNull();
   });
+
+  it("ignores declaration-shaped text outside a top-level statement", () => {
+    const script = [
+      '// export const meta = { name: "line-comment-decoy" };',
+      '/* export const meta = { name: "block-comment-decoy" }; */',
+      "const quoted = \"export const meta = { name: 'string-decoy' }\";",
+      'const templated = `export const meta = { name: "template-decoy" }`;',
+      'const matched = /export const meta = \\{ name: "regex-decoy" \\}/;',
+      "function nested() {",
+      '  const exportText = "ignored";',
+      "}",
+      "export /* keep comments legal */ const meta /* here too */ = {",
+      '  name: "real-workflow",',
+      '  phases: [{ title: "Run" }],',
+      "};",
+    ].join("\n");
+
+    expect(parseClaudeWorkflowScriptMeta(script)).toEqual({
+      name: "real-workflow",
+      phases: [{ title: "Run" }],
+    });
+    expect(
+      parseClaudeWorkflowScriptMeta('// export const meta = { name: "comment-only" };'),
+    ).toBeNull();
+  });
 });
 
 describe("claudeWorkflowScriptFromToolInput", () => {

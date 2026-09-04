@@ -9,7 +9,6 @@ import {
   formatMobileWorkflowFoldLabel,
   MobileWorkflowGroupStore,
   workflowElapsedLabel,
-  workflowGroupForProjectedItem,
   workflowMemberActivity,
   workflowMembers,
 } from "./mobile-workflow-presentation";
@@ -94,11 +93,6 @@ function projectedWorkflow(toolUseId = "toolu_workflow") {
 }
 
 describe("mobile workflow presentation", () => {
-  it("joins the workflow tool to its projected coordinator", () => {
-    expect(workflowGroupForProjectedItem(projectedWorkflow(), [group])).toBe(group);
-    expect(workflowGroupForProjectedItem(projectedWorkflow("other"), [group])).toBeNull();
-  });
-
   it("keeps every phase and unphased workflow member visible", () => {
     const orphan = runtimeSubagent({ id: "workflow:survey:orphan", phaseIndex: null });
     expect(workflowMembers({ ...group, unphasedMembers: [orphan] })).toEqual([...members, orphan]);

@@ -56,6 +56,22 @@ function DataField(props: { readonly label: string; readonly children: ReactNode
   );
 }
 
+function DurationField(props: {
+  readonly startedAt: unknown;
+  readonly completedAt: unknown;
+  readonly live: boolean;
+}) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!props.live) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [props.live]);
+
+  const duration = durationLabel(props.startedAt, props.completedAt, now);
+  return duration ? <DataField label="Duration">{duration}</DataField> : null;
+}
+
 function StructuredValue({ value }: { readonly value: unknown }) {
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   if (!text) return null;
@@ -158,15 +174,6 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     props.workflow?.status === "pending" ||
     props.workflow?.status === "running" ||
     props.workflow?.status === "waiting";
-  const [now, setNow] = useState(Date.now());
-  useEffect(() => {
-    if (!workflowLive) return;
-    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
-    return () => window.clearInterval(interval);
-  }, [workflowLive]);
-  const duration = props.workflow
-    ? durationLabel(props.workflow.startedAt, props.workflow.completedAt, now)
-    : durationLabel(item.startedAt, item.completedAt, now);
   const workflowScript =
     item.type === "dynamic_tool"
       ? claudeWorkflowScriptFromToolInput(item.toolName, item.input)
@@ -179,7 +186,11 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
       <dl className="grid grid-cols-2 gap-x-4 gap-y-2 rounded-md border border-border/45 bg-muted/15 p-2 sm:grid-cols-3">
         <DataField label="Item">{item.type}</DataField>
         <DataField label="Status">{props.workflow?.status ?? item.status}</DataField>
-        {duration ? <DataField label="Duration">{duration}</DataField> : null}
+        <DurationField
+          startedAt={props.workflow?.startedAt ?? item.startedAt}
+          completedAt={props.workflow?.completedAt ?? item.completedAt}
+          live={workflowLive}
+        />
         {support.run ? <DataField label="Run">{support.run.status}</DataField> : null}
         {latestAttempt ? (
           <DataField label="Attempt">

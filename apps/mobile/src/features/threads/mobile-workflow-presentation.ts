@@ -19,15 +19,6 @@ export function workflowToolUseIdForProjectedItem(
   return item.nativeItemRef?.nativeId ?? null;
 }
 
-export function workflowGroupForProjectedItem(
-  projectedItem: OrchestrationV2ProjectedTurnItem,
-  groups: ReadonlyArray<AgentPanelWorkflowGroup>,
-): AgentPanelWorkflowGroup | null {
-  const toolUseId = workflowToolUseIdForProjectedItem(projectedItem);
-  if (!toolUseId) return null;
-  return groups.find((group) => group.workflow.toolUseId === toolUseId) ?? null;
-}
-
 function workflowGroupRevision(group: AgentPanelWorkflowGroup): string {
   return [
     group.workflow.id,
@@ -219,7 +210,7 @@ export function formatMobileWorkflowFoldLabel(
     .join(" · ");
 }
 
-export function workflowIsLive(workflow: RuntimeSubagent): boolean {
+export function workflowIsLive(workflow: Pick<RuntimeSubagent, "status">): boolean {
   return (
     workflow.status === "pending" || workflow.status === "running" || workflow.status === "waiting"
   );
@@ -242,7 +233,10 @@ export function workflowMemberActivity(member: RuntimeSubagent): string | null {
   );
 }
 
-export function workflowElapsedLabel(workflow: RuntimeSubagent, now = Date.now()): string | null {
+export function workflowElapsedLabel(
+  workflow: Pick<RuntimeSubagent, "startedAt" | "completedAt">,
+  now = Date.now(),
+): string | null {
   if (!workflow.startedAt) return null;
   const start = Date.parse(workflow.startedAt);
   const end = workflow.completedAt ? Date.parse(workflow.completedAt) : now;
