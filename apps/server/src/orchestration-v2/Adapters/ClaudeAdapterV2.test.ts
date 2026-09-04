@@ -3766,6 +3766,35 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(retriedMember, "usage");
 
         const beforeAttemptlessTerminalCount = subagentEvents().length;
+        const beforeStaleAttemptMemberCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A delayed older attempt arrived",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 65_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_050_000,
+                attempt: 3,
+                lastToolSummary: "Stale attempt still reading",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015c",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -3805,6 +3834,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
         assert.equal(attemptLessTerminal?.status, "failed");
         assert.equal(attemptLessTerminal?.error, "Retry failed without an attempt number");
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeStaleAttemptMemberCount + 1,
+        );
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({

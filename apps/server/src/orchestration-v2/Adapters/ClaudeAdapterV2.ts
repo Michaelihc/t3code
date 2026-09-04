@@ -3618,6 +3618,14 @@ export function makeClaudeAdapterV2(
             if (entry.type !== "workflow_agent") continue;
 
             const existing = existingMembers.get(entry.index);
+            if (
+              entry.attempt !== undefined &&
+              existing?.attempt !== null &&
+              existing?.attempt !== undefined &&
+              entry.attempt < existing.attempt
+            ) {
+              continue;
+            }
             const status = claudeWorkflowAgentStatus(entry);
             const attemptIncreased =
               entry.attempt !== undefined &&
