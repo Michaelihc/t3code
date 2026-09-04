@@ -218,6 +218,11 @@ function itemIsProminent(item: OrchestrationV2TurnItem): boolean {
   return item.type === "fork" || item.type === "thread_created" || item.type === "subagent";
 }
 
+function activityIsWorkflow(activity: ThreadFeedActivity): boolean {
+  const item = activity.projectedItem.item;
+  return item.type === "dynamic_tool" && item.toolName?.trim().toLowerCase() === "workflow";
+}
+
 function itemStatus(item: OrchestrationV2TurnItem): ThreadFeedActivity["status"] {
   if (item.type === "error") {
     if (item.status === "failed") return "failure";
@@ -797,7 +802,11 @@ function appendPresentedFeedEntry(
   let groupAnchorId: string | null = null;
   for (const activity of entry.activities) {
     const item = activity.projectedItem.item;
-    if (activity.prominent || (item.type === "error" && item.status === "failed")) {
+    if (
+      activity.prominent ||
+      activityIsWorkflow(activity) ||
+      (item.type === "error" && item.status === "failed")
+    ) {
       groupAnchorId = null;
       continue;
     }
@@ -831,7 +840,7 @@ function appendPresentedFeedEntry(
   for (const activity of activities) {
     const item = activity.projectedItem.item;
     const severeProviderError = item.type === "error" && item.status === "failed";
-    if (!activity.prominent && !severeProviderError) {
+    if (!activity.prominent && !activityIsWorkflow(activity) && !severeProviderError) {
       groupableRun.push(activity);
       continue;
     }

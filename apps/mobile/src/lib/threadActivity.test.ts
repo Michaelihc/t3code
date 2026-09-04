@@ -607,6 +607,38 @@ describe("buildThreadFeed", () => {
     });
   });
 
+  it("keeps Workflow tools out of collapsed mobile work groups", () => {
+    const workflowItem = {
+      ...base("item-workflow", "2026-06-20T00:00:02.500Z", 2),
+      type: "dynamic_tool",
+      toolName: "Workflow",
+      nativeItemRef: { nativeId: "toolu-workflow" },
+      input: { script: "export const meta = { name: 'survey' };" },
+      output: {},
+    } as OrchestrationV2TurnItem;
+    const feed = buildThreadFeed([
+      projected(command("2026-06-20T00:00:02.000Z"), 0),
+      projected(workflowItem, 1),
+    ]);
+
+    const presented = deriveThreadFeedPresentation(
+      feed,
+      {
+        runId,
+        status: "running",
+        startedAt: "2026-06-20T00:00:01.000Z",
+        completedAt: null,
+      },
+      new Set(),
+    );
+
+    expect(presented.map((entry) => entry.type)).toEqual(["work-toggle", "activity-group"]);
+    expect(presented.at(-1)).toMatchObject({
+      type: "activity-group",
+      activities: [{ projectedItem: { item: { type: "dynamic_tool", toolName: "Workflow" } } }],
+    });
+  });
+
   it("does not append synthetic timeline work without a projected item", () => {
     const startedAt = "2026-04-01T00:00:01.000Z";
     const presented = deriveThreadFeedPresentation([], null, new Set(), new Set(), startedAt);
