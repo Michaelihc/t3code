@@ -172,9 +172,6 @@ interface TimelineRowSharedState {
   providerStatuses: ReadonlyArray<ServerProvider>;
   /** Projection runs, for recovering handoff models on legacy items. */
   runs: ReadonlyArray<HandoffTimelineRun>;
-  workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
-  workflowAgentCountByParentId: ReadonlyMap<string, number>;
-  workflowSummaryByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -203,8 +200,15 @@ interface TimelineRowActivityState {
   latestRunId: RunId | null;
 }
 
+interface TimelineWorkflowState {
+  workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
+  workflowAgentCountByParentId: ReadonlyMap<string, number>;
+  workflowSummaryByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
+}
+
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+const TimelineWorkflowCtx = createContext<TimelineWorkflowState>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
@@ -381,6 +385,14 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return summaries;
   }, [timelineEntries, workflowAgentCountByParentId, workflowByToolUseId]);
+  const workflowState = useMemo<TimelineWorkflowState>(
+    () => ({
+      workflowByToolUseId,
+      workflowAgentCountByParentId,
+      workflowSummaryByRunId,
+    }),
+    [workflowAgentCountByParentId, workflowByToolUseId, workflowSummaryByRunId],
+  );
 
   useEffect(() => {
     return () => {
@@ -638,9 +650,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
-      workflowByToolUseId,
-      workflowAgentCountByParentId,
-      workflowSummaryByRunId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -664,9 +673,6 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       skills,
       providerStatuses,
       runs,
-      workflowByToolUseId,
-      workflowAgentCountByParentId,
-      workflowSummaryByRunId,
       activeThreadEnvironmentId,
       onRevertUserMessage,
       onUseArtifactTemplate,
@@ -754,52 +760,54 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowCtx value={sharedState}>
-      <TimelineRowActivityCtx value={activityState}>
-        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
-          <LegendList<MessagesTimelineRow>
-            ref={listRef}
-            data={rows}
-            keyExtractor={keyExtractor}
-            getItemType={getItemType}
-            renderItem={renderItem}
-            estimatedItemSize={90}
-            initialScrollAtEnd
-            {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            contentInsetEndAdjustment={contentInsetEndAdjustment}
-            // LegendList owns ordinary end-follow (#5449): the app only turns
-            // it off while the user reads history (liveFollowEnabled), while a
-            // sent turn anchors near the top (anchoredEndSpace), or for the
-            // two-frame settle window of a fold toggle.
-            maintainScrollAtEnd={
-              anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
-                ? false
-                : TIMELINE_MAINTAIN_SCROLL_AT_END
-            }
-            maintainVisibleContentPosition={maintainVisibleContentPosition}
-            onScroll={handleScroll}
-            className={cn(
-              "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-              topFadeEnabled && "topbar-scroll-fade",
-            )}
-            ListHeaderComponent={listHeader}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
-          />
-          <TimelineMinimap
-            items={minimapItems}
-            hasPersistentGutter={minimapHasPersistentGutter}
-            hitStripWidth={minimapHitStripWidth}
-            stripMap={minimapStripMap}
-            onSelect={(item) => {
-              onManualNavigation();
-              void listRef.current?.scrollToIndex({
-                index: item.rowIndex,
-                animated: true,
-                viewOffset: 24,
-              });
-            }}
-          />
-        </div>
-      </TimelineRowActivityCtx>
+      <TimelineWorkflowCtx value={workflowState}>
+        <TimelineRowActivityCtx value={activityState}>
+          <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+            <LegendList<MessagesTimelineRow>
+              ref={listRef}
+              data={rows}
+              keyExtractor={keyExtractor}
+              getItemType={getItemType}
+              renderItem={renderItem}
+              estimatedItemSize={90}
+              initialScrollAtEnd
+              {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+              contentInsetEndAdjustment={contentInsetEndAdjustment}
+              // LegendList owns ordinary end-follow (#5449): the app only turns
+              // it off while the user reads history (liveFollowEnabled), while a
+              // sent turn anchors near the top (anchoredEndSpace), or for the
+              // two-frame settle window of a fold toggle.
+              maintainScrollAtEnd={
+                anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
+                  ? false
+                  : TIMELINE_MAINTAIN_SCROLL_AT_END
+              }
+              maintainVisibleContentPosition={maintainVisibleContentPosition}
+              onScroll={handleScroll}
+              className={cn(
+                "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
+                topFadeEnabled && "topbar-scroll-fade",
+              )}
+              ListHeaderComponent={listHeader}
+              ListFooterComponent={TIMELINE_LIST_FOOTER}
+            />
+            <TimelineMinimap
+              items={minimapItems}
+              hasPersistentGutter={minimapHasPersistentGutter}
+              hitStripWidth={minimapHitStripWidth}
+              stripMap={minimapStripMap}
+              onSelect={(item) => {
+                onManualNavigation();
+                void listRef.current?.scrollToIndex({
+                  index: item.rowIndex,
+                  animated: true,
+                  viewOffset: 24,
+                });
+              }}
+            />
+          </div>
+        </TimelineRowActivityCtx>
+      </TimelineWorkflowCtx>
     </TimelineRowCtx>
   );
 });
@@ -1470,10 +1478,11 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
+  const workflowCtx = use(TimelineWorkflowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
   const label = formatClaudeWorkflowFoldLabel(
     row.label,
-    ctx.workflowSummaryByRunId.get(row.runId) ?? [],
+    workflowCtx.workflowSummaryByRunId.get(row.runId) ?? [],
   );
 
   return (
@@ -3001,6 +3010,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry = false } = props;
   const activity = use(TimelineRowActivityCtx);
   const ctx = use(TimelineRowCtx);
+  const workflowCtx = use(TimelineWorkflowCtx);
   const [expanded, setExpanded] = useState(false);
   const projectedItem = workEntry.projectedItem?.item;
   const workflowScript =
@@ -3013,9 +3023,11 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
   );
   const workflowToolUseId =
     projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
-  const workflow = workflowToolUseId ? ctx.workflowByToolUseId.get(workflowToolUseId) : undefined;
+  const workflow = workflowToolUseId
+    ? workflowCtx.workflowByToolUseId.get(workflowToolUseId)
+    : undefined;
   const workflowAgentCount = workflow
-    ? (ctx.workflowAgentCountByParentId.get(workflow.id) ?? 0)
+    ? (workflowCtx.workflowAgentCountByParentId.get(workflow.id) ?? 0)
     : 0;
   const iconConfig = workToneIcon(workEntry.tone);
   const showFailedIndicator = workflow
