@@ -799,6 +799,13 @@ const resolveCodexForkLastTurnId = Effect.fn("CodexAdapterV2.resolveForkLastTurn
     });
   }
 
+  const hasLaterTerminalTurns = sourceTurns.some(
+    (turn) => turn.ordinal > boundaryTurn.ordinal && isTerminalProviderTurn(turn),
+  );
+  if (!hasLaterTerminalTurns) {
+    return undefined;
+  }
+
   const nativeTurnRef = boundaryTurn.nativeTurnRef;
   if (
     nativeTurnRef !== null &&
@@ -806,13 +813,6 @@ const resolveCodexForkLastTurnId = Effect.fn("CodexAdapterV2.resolveForkLastTurn
     nativeTurnRef.nativeId !== null
   ) {
     return nativeTurnRef.nativeId;
-  }
-
-  const hasLaterTerminalTurns = sourceTurns.some(
-    (turn) => turn.ordinal > boundaryTurn.ordinal && isTerminalProviderTurn(turn),
-  );
-  if (!hasLaterTerminalTurns) {
-    return undefined;
   }
 
   return yield* new ProviderAdapterForkThreadError({
