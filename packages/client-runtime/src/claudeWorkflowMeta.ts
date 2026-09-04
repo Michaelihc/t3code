@@ -105,6 +105,42 @@ const REGEX_PREFIX_KEYWORDS = new Set([
   "yield",
 ]);
 
+function metaInitializerEquals(source: string, start: number): number | null {
+  let cursor = skipTrivia(source, start, source.length);
+  if (source[cursor] === "=") return cursor;
+  if (source[cursor] !== ":") return null;
+
+  let braces = 0;
+  let brackets = 0;
+  let parentheses = 0;
+  cursor += 1;
+  while (cursor < source.length) {
+    const nextToken = skipTrivia(source, cursor, source.length);
+    if (nextToken !== cursor) {
+      cursor = nextToken;
+      continue;
+    }
+    const stringEnd = quotedStringEnd(source, cursor, source.length);
+    if (stringEnd !== null) {
+      cursor = stringEnd;
+      continue;
+    }
+
+    const character = source[cursor]!;
+    const atTopLevel = braces === 0 && brackets === 0 && parentheses === 0;
+    if (character === "=" && source[cursor + 1] !== ">" && atTopLevel) return cursor;
+    if (character === ";" && atTopLevel) return null;
+    if (character === "{") braces += 1;
+    else if (character === "}") braces = Math.max(0, braces - 1);
+    else if (character === "[") brackets += 1;
+    else if (character === "]") brackets = Math.max(0, brackets - 1);
+    else if (character === "(") parentheses += 1;
+    else if (character === ")") parentheses = Math.max(0, parentheses - 1);
+    cursor += 1;
+  }
+  return null;
+}
+
 function exportedMetaObjectStart(source: string): number | null {
   let cursor = 0;
   let braces = 0;
@@ -145,8 +181,8 @@ function exportedMetaObjectStart(source: string): number | null {
           const metaStart = skipTrivia(source, constEnd, source.length);
           const metaEnd = exactIdentifierEnd(source, metaStart, source.length, "meta");
           if (metaEnd !== null) {
-            const equals = skipTrivia(source, metaEnd, source.length);
-            if (source[equals] === "=") {
+            const equals = metaInitializerEquals(source, metaEnd);
+            if (equals !== null) {
               const objectStart = skipTrivia(source, equals + 1, source.length);
               if (source[objectStart] === "{") return objectStart;
             }

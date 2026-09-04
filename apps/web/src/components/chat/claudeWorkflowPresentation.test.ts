@@ -60,6 +60,23 @@ describe("parseClaudeWorkflowScriptMeta", () => {
       parseClaudeWorkflowScriptMeta('// export const meta = { name: "comment-only" };'),
     ).toBeNull();
   });
+
+  it("accepts a typed metadata declaration", () => {
+    expect(
+      parseClaudeWorkflowScriptMeta(`
+        export const meta: Readonly<{
+          name: string;
+          phases: ReadonlyArray<{ title: string }>;
+        }> = {
+          name: "typed-workflow",
+          phases: [{ title: "Verify" }],
+        };
+      `),
+    ).toEqual({
+      name: "typed-workflow",
+      phases: [{ title: "Verify" }],
+    });
+  });
 });
 
 describe("claudeWorkflowScriptFromToolInput", () => {
