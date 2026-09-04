@@ -134,7 +134,9 @@ import { isV2LifecycleItem, V2LifecycleRow, type HandoffTimelineRun } from "./V2
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
 import {
   claudeWorkflowScriptFromToolInput,
+  formatClaudeWorkflowFoldLabel,
   parseClaudeWorkflowScriptMeta,
+  type ClaudeWorkflowFoldSummary,
 } from "./claudeWorkflowPresentation";
 
 import {
@@ -172,10 +174,7 @@ interface TimelineRowSharedState {
   runs: ReadonlyArray<HandoffTimelineRun>;
   workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
   workflowAgentCountByParentId: ReadonlyMap<string, number>;
-  workflowSummaryByRunId: ReadonlyMap<
-    RunId,
-    { readonly name: string; readonly agentCount: number }
-  >;
+  workflowSummaryByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
   activeThreadEnvironmentId: EnvironmentId;
   onRevertUserMessage: (messageId: MessageId) => void;
   onUseArtifactTemplate: (template: CodexArtifactTemplate) => void;
@@ -365,7 +364,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return counts;
   }, [subagents]);
   const workflowSummaryByRunId = useMemo(() => {
-    const summaries = new Map<RunId, { readonly name: string; readonly agentCount: number }>();
+    const summaries = new Map<RunId, ClaudeWorkflowFoldSummary[]>();
     for (const timelineEntry of timelineEntries) {
       if (timelineEntry.kind !== "work") continue;
       const item = timelineEntry.entry.projectedItem?.item;
@@ -374,10 +373,11 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const workflow = toolUseId ? workflowByToolUseId.get(toolUseId) : undefined;
       const runId = item.runId ?? timelineEntry.entry.runId;
       if (!workflow || !runId) continue;
-      summaries.set(runId, {
+      const summary = {
         name: workflow.workflowName ?? workflow.title,
         agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
-      });
+      };
+      summaries.set(runId, [...(summaries.get(runId) ?? []), summary]);
     }
     return summaries;
   }, [timelineEntries, workflowAgentCountByParentId, workflowByToolUseId]);
@@ -1471,21 +1471,10 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
-  const workflowSummary = ctx.workflowSummaryByRunId.get(row.runId);
-  const duration = row.label.startsWith("Worked for ")
-    ? row.label.slice("Worked for ".length)
-    : null;
-  const label = workflowSummary
-    ? [
-        `Workflow ${workflowSummary.name}`,
-        workflowSummary.agentCount > 0
-          ? `${workflowSummary.agentCount} ${workflowSummary.agentCount === 1 ? "agent" : "agents"}`
-          : null,
-        duration,
-      ]
-        .filter((part): part is string => part !== null)
-        .join(" · ")
-    : row.label;
+  const label = formatClaudeWorkflowFoldLabel(
+    row.label,
+    ctx.workflowSummaryByRunId.get(row.runId) ?? [],
+  );
 
   return (
     <div className="pb-2 pt-1">

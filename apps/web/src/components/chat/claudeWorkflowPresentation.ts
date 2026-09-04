@@ -219,3 +219,28 @@ export function claudeWorkflowScriptFromToolInput(
   const script = Reflect.get(input, "script");
   return typeof script === "string" && script.trim().length > 0 ? script : null;
 }
+
+export interface ClaudeWorkflowFoldSummary {
+  readonly name: string;
+  readonly agentCount: number;
+}
+
+export function formatClaudeWorkflowFoldLabel(
+  defaultLabel: string,
+  workflows: ReadonlyArray<ClaudeWorkflowFoldSummary>,
+): string {
+  if (workflows.length === 0) return defaultLabel;
+  const duration = defaultLabel.startsWith("Worked for ")
+    ? defaultLabel.slice("Worked for ".length)
+    : null;
+  const workflowLabel =
+    workflows.length === 1 ? `Workflow ${workflows[0]!.name}` : `${workflows.length} workflows`;
+  const agentCount = workflows.reduce((total, workflow) => total + workflow.agentCount, 0);
+  return [
+    workflowLabel,
+    agentCount > 0 ? `${agentCount} ${agentCount === 1 ? "agent" : "agents"}` : null,
+    duration,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
+}

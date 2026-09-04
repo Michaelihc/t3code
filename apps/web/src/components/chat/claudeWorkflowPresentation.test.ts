@@ -2,6 +2,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import {
   claudeWorkflowScriptFromToolInput,
+  formatClaudeWorkflowFoldLabel,
   parseClaudeWorkflowScriptMeta,
 } from "./claudeWorkflowPresentation.ts";
 
@@ -45,5 +46,21 @@ describe("claudeWorkflowScriptFromToolInput", () => {
     ).toContain("survey");
     expect(claudeWorkflowScriptFromToolInput("Bash", { script: "echo unsafe" })).toBeNull();
     expect(claudeWorkflowScriptFromToolInput("Workflow", { prompt: "missing" })).toBeNull();
+  });
+});
+
+describe("formatClaudeWorkflowFoldLabel", () => {
+  it("names a single workflow and aggregates multiple workflows without hiding any", () => {
+    expect(
+      formatClaudeWorkflowFoldLabel("Worked for 1m 41s", [
+        { name: "sandbox-project-survey", agentCount: 4 },
+      ]),
+    ).toBe("Workflow sandbox-project-survey · 4 agents · 1m 41s");
+    expect(
+      formatClaudeWorkflowFoldLabel("Worked for 2m", [
+        { name: "survey", agentCount: 3 },
+        { name: "verify", agentCount: 2 },
+      ]),
+    ).toBe("2 workflows · 5 agents · 2m");
   });
 });
