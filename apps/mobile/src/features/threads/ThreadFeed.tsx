@@ -131,6 +131,7 @@ import {
   ThreadWorkGroupToggle,
   ThreadWorkLog,
 } from "./thread-work-log";
+import type { AgentPanelWorkflowGroup } from "@t3tools/client-runtime/state/subagentRuntime";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { assetEnvironment, useAssetUrl, useAssetUrlState } from "../../state/assets";
@@ -189,6 +190,7 @@ export interface ThreadFeedProps {
   readonly threadTitle: string;
   readonly workspaceRoot?: string | null;
   readonly feed: ReadonlyArray<ThreadFeedEntry>;
+  readonly workflowGroups: ReadonlyArray<AgentPanelWorkflowGroup>;
   readonly contentPresentation: ThreadContentPresentation;
   readonly agentLabel: string;
   readonly latestRun: ThreadFeedLatestRun | null;
@@ -1295,7 +1297,12 @@ function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
   props: Pick<
     ThreadFeedProps,
-    "environmentId" | "onUseArtifactTemplate" | "skills" | "threadId" | "workspaceRoot"
+    | "environmentId"
+    | "onUseArtifactTemplate"
+    | "skills"
+    | "threadId"
+    | "workflowGroups"
+    | "workspaceRoot"
   > & {
     readonly copiedRowId: string | null;
     readonly expandedWorkRows: Record<string, boolean>;
@@ -1547,6 +1554,7 @@ function renderFeedEntry(
   return (
     <ThreadWorkLog
       activities={entry.activities}
+      workflowGroups={props.workflowGroups}
       copiedRowId={props.copiedRowId}
       currentThreadId={props.threadId}
       environmentId={props.environmentId}
@@ -2409,6 +2417,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
         {renderFeedEntry(info, {
           environmentId: props.environmentId,
           threadId: props.threadId,
+          workflowGroups: props.workflowGroups,
           copiedRowId,
           expandedWorkRows,
           terminalAssistantMessageIds,
@@ -2453,6 +2462,7 @@ export const ThreadFeed = memo(function ThreadFeed(props: ThreadFeedProps) {
       onToggleWorkRow,
       props.environmentId,
       props.threadId,
+      props.workflowGroups,
       props.threadTitle,
       props.onUseArtifactTemplate,
       props.skills,

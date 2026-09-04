@@ -48,9 +48,10 @@ Claude can show its own resume prompt when you continue an old session.
 
 ## Follow Claude Workflows
 
-When Claude Code runs a Workflow, open the Agents panel to follow its declared phases and each
-agent's live status, model, attempt, token count, tool count, and current tool. The Workflow row in
-the conversation stays active for the lifetime of the workflow rather than the short launch call.
+When Claude Code runs a Workflow, open the Agents panel on web or desktop, or expand the Workflow
+row on mobile, to follow its declared phases and each agent's live status, model, attempt, token
+count, tool count, and current tool. The Workflow row in the conversation stays active for the
+lifetime of the workflow rather than the short launch call.
 
 Expand that row to see the workflow description and declared phase details. The generated workflow
 script stays collapsed by default and can be opened as highlighted TypeScript when you need it.
