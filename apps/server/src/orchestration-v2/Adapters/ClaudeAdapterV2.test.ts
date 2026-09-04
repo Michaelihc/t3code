@@ -3641,7 +3641,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             subtype: "task_progress",
             task_id: taskId,
             tool_use_id: toolUseId,
-            description: "Delayed cumulative workflow snapshot",
+            description: "Delayed omitted-attempt workflow snapshot",
             usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
             workflow_progress: [
               {
@@ -3652,7 +3652,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 phaseTitle: "Survey",
                 agentType: "Explore",
                 model: "claude-sonnet-4-6",
-                state: "progress",
+                state: "error",
                 startedAt: 1_788_400_000_000,
                 lastToolName: "Read",
                 lastToolSummary: "Inspecting ClaudeAdapterV2",
@@ -3660,6 +3660,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 tokens: 2_000,
                 toolCalls: 4,
                 durationMs: 40_000,
+                error: "Stale omitted-attempt failure",
               },
             ],
             uuid: "00000000-0000-4000-8000-000000000161",
@@ -3702,6 +3703,38 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
           ).length,
           memberOneEventCount,
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Provider-timed progress followed an untimed receipt",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastProgressAt: 1_788_400_036_000,
+                lastToolSummary: "Provider-timed follow-up",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000171",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Provider-timed follow-up",
         );
 
         yield* Queue.offer(

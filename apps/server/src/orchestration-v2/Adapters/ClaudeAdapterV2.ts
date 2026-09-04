@@ -2273,6 +2273,7 @@ interface ActiveClaudeTurnContext {
   readonly pendingSubagentModelsByToolUseId: Map<string, string>;
   readonly workflowMembersByTaskId: Map<string, Map<number, OrchestrationV2Subagent>>;
   readonly workflowSupersededAttemptFloorByTaskId: Map<string, Map<number, number>>;
+  readonly workflowLastReportedProgressAtByTaskId: Map<string, Map<number, number>>;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -3610,6 +3611,8 @@ export function makeClaudeAdapterV2(
             new Map();
           const supersededAttemptFloors =
             input.context.workflowSupersededAttemptFloorByTaskId.get(input.taskId) ?? new Map();
+          const lastReportedProgressAtByMember =
+            input.context.workflowLastReportedProgressAtByTaskId.get(input.taskId) ?? new Map();
 
           for (const entry of input.entries) {
             if (entry.type !== "workflow_agent") continue;
@@ -3680,22 +3683,20 @@ export function makeClaudeAdapterV2(
               entry.startedAt ?? entry.queuedAt,
               resetTelemetry ? now : (existing?.startedAt ?? now),
             );
-            const reportedUpdatedAt = dateTimeFromClaudeEpoch(
-              entry.lastProgressAt,
-              status === "completed" || status === "failed"
-                ? dateTimeFromClaudeEpoch(
-                    entry.startedAt === undefined || entry.durationMs === undefined
-                      ? undefined
-                      : entry.startedAt + entry.durationMs,
-                    now,
-                  )
-                : now,
-            );
+            const reportedProgressAt =
+              entry.lastProgressAt ??
+              (status === "completed" || status === "failed"
+                ? entry.startedAt === undefined || entry.durationMs === undefined
+                  ? undefined
+                  : entry.startedAt + entry.durationMs
+                : undefined);
+            const reportedUpdatedAt = dateTimeFromClaudeEpoch(reportedProgressAt, now);
+            const lastReportedProgressAt = lastReportedProgressAtByMember.get(entry.index);
             if (
-              existing !== undefined &&
-              entry.attempt === existing.attempt &&
-              entry.lastProgressAt !== undefined &&
-              DateTime.toEpochMillis(reportedUpdatedAt) < DateTime.toEpochMillis(existing.updatedAt)
+              !resetTelemetry &&
+              reportedProgressAt !== undefined &&
+              lastReportedProgressAt !== undefined &&
+              reportedProgressAt < lastReportedProgressAt
             ) {
               continue;
             }
@@ -3804,6 +3805,16 @@ export function makeClaudeAdapterV2(
             if (existing !== undefined && claudeWorkflowMemberEqual(existing, candidateTask)) {
               continue;
             }
+            if (reportedProgressAt !== undefined) {
+              lastReportedProgressAtByMember.set(
+                entry.index,
+                resetTelemetry
+                  ? reportedProgressAt
+                  : Math.max(lastReportedProgressAt ?? 0, reportedProgressAt),
+              );
+            } else if (resetTelemetry) {
+              lastReportedProgressAtByMember.delete(entry.index);
+            }
             const task = {
               ...candidateTask,
               updatedAt: hasReportedUpdatedAt ? updatedAt : now,
@@ -3850,6 +3861,10 @@ export function makeClaudeAdapterV2(
             input.taskId,
             supersededAttemptFloors,
           );
+          input.context.workflowLastReportedProgressAtByTaskId.set(
+            input.taskId,
+            lastReportedProgressAtByMember,
+          );
           yield* Ref.update(sessionWorkflowMembersByTaskId, (current) =>
             new Map(current).set(input.taskId, existingMembers),
           );
@@ -3861,6 +3876,7 @@ export function makeClaudeAdapterV2(
         }) {
           input.context.workflowMembersByTaskId.delete(input.taskId);
           input.context.workflowSupersededAttemptFloorByTaskId.delete(input.taskId);
+          input.context.workflowLastReportedProgressAtByTaskId.delete(input.taskId);
           yield* Ref.update(sessionWorkflowMembersByTaskId, (current) => {
             if (!current.has(input.taskId)) return current;
             const updated = new Map(current);
@@ -5796,6 +5812,7 @@ export function makeClaudeAdapterV2(
               pendingSubagentModelsByToolUseId: new Map(),
               workflowMembersByTaskId: new Map(),
               workflowSupersededAttemptFloorByTaskId: new Map(),
+              workflowLastReportedProgressAtByTaskId: new Map(),
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake
