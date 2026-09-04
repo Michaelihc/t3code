@@ -3,6 +3,7 @@ import type {
   RuntimeSubagent,
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
+import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 
 export function workflowMembers(group: AgentPanelWorkflowGroup): ReadonlyArray<RuntimeSubagent> {
   return [...group.phases.flatMap((phase) => phase.members), ...group.unphasedMembers];
@@ -64,6 +65,10 @@ export class MobileWorkflowGroupStore {
   readonly #revisions = new Map<string, string>();
   readonly #versions = new Map<string, number>();
   readonly #listeners = new Map<string, Set<() => void>>();
+  readonly #groupsByRunId = new Map<string, ReadonlyArray<AgentPanelWorkflowGroup>>();
+  readonly #runRevisions = new Map<string, string>();
+  readonly #runVersions = new Map<string, number>();
+  readonly #runListeners = new Map<string, Set<() => void>>();
   #nextVersion = 1;
 
   constructor(groups: ReadonlyArray<AgentPanelWorkflowGroup>) {
@@ -79,21 +84,49 @@ export class MobileWorkflowGroupStore {
       nextGroups.set(toolUseId, group);
       nextRevisions.set(toolUseId, workflowGroupRevision(group));
     }
+    const nextGroupsByRunId = new Map<string, AgentPanelWorkflowGroup[]>();
+    for (const group of nextGroups.values()) {
+      const runId = group.workflow.runId;
+      if (!runId) continue;
+      nextGroupsByRunId.set(runId, [...(nextGroupsByRunId.get(runId) ?? []), group]);
+    }
+    const nextRunRevisions = new Map(
+      [...nextGroupsByRunId].map(([runId, runGroups]) => [
+        runId,
+        runGroups.map(workflowGroupRevision).join("\u0001"),
+      ]),
+    );
 
     const changedKeys = [...new Set([...this.#groups.keys(), ...nextGroups.keys()])].filter(
       (key) => this.#revisions.get(key) !== nextRevisions.get(key),
     );
+    const changedRunIds = [
+      ...new Set([...this.#groupsByRunId.keys(), ...nextGroupsByRunId.keys()]),
+    ].filter((runId) => this.#runRevisions.get(runId) !== nextRunRevisions.get(runId));
 
     this.#groups.clear();
     this.#revisions.clear();
+    this.#groupsByRunId.clear();
+    this.#runRevisions.clear();
     for (const [key, group] of nextGroups) this.#groups.set(key, group);
     for (const [key, revision] of nextRevisions) this.#revisions.set(key, revision);
+    for (const [runId, runGroups] of nextGroupsByRunId) {
+      this.#groupsByRunId.set(runId, runGroups);
+    }
+    for (const [runId, revision] of nextRunRevisions) this.#runRevisions.set(runId, revision);
 
     for (const key of changedKeys) {
       this.#versions.set(key, this.#nextVersion);
       this.#nextVersion += 1;
       if (notify) {
         for (const listener of this.#listeners.get(key) ?? []) listener();
+      }
+    }
+    for (const runId of changedRunIds) {
+      this.#runVersions.set(runId, this.#nextVersion);
+      this.#nextVersion += 1;
+      if (notify) {
+        for (const listener of this.#runListeners.get(runId) ?? []) listener();
       }
     }
   }
@@ -127,6 +160,56 @@ export class MobileWorkflowGroupStore {
       }
     };
   }
+
+  groupsForRun(runId: string): ReadonlyArray<AgentPanelWorkflowGroup> {
+    return this.#groupsByRunId.get(runId) ?? [];
+  }
+
+  runSnapshot(runId: string): number {
+    return this.#runVersions.get(runId) ?? 0;
+  }
+
+  subscribeRun(runId: string, listener: () => void): () => void {
+    const listeners = this.#runListeners.get(runId) ?? new Set();
+    listeners.add(listener);
+    this.#runListeners.set(runId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.#runListeners.delete(runId);
+    };
+  }
+}
+
+export function formatMobileWorkflowFoldLabel(
+  defaultLabel: string,
+  groups: ReadonlyArray<AgentPanelWorkflowGroup>,
+  now = Date.now(),
+): string {
+  if (groups.length === 0) return defaultLabel;
+  const starts = groups.flatMap((group) => {
+    if (group.workflow.startedAt === null) return [];
+    const startedAt = Date.parse(group.workflow.startedAt);
+    return Number.isFinite(startedAt) ? [startedAt] : [];
+  });
+  const ends = groups.flatMap((group) => {
+    if (group.workflow.completedAt === null) return [now];
+    const completedAt = Date.parse(group.workflow.completedAt);
+    return Number.isFinite(completedAt) ? [completedAt] : [];
+  });
+  const duration =
+    starts.length === 0 || ends.length === 0
+      ? null
+      : formatDuration(Math.max(0, Math.max(...ends) - Math.min(...starts)));
+  const agentCount = groups.reduce((total, group) => total + workflowMembers(group).length, 0);
+  return [
+    groups.length === 1
+      ? `Workflow ${groups[0]!.workflow.workflowName ?? groups[0]!.workflow.title}`
+      : `${groups.length} workflows`,
+    agentCount > 0 ? `${agentCount} ${agentCount === 1 ? "agent" : "agents"}` : null,
+    duration,
+  ]
+    .filter((part): part is string => part !== null)
+    .join(" · ");
 }
 
 export function workflowIsLive(workflow: RuntimeSubagent): boolean {

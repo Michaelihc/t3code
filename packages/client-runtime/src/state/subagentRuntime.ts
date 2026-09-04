@@ -59,6 +59,7 @@ export interface SubagentRunHandles {
 
 export interface RuntimeSubagent {
   readonly id: string;
+  readonly runId?: string | null;
   readonly kind: "subagent" | "workflow" | "workflow_agent";
   readonly title: string;
   readonly role: string | null;
@@ -765,6 +766,7 @@ export function projectedSubagentsToRuntime(
     const startedAt = subagent.startedAt === null ? null : DateTime.formatIso(subagent.startedAt);
     return {
       id: subagent.id,
+      runId: subagent.runId,
       kind: subagent.kind ?? "subagent",
       title:
         subagent.title ??

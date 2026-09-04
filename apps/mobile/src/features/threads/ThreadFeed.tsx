@@ -38,6 +38,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
   type RefObject,
 } from "react";
@@ -132,7 +133,11 @@ import {
   ThreadWorkLog,
 } from "./thread-work-log";
 import type { AgentPanelWorkflowGroup } from "@t3tools/client-runtime/state/subagentRuntime";
-import { MobileWorkflowGroupStore } from "./mobile-workflow-presentation";
+import {
+  formatMobileWorkflowFoldLabel,
+  MobileWorkflowGroupStore,
+  workflowIsLive,
+} from "./mobile-workflow-presentation";
 import { resolveThreadFeedFixedItemSize } from "./thread-feed-item-size";
 import { useMarkdownCodeHighlight } from "./markdownCodeHighlightState";
 import { assetEnvironment, useAssetUrl, useAssetUrlState } from "../../state/assets";
@@ -1294,6 +1299,49 @@ function useMarkdownStyles(onLinkPress: (href: string) => void): MarkdownStyleSe
   ]);
 }
 
+function ThreadRunFoldRow(props: {
+  readonly entry: Extract<ThreadFeedEntry, { readonly type: "run-fold" }>;
+  readonly store: MobileWorkflowGroupStore;
+  readonly onToggle: (runId: RunId) => void;
+}) {
+  const subscribe = useCallback(
+    (listener: () => void) => props.store.subscribeRun(props.entry.runId, listener),
+    [props.entry.runId, props.store],
+  );
+  const getSnapshot = useCallback(
+    () => props.store.runSnapshot(props.entry.runId),
+    [props.entry.runId, props.store],
+  );
+  useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const groups = props.store.groupsForRun(props.entry.runId);
+  const live = groups.some((group) => workflowIsLive(group.workflow));
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [live]);
+  const label = formatMobileWorkflowFoldLabel(props.entry.label, groups, now);
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: props.entry.expanded }}
+      onPress={() => props.onToggle(props.entry.runId)}
+      hitSlop={4}
+      className="mb-3 min-h-11 flex-row items-center gap-2 border-b border-adaptive-neutral-200-a80-white-a8 px-2"
+    >
+      <Text className="font-t3-medium text-sm tabular-nums text-foreground-muted">{label}</Text>
+      <SymbolView
+        name={props.entry.expanded ? "chevron.down" : "chevron.right"}
+        size={15}
+        tintColorClassName={"accent-icon-subtle"}
+        type="monochrome"
+      />
+    </Pressable>
+  );
+}
+
 function renderFeedEntry(
   info: { item: ThreadFeedEntry; index: number },
   props: Pick<
@@ -1326,23 +1374,11 @@ function renderFeedEntry(
 
   if (entry.type === "run-fold") {
     return (
-      <Pressable
-        accessibilityRole="button"
-        accessibilityState={{ expanded: entry.expanded }}
-        onPress={() => props.onToggleTurnFold(entry.runId)}
-        hitSlop={4}
-        className="mb-3 min-h-11 flex-row items-center gap-2 border-b border-adaptive-neutral-200-a80-white-a8 px-2"
-      >
-        <Text className="font-t3-medium text-sm tabular-nums text-foreground-muted">
-          {entry.label}
-        </Text>
-        <SymbolView
-          name={entry.expanded ? "chevron.down" : "chevron.right"}
-          size={15}
-          tintColorClassName={"accent-icon-subtle"}
-          type="monochrome"
-        />
-      </Pressable>
+      <ThreadRunFoldRow
+        entry={entry}
+        store={props.workflowStore}
+        onToggle={props.onToggleTurnFold}
+      />
     );
   }
 

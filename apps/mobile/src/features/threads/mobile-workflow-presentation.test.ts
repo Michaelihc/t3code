@@ -6,6 +6,7 @@ import type {
 } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { OrchestrationV2ProjectedTurnItem } from "@t3tools/contracts";
 import {
+  formatMobileWorkflowFoldLabel,
   MobileWorkflowGroupStore,
   workflowElapsedLabel,
   workflowGroupForProjectedItem,
@@ -48,6 +49,7 @@ function runtimeSubagent(overrides: Partial<RuntimeSubagent>): RuntimeSubagent {
 
 const workflow = runtimeSubagent({
   id: "workflow:survey",
+  runId: "run-workflow",
   kind: "workflow",
   title: "sandbox-project-survey",
   workflowName: "sandbox-project-survey",
@@ -103,6 +105,21 @@ describe("mobile workflow presentation", () => {
 
   it("uses the coordinator lifecycle rather than the early tool completion", () => {
     expect(workflowElapsedLabel(workflow)).toBe("1m 41s");
+    expect(formatMobileWorkflowFoldLabel("Worked for 2s", [group])).toBe(
+      "Workflow sandbox-project-survey · 2 agents · 1m 41s",
+    );
+    expect(
+      formatMobileWorkflowFoldLabel(
+        "Worked for 2s",
+        [
+          {
+            ...group,
+            workflow: runtimeSubagent({ ...workflow, status: "running", completedAt: null }),
+          },
+        ],
+        Date.parse("2026-09-04T00:01:41.000Z"),
+      ),
+    ).toBe("Workflow sandbox-project-survey · 2 agents · 1m 41s");
   });
 
   it("notifies only rows subscribed to the workflow that changed", () => {
@@ -111,6 +128,8 @@ describe("mobile workflow presentation", () => {
     const otherListener = vi.fn();
     const unsubscribeSurvey = store.subscribe(["toolu_workflow"], surveyListener);
     const unsubscribeOther = store.subscribe(["toolu_other"], otherListener);
+    const runListener = vi.fn();
+    const unsubscribeRun = store.subscribeRun("run-workflow", runListener);
     const surveySnapshot = store.snapshot(["toolu_workflow"]);
 
     const updatedGroup = {
@@ -128,8 +147,11 @@ describe("mobile workflow presentation", () => {
     expect(store.groupForProjectedItem(projectedWorkflow())).toBe(updatedGroup);
     expect(surveyListener).toHaveBeenCalledTimes(1);
     expect(otherListener).not.toHaveBeenCalled();
+    expect(runListener).toHaveBeenCalledTimes(1);
+    expect(store.groupsForRun("run-workflow")).toEqual([updatedGroup]);
 
     unsubscribeSurvey();
     unsubscribeOther();
+    unsubscribeRun();
   });
 });

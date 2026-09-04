@@ -582,6 +582,7 @@ describe("projectedSubagentsToRuntime", () => {
     ] as unknown as ReadonlyArray<OrchestrationV2Subagent>);
 
     expect(projected[0]).toMatchObject({
+      runId: "run-1",
       kind: "workflow",
       workflowName: "sandbox-project-survey",
       toolUseId: "toolu-workflow",
