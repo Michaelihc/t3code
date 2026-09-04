@@ -25,9 +25,11 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -203,12 +205,76 @@ interface TimelineRowActivityState {
 interface TimelineWorkflowState {
   workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
   workflowAgentCountByParentId: ReadonlyMap<string, number>;
-  workflowSummaryByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
+}
+
+const EMPTY_WORKFLOW_FOLD_SUMMARIES: ReadonlyArray<ClaudeWorkflowFoldSummary> = [];
+
+function workflowFoldSummariesEqual(
+  left: ReadonlyArray<ClaudeWorkflowFoldSummary>,
+  right: ReadonlyArray<ClaudeWorkflowFoldSummary>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((summary, index) => {
+      const candidate = right[index];
+      return (
+        candidate !== undefined &&
+        summary.name === candidate.name &&
+        summary.agentCount === candidate.agentCount &&
+        summary.startedAt === candidate.startedAt &&
+        summary.completedAt === candidate.completedAt
+      );
+    })
+  );
+}
+
+class TimelineWorkflowSummaryStore {
+  private summariesByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
+  private readonly listenersByRunId = new Map<RunId, Set<() => void>>();
+
+  constructor(summaries: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>) {
+    this.summariesByRunId = summaries;
+  }
+
+  readonly getSnapshot = (runId: RunId): ReadonlyArray<ClaudeWorkflowFoldSummary> =>
+    this.summariesByRunId.get(runId) ?? EMPTY_WORKFLOW_FOLD_SUMMARIES;
+
+  readonly subscribe = (runId: RunId, listener: () => void): (() => void) => {
+    const listeners = this.listenersByRunId.get(runId) ?? new Set();
+    listeners.add(listener);
+    this.listenersByRunId.set(runId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.listenersByRunId.delete(runId);
+    };
+  };
+
+  replace(next: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>): void {
+    const stable = new Map<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>();
+    const changedRunIds = new Set<RunId>();
+    for (const [runId, summaries] of next) {
+      const previous = this.summariesByRunId.get(runId);
+      if (previous !== undefined && workflowFoldSummariesEqual(previous, summaries)) {
+        stable.set(runId, previous);
+      } else {
+        stable.set(runId, summaries);
+        changedRunIds.add(runId);
+      }
+    }
+    for (const runId of this.summariesByRunId.keys()) {
+      if (!next.has(runId)) changedRunIds.add(runId);
+    }
+    this.summariesByRunId = stable;
+    for (const runId of changedRunIds) {
+      for (const listener of this.listenersByRunId.get(runId) ?? []) listener();
+    }
+  }
 }
 
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
 const TimelineWorkflowCtx = createContext<TimelineWorkflowState>(null!);
+const TimelineWorkflowSummaryCtx = createContext<TimelineWorkflowSummaryStore>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
@@ -383,13 +449,18 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     }
     return summaries;
   }, [subagents, workflowAgentCountByParentId]);
+  const [workflowSummaryStore] = useState(
+    () => new TimelineWorkflowSummaryStore(workflowSummaryByRunId),
+  );
+  useLayoutEffect(() => {
+    workflowSummaryStore.replace(workflowSummaryByRunId);
+  }, [workflowSummaryByRunId, workflowSummaryStore]);
   const workflowState = useMemo<TimelineWorkflowState>(
     () => ({
       workflowByToolUseId,
       workflowAgentCountByParentId,
-      workflowSummaryByRunId,
     }),
-    [workflowAgentCountByParentId, workflowByToolUseId, workflowSummaryByRunId],
+    [workflowAgentCountByParentId, workflowByToolUseId],
   );
 
   useEffect(() => {
@@ -759,52 +830,54 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   return (
     <TimelineRowCtx value={sharedState}>
       <TimelineWorkflowCtx value={workflowState}>
-        <TimelineRowActivityCtx value={activityState}>
-          <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
-            <LegendList<MessagesTimelineRow>
-              ref={listRef}
-              data={rows}
-              keyExtractor={keyExtractor}
-              getItemType={getItemType}
-              renderItem={renderItem}
-              estimatedItemSize={90}
-              initialScrollAtEnd
-              {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-              contentInsetEndAdjustment={contentInsetEndAdjustment}
-              // LegendList owns ordinary end-follow (#5449): the app only turns
-              // it off while the user reads history (liveFollowEnabled), while a
-              // sent turn anchors near the top (anchoredEndSpace), or for the
-              // two-frame settle window of a fold toggle.
-              maintainScrollAtEnd={
-                anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
-                  ? false
-                  : TIMELINE_MAINTAIN_SCROLL_AT_END
-              }
-              maintainVisibleContentPosition={maintainVisibleContentPosition}
-              onScroll={handleScroll}
-              className={cn(
-                "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-                topFadeEnabled && "topbar-scroll-fade",
-              )}
-              ListHeaderComponent={listHeader}
-              ListFooterComponent={TIMELINE_LIST_FOOTER}
-            />
-            <TimelineMinimap
-              items={minimapItems}
-              hasPersistentGutter={minimapHasPersistentGutter}
-              hitStripWidth={minimapHitStripWidth}
-              stripMap={minimapStripMap}
-              onSelect={(item) => {
-                onManualNavigation();
-                void listRef.current?.scrollToIndex({
-                  index: item.rowIndex,
-                  animated: true,
-                  viewOffset: 24,
-                });
-              }}
-            />
-          </div>
-        </TimelineRowActivityCtx>
+        <TimelineWorkflowSummaryCtx value={workflowSummaryStore}>
+          <TimelineRowActivityCtx value={activityState}>
+            <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+              <LegendList<MessagesTimelineRow>
+                ref={listRef}
+                data={rows}
+                keyExtractor={keyExtractor}
+                getItemType={getItemType}
+                renderItem={renderItem}
+                estimatedItemSize={90}
+                initialScrollAtEnd
+                {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+                contentInsetEndAdjustment={contentInsetEndAdjustment}
+                // LegendList owns ordinary end-follow (#5449): the app only turns
+                // it off while the user reads history (liveFollowEnabled), while a
+                // sent turn anchors near the top (anchoredEndSpace), or for the
+                // two-frame settle window of a fold toggle.
+                maintainScrollAtEnd={
+                  anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
+                    ? false
+                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                }
+                maintainVisibleContentPosition={maintainVisibleContentPosition}
+                onScroll={handleScroll}
+                className={cn(
+                  "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
+                  topFadeEnabled && "topbar-scroll-fade",
+                )}
+                ListHeaderComponent={listHeader}
+                ListFooterComponent={TIMELINE_LIST_FOOTER}
+              />
+              <TimelineMinimap
+                items={minimapItems}
+                hasPersistentGutter={minimapHasPersistentGutter}
+                hitStripWidth={minimapHitStripWidth}
+                stripMap={minimapStripMap}
+                onSelect={(item) => {
+                  onManualNavigation();
+                  void listRef.current?.scrollToIndex({
+                    index: item.rowIndex,
+                    animated: true,
+                    viewOffset: 24,
+                  });
+                }}
+              />
+            </div>
+          </TimelineRowActivityCtx>
+        </TimelineWorkflowSummaryCtx>
       </TimelineWorkflowCtx>
     </TimelineRowCtx>
   );
@@ -1476,9 +1549,17 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
-  const workflowCtx = use(TimelineWorkflowCtx);
+  const workflowSummaryStore = use(TimelineWorkflowSummaryCtx);
+  const subscribe = useCallback(
+    (listener: () => void) => workflowSummaryStore.subscribe(row.runId, listener),
+    [row.runId, workflowSummaryStore],
+  );
+  const getSnapshot = useCallback(
+    () => workflowSummaryStore.getSnapshot(row.runId),
+    [row.runId, workflowSummaryStore],
+  );
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
-  const workflows = workflowCtx.workflowSummaryByRunId.get(row.runId) ?? [];
+  const workflows = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
   const live = workflows.some((workflow) => workflow.completedAt === null);
   const [now, setNow] = useState(Date.now());
   useEffect(() => {

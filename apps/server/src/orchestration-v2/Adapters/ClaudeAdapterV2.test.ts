@@ -1698,6 +1698,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       return yield* Effect.die(`Timed out waiting for ${label}.`);
     });
 
+  const takeReceipt = <A>(queue: Queue.Queue<A>, predicate: (value: A) => boolean) =>
+    Effect.gen(function* () {
+      while (true) {
+        const value = yield* Queue.take(queue);
+        if (predicate(value)) return value;
+      }
+    });
+
   const makeWakeHarnessWithOptions = (options?: {
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void>;
@@ -1711,8 +1719,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const offeredMessages: Array<SDKUserMessage> = [];
       const continuationRequests: Array<ProviderContinuationRequest> = [];
+      const continuationReceipts = yield* Queue.unbounded<ProviderContinuationRequest>();
       const terminalReceipts =
         yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn.terminal" }>>();
+      const subagentReceipts =
+        yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "subagent.updated" }>>();
       let openedOptions: ClaudeAgentSdkQueryOptions | undefined;
       const adapter = makeClaudeAdapterV2({
         instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
@@ -1723,8 +1734,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         idAllocator,
         continuationRequests: {
           offer: (request) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               continuationRequests.push(request);
+              yield* Queue.offer(continuationReceipts, request);
             }),
         },
         queryRunner: {
@@ -1767,6 +1779,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             if (event.type === "turn.terminal") {
               yield* Queue.offer(terminalReceipts, event);
             }
+            if (event.type === "subagent.updated") {
+              yield* Queue.offer(subagentReceipts, event);
+            }
           }),
         ),
         Effect.forkScoped,
@@ -1788,7 +1803,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         offeredMessages,
         continuationRequests,
         events,
+        continuationReceipts,
         terminalReceipts,
+        subagentReceipts,
         getOpenedOptions: () => openedOptions,
         terminalEvents,
         hasPendingBackgroundWork,
@@ -3513,7 +3530,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
 
-        yield* awaitUntil(() => subagentEvents().length >= 4, "workflow roster projected");
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "completed",
+        );
         const coordinator = subagentEvents()
           .map((event) => event.subagent)
           .find((subagent) => subagent.kind === "workflow" && subagent.phases !== undefined);
@@ -3581,15 +3604,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" &&
-                event.subagent.agentIndex === 1 &&
-                event.subagent.usage?.durationMs === 42_000,
-            ),
-          "partial workflow usage projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 1 &&
+            event.subagent.usage?.durationMs === 42_000,
         );
         const partialUsageMember = subagentEvents()
           .map((event) => event.subagent)
@@ -3668,12 +3688,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) => event.subagent.progress === "Repeated snapshot processed",
-            ),
-          "post-duplicate workflow marker projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Repeated snapshot processed",
         );
         assert.equal(
           subagentEvents().filter(
@@ -3740,12 +3757,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           }),
         );
 
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) => event.subagent.kind === "workflow_agent" && event.subagent.attempt === 4,
-            ),
-          "workflow retry projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.attempt === 4,
         );
         const retriedMember = subagentEvents()
           .map((event) => event.subagent)
@@ -3765,7 +3779,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(retriedMember, "progress");
         assert.notProperty(retriedMember, "usage");
 
-        const beforeAttemptlessTerminalCount = subagentEvents().length;
         const beforeStaleAttemptMemberCount = subagentEvents().filter(
           (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
         ).length;
@@ -3825,9 +3838,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () => subagentEvents().length > beforeAttemptlessTerminalCount,
-          "attempt-less terminal workflow member projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.error === "Retry failed without an attempt number",
         );
         const attemptLessTerminal = subagentEvents()
           .map((event) => event.subagent)
@@ -3867,15 +3883,12 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" &&
-                event.subagent.agentIndex === 2 &&
-                event.subagent.attempt === 5,
-            ),
-          "same-status workflow retry projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.attempt === 5,
         );
         const sameStatusRetry = subagentEvents()
           .map((event) => event.subagent)
@@ -3916,17 +3929,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" &&
-                event.subagent.agentIndex === 2 &&
-                event.subagent.status === "running" &&
-                event.subagent.startedAt !== null &&
-                DateTime.toEpochMillis(event.subagent.startedAt) === 1_788_400_080_000,
-            ),
-          "attempt-less workflow retry projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "running" &&
+            event.subagent.startedAt !== null &&
+            DateTime.toEpochMillis(event.subagent.startedAt) === 1_788_400_080_000,
         );
         const attemptLessRetry = subagentEvents()
           .map((event) => event.subagent)
@@ -3955,7 +3965,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         // project live while no turn is attached; a later user turn must not
         // interfere with the eventual terminal wake notification.
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root terminal");
+        yield* Queue.take(harness.terminalReceipts);
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -3982,13 +3992,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
-            ),
-          "idle workflow progress projected live",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
         );
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -4027,14 +4033,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" &&
-                event.subagent.progress === "Still combining survey results",
-            ),
-          "workflow progress during unrelated turn",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.progress === "Still combining survey results",
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -4046,10 +4049,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             errors: ["The unrelated status turn failed."],
           }),
         );
-        yield* awaitUntil(
-          () => harness.terminalEvents().length === 2,
-          "workflow user turn terminal",
-        );
+        yield* Queue.take(harness.terminalReceipts);
         assert.equal(harness.terminalEvents()[1]?.status, "failed");
         assert.equal(
           subagentEvents()
@@ -4071,7 +4071,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(() => harness.continuationRequests.length === 1, "workflow continuation");
+        yield* Queue.take(harness.continuationReceipts);
         yield* Queue.offer(
           harness.sdkMessages,
           makeResultFrame({
@@ -4092,10 +4092,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             messageCreationSource: "provider",
           }),
         );
-        yield* awaitUntil(
-          () => harness.terminalEvents().length === 3,
-          "workflow continuation terminal",
-        );
+        yield* Queue.take(harness.terminalReceipts);
         const terminalCoordinator = subagentEvents()
           .map((event) => event.subagent)
           .findLast((subagent) => subagent.kind === "workflow");
@@ -4192,13 +4189,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
-            ),
-          "failing workflow roster projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -4213,18 +4206,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
-            ) &&
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" &&
-                event.subagent.agentIndex === 2 &&
-                event.subagent.status === "interrupted",
-            ),
-          "failed workflow terminal states projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "interrupted",
         );
 
         const latestMembers = new Map<number, OrchestrationV2Subagent>();
@@ -4244,10 +4235,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             result: "The workflow failed.",
           }),
         );
-        yield* awaitUntil(
-          () => harness.terminalEvents().length === 1,
-          "failed workflow root terminal",
-        );
+        yield* Queue.take(harness.terminalReceipts);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );
@@ -4267,11 +4255,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           driver: CLAUDE_PROVIDER,
           nativeTurnId: `turn:${attemptId}`,
         });
-        const subagentEvents = () =>
-          harness.events.filter(
-            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
-              event.type === "subagent.updated",
-          );
 
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -4320,32 +4303,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
-            ),
-          "interruptible workflow roster projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
         );
 
         yield* harness.runtime.interruptTurn({
           providerThread: harness.providerThread,
           providerTurnId,
         });
-        yield* awaitUntil(
-          () =>
-            harness.terminalEvents().some((event) => event.status === "interrupted") &&
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow" && event.subagent.status === "interrupted",
-            ) &&
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
-            ),
-          "interrupted workflow state released",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "interrupted",
         );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
@@ -4358,11 +4335,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const now = yield* DateTime.now;
         const taskId = "workflow-idle-query-exit";
         const toolUseId = "toolu-workflow-idle-query-exit";
-        const subagentEvents = () =>
-          harness.events.filter(
-            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
-              event.type === "subagent.updated",
-          );
 
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
@@ -4411,13 +4383,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
-            ),
-          "idle-query workflow roster projected",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
         );
         yield* Queue.offer(
           harness.sdkMessages,
@@ -4426,19 +4395,17 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             result: "The workflow is continuing.",
           }),
         );
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root settled");
+        yield* Queue.take(harness.terminalReceipts);
 
         yield* Queue.shutdown(harness.sdkMessages);
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
-            ) &&
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
-            ),
-          "idle-query workflow state released",
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
         );
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
