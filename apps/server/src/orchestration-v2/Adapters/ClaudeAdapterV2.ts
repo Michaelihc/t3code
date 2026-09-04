@@ -3802,9 +3802,6 @@ export function makeClaudeAdapterV2(
               completedAt,
               updatedAt: hasReportedUpdatedAt ? updatedAt : (existing?.updatedAt ?? updatedAt),
             } satisfies OrchestrationV2Subagent;
-            if (existing !== undefined && claudeWorkflowMemberEqual(existing, candidateTask)) {
-              continue;
-            }
             if (reportedProgressAt !== undefined) {
               lastReportedProgressAtByMember.set(
                 entry.index,
@@ -3814,6 +3811,9 @@ export function makeClaudeAdapterV2(
               );
             } else if (resetTelemetry) {
               lastReportedProgressAtByMember.delete(entry.index);
+            }
+            if (existing !== undefined && claudeWorkflowMemberEqual(existing, candidateTask)) {
+              continue;
             }
             const task = {
               ...candidateTask,

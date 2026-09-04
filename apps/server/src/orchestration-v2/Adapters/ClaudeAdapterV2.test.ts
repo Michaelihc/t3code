@@ -41,6 +41,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { Tool } from "effect/unstable/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 
@@ -3440,6 +3441,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
   it.effect("projects Claude workflow progress as a coordinator and live member roster", () =>
     Effect.scoped(
       Effect.gen(function* () {
+        yield* TestClock.setTime(1_788_500_000_000);
         const harness = yield* makeWakeHarness;
         const now = yield* DateTime.now;
         const taskId = "workflow-sandbox-survey";
@@ -3704,6 +3706,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           ).length,
           memberOneEventCount,
         );
+        const memberTwoEventCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -3725,7 +3730,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 attempt: 2,
                 resultPreview: "Located the existing workflow panel.",
                 lastProgressAt: 1_788_400_036_000,
-                lastToolSummary: "Provider-timed follow-up",
+                lastToolSummary: "Repeated snapshot processed",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Silent provider watermark advanced",
               },
             ],
             uuid: "00000000-0000-4000-8000-000000000171",
@@ -3734,7 +3748,58 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         );
         yield* takeReceipt(
           harness.subagentReceipts,
-          (event) => event.subagent.progress === "Provider-timed follow-up",
+          (event) => event.subagent.progress === "Silent provider watermark advanced",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          memberTwoEventCount,
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A conflicting frame predates the silent provider watermark",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                attempt: 2,
+                lastProgressAt: 1_788_400_035_500,
+                error: "Stale failure after silent watermark",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Silent watermark stale-frame marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000172",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Silent watermark stale-frame marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          memberTwoEventCount,
         );
 
         yield* Queue.offer(
