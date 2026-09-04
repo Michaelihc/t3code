@@ -12,7 +12,7 @@ import {
   type OrchestrationV2TurnItem,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { describe, expect, it, vi } from "vite-plus/test";
+import { describe, expect, it } from "vite-plus/test";
 
 import { buildThreadFeed, type ThreadFeedActivity } from "./threadActivity";
 import { buildThreadActivityInspector } from "./threadActivityInspector";
@@ -182,26 +182,30 @@ describe("buildThreadActivityInspector", () => {
       toolName: "Workflow",
       input: { script: "export const meta = { name: 'survey' };" },
     };
-    const now = vi.spyOn(Date, "now").mockReturnValue(Date.parse("2026-06-20T00:01:41.000Z"));
+    const workflow = {
+      status: "running" as const,
+      startedAt: "2026-06-20T00:00:00.000Z",
+      completedAt: null,
+    };
+    const model = buildThreadActivityInspector(
+      activityFor(item),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+      workflow,
+      Date.parse("2026-06-20T00:01:41.000Z"),
+    );
+    const nextModel = buildThreadActivityInspector(
+      activityFor(item),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+      workflow,
+      Date.parse("2026-06-20T00:01:42.000Z"),
+    );
 
-    try {
-      const model = buildThreadActivityInspector(
-        activityFor(item),
-        EMPTY_V2_ITEM_SUPPORT,
-        sourceThreadId,
-        {
-          status: "running",
-          startedAt: "2026-06-20T00:00:00.000Z",
-          completedAt: null,
-        },
-      );
-
-      expect(model.fields).toContainEqual({ label: "Status", value: "running" });
-      expect(model.fields).toContainEqual({ label: "Duration", value: "1m 41s" });
-      expect(model.fields).not.toContainEqual({ label: "Duration", value: "2.0s" });
-    } finally {
-      now.mockRestore();
-    }
+    expect(model.fields).toContainEqual({ label: "Status", value: "running" });
+    expect(model.fields).toContainEqual({ label: "Duration", value: "1m 41s" });
+    expect(model.fields).not.toContainEqual({ label: "Duration", value: "2.0s" });
+    expect(nextModel.fields).toContainEqual({ label: "Duration", value: "1m 42s" });
   });
 
   it("enables rollback only for the matching ready checkpoint", () => {

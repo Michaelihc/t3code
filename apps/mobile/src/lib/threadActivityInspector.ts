@@ -61,10 +61,14 @@ function durationLabel(
   return formatDuration(Math.max(0, end - start));
 }
 
-function workflowElapsedLabel(startedAt: string | null, completedAt: string | null): string | null {
+function workflowElapsedLabel(
+  startedAt: string | null,
+  completedAt: string | null,
+  now: number,
+): string | null {
   if (startedAt === null) return null;
   const start = Date.parse(startedAt);
-  const end = completedAt === null ? Date.now() : Date.parse(completedAt);
+  const end = completedAt === null ? now : Date.parse(completedAt);
   if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
   return formatDuration(Math.max(0, end - start));
 }
@@ -84,6 +88,7 @@ export function buildThreadActivityInspector(
   support: V2ItemSupport,
   currentThreadId: ThreadId,
   workflow?: Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt">,
+  now = Date.now(),
 ): ThreadActivityInspectorModel {
   const row = activity.projectedItem;
   const item = row.item;
@@ -92,7 +97,7 @@ export function buildThreadActivityInspector(
     { label: "Status", value: (workflow?.status ?? item.status).replaceAll("_", " ") },
   ];
   const duration = workflow
-    ? workflowElapsedLabel(workflow.startedAt, workflow.completedAt)
+    ? workflowElapsedLabel(workflow.startedAt, workflow.completedAt, now)
     : durationLabel(item.startedAt, item.completedAt);
   if (duration) fields.push({ label: "Duration", value: duration });
   if (row.visibility !== "local") fields.push({ label: "Visibility", value: row.visibility });

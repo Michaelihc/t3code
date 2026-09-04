@@ -3906,9 +3906,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(attemptLessRetry, "progress");
         assert.notProperty(attemptLessRetry, "usage");
 
-        // Let the root settle first. Late workflow progress can race with a
-        // normal user turn before the terminal notification arrives; the user
-        // turn must drain that progress without consuming the later wake.
+        // Let the root settle first. Late workflow progress must continue to
+        // project live while no turn is attached; a later user turn must not
+        // interfere with the eventual terminal wake notification.
         yield* Queue.offer(harness.sdkMessages, turnOneResult);
         yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root terminal");
         yield* Queue.offer(
@@ -3937,6 +3937,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
+            ),
+          "idle workflow progress projected live",
+        );
         yield* harness.runtime.startTurn(
           makeClaudeTestTurnInput({
             threadId: harness.threadId,
@@ -3947,14 +3955,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             attachments: [],
             providerTurnOrdinal: 2,
           }),
-        );
-        yield* awaitUntil(
-          () =>
-            subagentEvents().some(
-              (event) =>
-                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
-            ),
-          "late workflow progress drained into user turn",
         );
         yield* Queue.offer(
           harness.sdkMessages,

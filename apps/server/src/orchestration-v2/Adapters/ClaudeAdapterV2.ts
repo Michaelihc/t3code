@@ -1258,6 +1258,10 @@ const ClaudeWorkflowProgressEntry = Schema.Union([
 ]);
 type ClaudeWorkflowProgressEntry = typeof ClaudeWorkflowProgressEntry.Type;
 type ClaudeWorkflowAgentProgress = typeof ClaudeWorkflowAgentProgress.Type;
+type ClaudeTaskProgressMessage = Extract<
+  SDKMessage,
+  { readonly type: "system"; readonly subtype: "task_progress" }
+>;
 const isClaudeWorkflowProgressEntry = Schema.is(ClaudeWorkflowProgressEntry);
 
 function claudeWorkflowProgressEntries(
@@ -1270,7 +1274,9 @@ function claudeWorkflowProgressEntries(
   return Array.isArray(value) ? value.filter(isClaudeWorkflowProgressEntry) : [];
 }
 
-function isClaudeWorkflowProgressMessage(message: SDKMessage): boolean {
+function isClaudeWorkflowProgressMessage(
+  message: SDKMessage,
+): message is ClaudeTaskProgressMessage {
   return (
     message.type === "system" &&
     message.subtype === "task_progress" &&
@@ -2549,6 +2555,9 @@ export function makeClaudeAdapterV2(
         // but still has to terminalize the original run's synthetic children.
         const sessionWorkflowMembersByTaskId = yield* Ref.make(
           new Map<string, Map<number, OrchestrationV2Subagent>>(),
+        );
+        const sessionWorkflowContextByTaskId = yield* Ref.make(
+          new Map<string, ActiveClaudeTurnContext>(),
         );
         const wakeBuffers = yield* Ref.make(
           new Map<
@@ -4669,6 +4678,61 @@ export function makeClaudeAdapterV2(
           return true;
         });
 
+        const processClaudeTaskProgress = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly nativeThreadId: string;
+          readonly message: ClaudeTaskProgressMessage;
+        }) {
+          const { context, message } = input;
+          const workflowEntries = claudeWorkflowProgressEntries(message);
+          const progress =
+            trimmedClaudeWorkflowString(message.summary) ?? message.description.trim();
+          const phases = workflowEntries.flatMap((entry) =>
+            entry.type === "workflow_phase" && entry.title.trim().length > 0
+              ? [{ index: entry.index, title: entry.title.trim() }]
+              : [],
+          );
+          const lastToolName = trimmedClaudeWorkflowString(message.last_tool_name);
+          const isBackgroundTask = yield* hasPendingBackgroundTaskOnNativeThread(
+            input.nativeThreadId,
+            message.task_id,
+          );
+          if (
+            (progress.length === 0 && workflowEntries.length === 0) ||
+            context.ignoredTaskIds.has(message.task_id) ||
+            isBackgroundTask
+          ) {
+            return;
+          }
+          const coordinator = yield* updateClaudeSubagentNode({
+            context,
+            taskId: message.task_id,
+            ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
+            ...(workflowEntries.length === 0 ? {} : { kind: "workflow" as const }),
+            ...(progress.length === 0 ? {} : { progress }),
+            ...(phases.length === 0 ? {} : { phases }),
+            usage: {
+              totalTokens: Math.max(0, Math.trunc(message.usage.total_tokens)),
+              toolUses: Math.max(0, Math.trunc(message.usage.tool_uses)),
+              durationMs: Math.max(0, Math.trunc(message.usage.duration_ms)),
+            },
+            ...(lastToolName === undefined ? {} : { lastToolName }),
+            status: "running",
+          });
+          if (coordinator !== undefined && workflowEntries.length > 0) {
+            yield* Ref.update(sessionWorkflowContextByTaskId, (current) => {
+              if (current.has(message.task_id)) return current;
+              return new Map(current).set(message.task_id, context);
+            });
+            yield* updateClaudeWorkflowMembers({
+              context,
+              taskId: message.task_id,
+              coordinator,
+              entries: workflowEntries,
+            });
+          }
+        });
+
         const handleSdkMessage = Effect.fnUntraced(function* (input: {
           readonly query: ClaudeAgentSdkQuerySession;
           readonly message: SDKMessage;
@@ -4681,6 +4745,19 @@ export function makeClaudeAdapterV2(
           const message = input.message;
           const context = yield* Ref.get(activeTurn);
           if (context === null) {
+            if (isClaudeWorkflowProgressMessage(message)) {
+              const workflowContext = (yield* Ref.get(sessionWorkflowContextByTaskId)).get(
+                message.task_id,
+              );
+              if (workflowContext !== undefined) {
+                yield* processClaudeTaskProgress({
+                  context: workflowContext,
+                  nativeThreadId: liveQuery.nativeThreadId,
+                  message,
+                });
+                return;
+              }
+            }
             // task_notification must buffer wake evidence while still tracked
             // on the roster; clearing first would drop the wake pin.
             if (message.type === "system" && message.subtype === "task_notification") {
@@ -4844,52 +4921,20 @@ export function makeClaudeAdapterV2(
                 status: "running",
                 reopen: true,
               });
+              if (message.task_type === "local_workflow") {
+                yield* Ref.update(sessionWorkflowContextByTaskId, (current) =>
+                  new Map(current).set(message.task_id, context),
+                );
+              }
             }
           }
 
           if (message.type === "system" && message.subtype === "task_progress") {
-            const workflowEntries = claudeWorkflowProgressEntries(message);
-            const progress =
-              trimmedClaudeWorkflowString(message.summary) ?? message.description.trim();
-            const phases = workflowEntries.flatMap((entry) =>
-              entry.type === "workflow_phase" && entry.title.trim().length > 0
-                ? [{ index: entry.index, title: entry.title.trim() }]
-                : [],
-            );
-            const lastToolName = trimmedClaudeWorkflowString(message.last_tool_name);
-            const isBackgroundTask = yield* hasPendingBackgroundTaskOnNativeThread(
-              liveQuery.nativeThreadId,
-              message.task_id,
-            );
-            if (
-              (progress.length > 0 || workflowEntries.length > 0) &&
-              !context.ignoredTaskIds.has(message.task_id) &&
-              !isBackgroundTask
-            ) {
-              const coordinator = yield* updateClaudeSubagentNode({
-                context,
-                taskId: message.task_id,
-                ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
-                ...(workflowEntries.length === 0 ? {} : { kind: "workflow" as const }),
-                ...(progress.length === 0 ? {} : { progress }),
-                ...(phases.length === 0 ? {} : { phases }),
-                usage: {
-                  totalTokens: Math.max(0, Math.trunc(message.usage.total_tokens)),
-                  toolUses: Math.max(0, Math.trunc(message.usage.tool_uses)),
-                  durationMs: Math.max(0, Math.trunc(message.usage.duration_ms)),
-                },
-                ...(lastToolName === undefined ? {} : { lastToolName }),
-                status: "running",
-              });
-              if (coordinator !== undefined && workflowEntries.length > 0) {
-                yield* updateClaudeWorkflowMembers({
-                  context,
-                  taskId: message.task_id,
-                  coordinator,
-                  entries: workflowEntries,
-                });
-              }
-            }
+            yield* processClaudeTaskProgress({
+              context,
+              nativeThreadId: liveQuery.nativeThreadId,
+              message,
+            });
           }
 
           if (message.type === "system" && message.subtype === "task_notification") {

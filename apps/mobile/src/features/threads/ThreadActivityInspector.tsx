@@ -3,7 +3,7 @@ import { SymbolView } from "expo-symbols";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Linking, Pressable, ScrollView, type ColorValue, View } from "react-native";
 
 import { AppText as Text } from "../../components/AppText";
@@ -30,10 +30,26 @@ export function ThreadActivityInspector(props: {
     sourceThreadId: row.sourceThreadId,
     sourceItemId: row.sourceItemId,
   });
+  const workflowLive =
+    props.workflow?.status === "pending" ||
+    props.workflow?.status === "running" ||
+    props.workflow?.status === "waiting";
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!workflowLive) return;
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [workflowLive]);
   const model = useMemo(
     () =>
-      buildThreadActivityInspector(props.activity, support, props.currentThreadId, props.workflow),
-    [props.activity, props.currentThreadId, props.workflow, support],
+      buildThreadActivityInspector(
+        props.activity,
+        support,
+        props.currentThreadId,
+        props.workflow,
+        now,
+      ),
+    [now, props.activity, props.currentThreadId, props.workflow, support],
   );
   const revertCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     label: "checkpoint rollback",
