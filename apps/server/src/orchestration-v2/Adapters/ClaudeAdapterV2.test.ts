@@ -4068,6 +4068,91 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(attemptLessRetry, "lastToolName");
         assert.notProperty(attemptLessRetry, "progress");
         assert.notProperty(attemptLessRetry, "usage");
+        const attemptLessBaseline = DateTime.toEpochMillis(attemptLessRetry.updatedAt);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Fresh attempt-less progress arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastProgressAt: attemptLessBaseline + 2_000,
+                lastToolSummary: "Fresh attempt-less progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000016f",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Fresh attempt-less progress",
+        );
+        const beforeStaleAttemptLessTerminal = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A delayed attempt-less terminal snapshot arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                lastProgressAt: attemptLessBaseline + 1_000,
+                error: "Stale attempt-less failure",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Attempt-less timestamp marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000170",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Attempt-less timestamp marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeStaleAttemptLessTerminal,
+        );
+        assert.deepInclude(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast(
+              (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+            ),
+          { status: "running", progress: "Fresh attempt-less progress" },
+        );
         const beforeSupersededAttemptFrames = subagentEvents().filter(
           (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
         ).length;

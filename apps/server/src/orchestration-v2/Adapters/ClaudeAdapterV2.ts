@@ -3692,8 +3692,8 @@ export function makeClaudeAdapterV2(
                 : now,
             );
             if (
-              entry.attempt !== undefined &&
-              entry.attempt === existing?.attempt &&
+              existing !== undefined &&
+              entry.attempt === existing.attempt &&
               entry.lastProgressAt !== undefined &&
               DateTime.toEpochMillis(reportedUpdatedAt) < DateTime.toEpochMillis(existing.updatedAt)
             ) {
