@@ -8,6 +8,7 @@ import * as Ref from "effect/Ref";
 
 import * as ServerConfig from "./config.ts";
 import * as ServerRuntimeStartup from "./serverRuntimeStartup.ts";
+import * as GitVcsDriver from "./vcs/GitVcsDriver.ts";
 
 it("uses the canonical Codex model for auto-bootstrap", () => {
   assert.deepEqual(ServerRuntimeStartup.getAutoBootstrapThreadModelSelection(), {

@@ -28,6 +28,8 @@ import {
   View,
 } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
+import type { EnvironmentId, ToolActivityIcon } from "@t3tools/contracts";
+import { toolActivityFaviconUrl } from "@t3tools/shared/favicon";
 
 import { AppText as Text } from "../../components/AppText";
 import { T3Wordmark } from "../../components/T3Wordmark";
@@ -80,14 +82,13 @@ type WorkContentIcon = AppSymbolName | "browser" | "t3-code";
 function WorkLogIcon(props: {
   readonly icon: WorkContentIcon;
   readonly color: ColorValue;
+  readonly colorClassName?: string;
   readonly highlighted?: boolean;
 }) {
+  const colorClassName = props.highlighted ? "accent-foreground" : props.colorClassName;
   if (props.icon === "t3-code") {
     return (
-      <T3Wordmark
-        height={10}
-        {...(props.highlighted ? { colorClassName: "accent-foreground" } : { color: props.color })}
-      />
+      <T3Wordmark height={10} {...(colorClassName ? { colorClassName } : { color: props.color })} />
     );
   }
   return (
@@ -95,9 +96,7 @@ function WorkLogIcon(props: {
       name={props.icon === "browser" ? { ios: "globe", android: "public" } : props.icon}
       size={14}
       weight="medium"
-      {...(props.highlighted
-        ? { tintColorClassName: "accent-foreground" }
-        : { tintColor: props.color })}
+      {...(colorClassName ? { tintColorClassName: colorClassName } : { tintColor: props.color })}
       type="monochrome"
     />
   );
@@ -142,17 +141,28 @@ export function ThreadDisclosureChevron(props: {
 }
 
 function ShimmerWorkContent(props: {
+  readonly environmentId?: EnvironmentId;
   readonly highlighted: boolean;
   readonly icon: WorkContentIcon;
   readonly iconSubtleColor: ColorValue;
   readonly label: string;
   readonly onTextLayout?: ComponentProps<typeof Text>["onTextLayout"];
   readonly showIcon: boolean;
+  readonly themeAppearance?: "light" | "dark";
+  readonly toolIcon?: ToolActivityIcon;
 }) {
   return (
     <View className="flex-row items-center gap-1.5">
       <View className="h-6 w-6 shrink-0 items-center justify-center">
-        {props.showIcon ? (
+        {props.showIcon && props.toolIcon && props.environmentId ? (
+          <ToolActivityIconView
+            environmentId={props.environmentId}
+            icon={props.toolIcon}
+            fallback={props.icon}
+            fallbackColor={props.iconSubtleColor}
+            themeAppearance={props.themeAppearance ?? "light"}
+          />
+        ) : props.showIcon ? (
           <WorkLogIcon
             icon={props.icon}
             color={props.iconSubtleColor}
@@ -175,10 +185,13 @@ function ShimmerWorkContent(props: {
 }
 
 export function ShimmeringWorkContent(props: {
+  readonly environmentId?: EnvironmentId;
   readonly icon: WorkContentIcon;
   readonly iconSubtleColor: ColorValue;
   readonly label: string;
   readonly showIcon: boolean;
+  readonly themeAppearance?: "light" | "dark";
+  readonly toolIcon?: ToolActivityIcon;
 }) {
   const [availableWidth, setAvailableWidth] = useState(0);
   const [textWidth, setTextWidth] = useState(0);
@@ -243,11 +256,14 @@ export function ShimmeringWorkContent(props: {
       onLayout={(event) => setAvailableWidth(event.nativeEvent.layout.width)}
     >
       <ShimmerWorkContent
+        environmentId={props.environmentId}
         highlighted={false}
         icon={props.icon}
         iconSubtleColor={props.iconSubtleColor}
         label={props.label}
         showIcon={props.showIcon}
+        themeAppearance={props.themeAppearance}
+        toolIcon={props.toolIcon}
         onTextLayout={(event) => setTextWidth(event.nativeEvent.lines[0]?.width ?? 0)}
       />
       {!reducedMotion && appIsActive && screenIsFocused && contentWidth > 0 ? (
@@ -280,11 +296,14 @@ export function ShimmeringWorkContent(props: {
           >
             <Animated.View style={[{ width: availableWidth }, counterSweepStyle]}>
               <ShimmerWorkContent
+                environmentId={props.environmentId}
                 highlighted
                 icon={props.icon}
                 iconSubtleColor={props.iconSubtleColor}
                 label={props.label}
                 showIcon={props.showIcon}
+                themeAppearance={props.themeAppearance}
+                toolIcon={props.toolIcon}
               />
             </Animated.View>
           </MaskedView>
@@ -315,10 +334,14 @@ function workRowSymbolName(icon: ThreadFeedActivity["icon"]): AppSymbolName {
       return { ios: "sparkles", android: "auto_awesome" };
     case "alert":
       return { ios: "exclamationmark.triangle", android: "error" };
+    case "browser":
+      return { ios: "safari", android: "public" };
     case "check":
       return { ios: "checkmark", android: "check" };
     case "command":
       return { ios: "terminal", android: "terminal" };
+    case "computer":
+      return { ios: "desktopcomputer", android: "desktop_windows" };
     case "edit":
       return { ios: "square.and.pencil", android: "edit" };
     case "eye":
@@ -489,6 +512,7 @@ export function collapsedWorkLogHeight(activities: ReadonlyArray<ThreadFeedActiv
 interface ThreadWorkLogProps {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
   readonly anchorKey: string;
+  readonly environmentId: EnvironmentId;
   readonly copiedRowId: string | null;
   readonly currentThreadId: ThreadId;
   readonly environmentId: EnvironmentId;
@@ -496,6 +520,7 @@ interface ThreadWorkLogProps {
   readonly rowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
   readonly scrollPositions: Map<string, ThreadWorkGroupScrollPosition>;
   readonly iconSubtleColor: ColorValue;
+  readonly themeAppearance: "light" | "dark";
   readonly onCopyRow: (rowId: string, value: string) => void;
   readonly onToggleRow: (rowId: string, anchorKey: string) => void;
   readonly renderImage: MarkdownImageRenderer;
@@ -510,20 +535,24 @@ export function ThreadWorkLog(props: ThreadWorkLogProps) {
         anchorKey={props.anchorKey}
         copied={props.copiedRowId === row.id}
         expanded={props.expandedRows[row.id] ?? false}
+        environmentId={props.environmentId}
         iconSubtleColor={props.iconSubtleColor}
         onCopyRow={props.onCopyRow}
         onToggleRow={props.onToggleRow}
         renderImage={props.renderImage}
+        themeAppearance={props.themeAppearance}
       />
     ),
     [
       props.anchorKey,
       props.copiedRowId,
       props.expandedRows,
+      props.environmentId,
       props.iconSubtleColor,
       props.onCopyRow,
       props.onToggleRow,
       props.renderImage,
+      props.themeAppearance,
     ],
   );
 
@@ -760,7 +789,10 @@ function ThreadWorkGroupList(props: {
         scrollsToTop={false}
         bounces={false}
         keyboardShouldPersistTaps="handled"
-        style={StyleSheet.absoluteFill}
+        // MaskedView bridges through a native host whose absolute-fill bounds
+        // can lag behind a resize. Keep the list's viewport at the group's
+        // current height when expanding details or appending calls.
+        style={[StyleSheet.absoluteFill, { height }]}
       />
     </MaskedView>
   );
@@ -791,7 +823,8 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
     !toolPresentation && expanded && row.workEntry.command?.trim() ? "Command" : previewText;
   const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
   const failed = row.status === "failure";
-  const icon = toolPresentation?.icon ?? (failed ? "xmark" : workRowSymbolName(row.icon));
+  const toolIcon = row.workEntry.toolIcon ?? row.workEntry.toolSource?.icon;
+  const icon = toolPresentation?.icon ?? workRowSymbolName(row.icon);
 
   return (
     <Animated.View
@@ -819,18 +852,38 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
         <View className="min-h-8 flex-row items-center gap-1.5">
           {row.live ? (
             <ShimmeringWorkContent
+              environmentId={props.environmentId}
               icon={icon}
               iconSubtleColor={props.iconSubtleColor}
               label={displayText}
               showIcon
+              themeAppearance={props.themeAppearance}
+              toolIcon={toolIcon}
             />
           ) : (
             <>
               <View className="h-6 w-6 shrink-0 items-center justify-center">
-                <WorkLogIcon
-                  icon={icon}
-                  color={iconIsDestructive ? "#e11d48" : props.iconSubtleColor}
-                />
+                {toolIcon ? (
+                  <ToolActivityIconView
+                    environmentId={props.environmentId}
+                    icon={toolIcon}
+                    fallback={icon}
+                    fallbackColor={props.iconSubtleColor}
+                    themeAppearance={props.themeAppearance}
+                  />
+                ) : (
+                  <WorkLogIcon
+                    icon={icon}
+                    color={props.iconSubtleColor}
+                    colorClassName={
+                      iconIsDestructive
+                        ? "accent-adaptive-rose-600-400"
+                        : failed
+                          ? "accent-danger-foreground/40"
+                          : undefined
+                    }
+                  />
+                )}
               </View>
               <Text
                 className={cn(
@@ -850,7 +903,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 Copied
               </Text>
             ) : null}
-            {failed && toolPresentation ? (
+            {failed && toolIcon !== undefined ? (
               <View
                 className="h-4 w-4 items-center justify-center"
                 accessibilityElementsHidden
@@ -859,7 +912,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
                 <SymbolView
                   name="xmark"
                   size={11}
-                  tintColorClassName="accent-adaptive-rose-600-400"
+                  tintColorClassName="accent-danger-foreground/40"
                   type="monochrome"
                 />
               </View>
@@ -908,6 +961,7 @@ const ThreadWorkLogRow = memo(function ThreadWorkLogRow(
 });
 
 export function ThreadWorkGroupToggle(props: {
+  readonly environmentId: EnvironmentId;
   readonly rowSizing: ReturnType<typeof deriveThreadWorkLogSizing>;
   readonly expanded: boolean;
   readonly hiddenCount: number;
@@ -915,6 +969,9 @@ export function ThreadWorkGroupToggle(props: {
   readonly summary: string;
   readonly summaryKind: ToolGroupSummaryKind;
   readonly summaryToolIcon?: "browser" | "t3-code";
+  readonly themeAppearance: "light" | "dark";
+  readonly toolSurface?: import("@t3tools/contracts").ToolActivitySurface;
+  readonly toolIcon?: ToolActivityIcon;
   readonly hasFailure: boolean;
   readonly shimmer: boolean;
   readonly onToggle: () => void;
@@ -922,7 +979,11 @@ export function ThreadWorkGroupToggle(props: {
   const accessibilityLabel = props.hasFailure
     ? `${props.summary}, tool call failed`
     : props.summary;
-  const icon = props.summaryToolIcon ?? toolGroupSummarySymbolName(props.summaryKind);
+  const icon =
+    props.summaryToolIcon ??
+    (props.toolSurface
+      ? workRowSymbolName(props.toolSurface)
+      : toolGroupSummarySymbolName(props.summaryKind));
 
   return (
     <View className="-mx-1 px-1 py-0">
@@ -942,15 +1003,24 @@ export function ThreadWorkGroupToggle(props: {
         {props.shimmer ? (
           <ShimmeringWorkContent
             key={props.rowSizing.textSizeKey}
+            environmentId={props.environmentId}
             icon={icon}
             iconSubtleColor={props.iconSubtleColor}
             label={props.summary}
             showIcon
+            themeAppearance={props.themeAppearance}
+            toolIcon={props.toolIcon}
           />
         ) : (
           <>
             <View className="h-6 w-6 items-center justify-center">
-              <WorkLogIcon icon={icon} color={props.iconSubtleColor} />
+              <ToolActivityIconView
+                environmentId={props.environmentId}
+                icon={props.toolIcon}
+                fallback={icon}
+                fallbackColor={props.iconSubtleColor}
+                themeAppearance={props.themeAppearance}
+              />
             </View>
             <Text
               key={props.rowSizing.textSizeKey}
@@ -968,6 +1038,112 @@ export function ThreadWorkGroupToggle(props: {
           tintColor={props.iconSubtleColor}
         />
       </Pressable>
+    </View>
+  );
+}
+
+function ToolActivityIconView(props: {
+  readonly environmentId: EnvironmentId;
+  readonly icon?: ToolActivityIcon;
+  readonly fallback: WorkContentIcon;
+  readonly fallbackColor: ColorValue;
+  readonly themeAppearance: "light" | "dark";
+}) {
+  if (!props.icon) {
+    return <WorkLogIcon icon={props.fallback} color={props.fallbackColor} />;
+  }
+  if (props.icon._tag === "website") {
+    const source = toolActivityFaviconUrl(props.icon, props.themeAppearance, 32);
+    return source ? (
+      <ToolActivityImage
+        key={source}
+        source={source}
+        fallback={props.fallback}
+        color={props.fallbackColor}
+        themeAppearance={props.themeAppearance}
+      />
+    ) : (
+      <WorkLogIcon icon={props.fallback} color={props.fallbackColor} />
+    );
+  }
+  if (props.icon._tag === "themed-logo") {
+    const source =
+      props.themeAppearance === "dark"
+        ? (props.icon.logoUrlDark ?? props.icon.logoUrl)
+        : props.icon.logoUrl;
+    return (
+      <ToolActivityImage
+        key={source}
+        source={source}
+        fallback={props.fallback}
+        color={props.fallbackColor}
+        themeAppearance={props.themeAppearance}
+      />
+    );
+  }
+  return (
+    <NativeAppToolActivityIcon
+      environmentId={props.environmentId}
+      app={props.icon.app}
+      fallback={props.fallback}
+      color={props.fallbackColor}
+      themeAppearance={props.themeAppearance}
+    />
+  );
+}
+
+function NativeAppToolActivityIcon(props: {
+  readonly environmentId: EnvironmentId;
+  readonly app: Extract<ToolActivityIcon, { readonly _tag: "native-app" }>["app"];
+  readonly fallback: WorkContentIcon;
+  readonly color: ColorValue;
+  readonly themeAppearance: "light" | "dark";
+}) {
+  const source = useAssetUrl(props.environmentId, {
+    _tag: "native-app-icon",
+    app: props.app,
+  });
+  return source ? (
+    <ToolActivityImage
+      key={source}
+      source={source}
+      fallback={props.fallback}
+      color={props.color}
+      themeAppearance={props.themeAppearance}
+    />
+  ) : (
+    <WorkLogIcon icon={props.fallback} color={props.color} />
+  );
+}
+
+function ToolActivityImage(props: {
+  readonly source: string;
+  readonly fallback: WorkContentIcon;
+  readonly color: ColorValue;
+  readonly themeAppearance: "light" | "dark";
+}) {
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(false);
+  return (
+    <View className="h-4 w-4 items-center justify-center overflow-hidden rounded-[3px] bg-background">
+      {!loaded || failed ? <WorkLogIcon icon={props.fallback} color={props.color} /> : null}
+      {!failed ? (
+        <View
+          style={[
+            StyleSheet.absoluteFill,
+            props.themeAppearance === "light" ? { filter: [{ brightness: 0.6 }] } : undefined,
+          ]}
+        >
+          <Image
+            source={props.source}
+            cachePolicy="memory-disk"
+            contentFit="contain"
+            style={[StyleSheet.absoluteFill, { opacity: loaded ? 0.7 : 0 }]}
+            onLoad={() => setLoaded(true)}
+            onError={() => setFailed(true)}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }

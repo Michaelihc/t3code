@@ -3,6 +3,7 @@ import {
   DEFAULT_MODEL,
   DEFAULT_PROVIDER_INTERACTION_MODE,
   type ModelSelection,
+  type OrchestrationProjectShell,
   ProjectId,
   ProviderInstanceId,
   ThreadId,

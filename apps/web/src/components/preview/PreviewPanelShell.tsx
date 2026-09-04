@@ -53,18 +53,36 @@ function PreviewPanelShellFrame(
       className={cn(
         "relative flex h-full min-h-0 min-w-0 max-w-full flex-col self-stretch bg-background",
         isInline
-          ? props.maximized
+          ? maximized
             ? "flex-1 border-l border-border"
             : "shrink-0 border-l border-border"
           : "w-full",
+        collapsible &&
+          "[[data-panel-animations=true]_&]:transition-[width] [[data-panel-animations=true]_&]:[transition-duration:var(--panel-animation-duration)] [[data-panel-animations=true]_&]:ease-out",
+        collapsible && open && "[[data-panel-animations=true]_&]:starting:w-0!",
+        collapsible && !open && "pointer-events-none",
       )}
-      style={isInline && !props.maximized ? { width: `${width}px` } : undefined}
+      style={
+        isInline
+          ? {
+              width: maximized ? "100%" : collapsible && !open ? "0px" : `${width}px`,
+              transitionDuration: suppressWidthTransition ? "0ms" : undefined,
+            }
+          : undefined
+      }
       data-preview-panel-mode={props.mode}
-      data-preview-panel-maximized={props.maximized ? "true" : "false"}
+      data-preview-panel-maximized={maximized ? "true" : "false"}
     >
-      {isInline && !props.maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
-      {useDragRegion ? <div className="electron-drag-region h-0 w-full" aria-hidden /> : null}
-      {props.children}
+      {isInline && !maximized ? <RightPanelResizeHandle handlers={handlers} /> : null}
+      <div className={cn("h-full min-h-0 w-full", collapsible && "overflow-clip")}>
+        <div
+          className="flex h-full min-h-0 min-w-0 flex-col"
+          style={collapsible && !maximized ? { width: `calc(${width}px - 1px)` } : undefined}
+        >
+          {useDragRegion ? <div className="electron-drag-region h-0 w-full" aria-hidden /> : null}
+          {props.children}
+        </div>
+      </div>
     </div>
   );
 }

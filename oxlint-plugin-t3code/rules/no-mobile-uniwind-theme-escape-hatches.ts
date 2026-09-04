@@ -3,7 +3,6 @@ import * as Option from "effect/Option";
 
 import { getPropertyName, unwrapExpression } from "../utils.ts";
 
-const MOBILE_SOURCE_MARKER = "/apps/mobile/src/";
 const APPEARANCE_VARIANT_PATTERN = /\b(?:dark|light):(?=\S)/u;
 const APPEARANCE_VARIANT_MESSAGE =
   "dark:/light: utilities do not follow registered custom themes; use an adaptive semantic token.";
@@ -56,18 +55,40 @@ const reportsAppearanceVariant = (value: string) => APPEARANCE_VARIANT_PATTERN.t
 const importsModule = (source: string, modulePath: string): boolean =>
   source.replace(/\.[cm]?[jt]sx?$/u, "").endsWith(modulePath);
 
+const readAllowUniwindTheme = (options: ReadonlyArray<unknown>): boolean => {
+  const [first] = options;
+  return (
+    typeof first === "object" &&
+    first !== null &&
+    "allowUniwindTheme" in first &&
+    first.allowUniwindTheme === true
+  );
+};
+
 export default defineRule({
   meta: {
     type: "problem",
     docs: {
       description:
-        "Keep mobile theme styling on semantic Uniwind classes and reviewed native interop boundaries.",
+        "Keep mobile theme styling on semantic Uniwind classes. Scope the rule to mobile sources and exempt reviewed native interop boundaries in the lint config.",
     },
+    schema: [
+      {
+        type: "object",
+        properties: {
+          allowUniwindTheme: {
+            type: "boolean",
+            description:
+              "Permit useUniwindTheme in a reviewed native/third-party interop boundary that cannot consume a className.",
+          },
+        },
+        additionalProperties: false,
+      },
+    ],
+    defaultOptions: [{ allowUniwindTheme: false }],
   },
   create(context) {
-    const sourcePath = mobileSourcePath(context.filename);
-    if (sourcePath === undefined) return {};
-
+    const allowUniwindTheme = readAllowUniwindTheme(context.options);
     const uniwindNamespaces = new Set<Variable>();
 
     const resolveVariable = (node: unknown): Variable | undefined => {
@@ -133,13 +154,13 @@ export default defineRule({
 
           if (
             !isTypeOnly &&
-            importsModule(source.value, "/useUniwindTheme") &&
-            !THEME_INTEROP_ALLOWLIST.has(sourcePath)
+            !allowUniwindTheme &&
+            importsModule(source.value, "/useUniwindTheme")
           ) {
             context.report({
               node: specifier,
               message:
-                "Use className for theme styling, or review and add this native/third-party interop boundary to the lint allowlist.",
+                "Use className for theme styling, or review this native/third-party interop boundary and enable allowUniwindTheme for it in the lint config.",
             });
           }
         }

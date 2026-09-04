@@ -22,6 +22,7 @@
  * @module provider/ProviderDriver
  */
 import type {
+  ProviderConsumeResetCreditOutcome,
   ProviderDriverKind,
   ProviderInstanceEnvironment,
   ProviderInstanceId,
@@ -35,6 +36,7 @@ import type { TextGeneration } from "../textGeneration/TextGeneration.ts";
 import type { ProviderAdapterV2Shape } from "../orchestration-v2/ProviderAdapter.ts";
 import type { ProviderDriverError } from "./Errors.ts";
 import type { ServerProviderShape } from "./Services/ServerProvider.ts";
+import type { ProviderAuthController } from "./Services/ProviderAuthService.ts";
 
 /**
  * Static metadata advertised by a driver. Used for default presentation

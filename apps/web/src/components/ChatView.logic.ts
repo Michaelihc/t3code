@@ -1,4 +1,5 @@
 import {
+  ANTIGRAVITY_DEFAULT_MODEL,
   type AssetCreateUrlInput,
   type AssetCreateUrlResult,
   type ChatFileAttachment,
@@ -9,7 +10,8 @@ import {
   type ModelSelection,
   type OrchestrationV2ProjectedTurnItem,
   type ProviderInteractionMode,
-  type ProviderDriverKind,
+  ProviderDriverKind,
+  type ProviderInstanceId,
   type ServerProvider,
   type ScopedProjectRef,
   type ScopedThreadRef,
@@ -35,6 +37,7 @@ import {
   type SessionPhase,
   type Thread,
   type ThreadShell,
+  type TurnDiffSummary,
 } from "../types";
 import { type ComposerImageAttachment, type DraftThreadState } from "../composerDraftStore";
 import * as Schema from "effect/Schema";
@@ -49,6 +52,13 @@ import {
 import type { DraftThreadEnvMode } from "../composerDraftStore";
 import type { ComposerSubmissionIntent } from "../composer-logic";
 import type { TimelineEntry } from "../session-logic";
+import type { DesktopPreviewOverlay } from "../previewStateStore";
+import type { RightPanelSurface } from "../rightPanelStore";
+import {
+  NO_PROVIDER_MODEL_SELECTION,
+  resolveSelectableProviderInstanceEntry,
+  type ProviderInstanceEntry,
+} from "../providerInstances";
 
 export const LAST_INVOKED_SCRIPT_BY_PROJECT_KEY = "t3code:last-invoked-script-by-project";
 export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
@@ -327,15 +337,6 @@ export async function resolveFileAttachmentUrl(input: {
   const url = resolveAssetUrl(input.httpBaseUrl, result.value.relativeUrl);
   if (url === null) throw new Error("The environment returned an invalid attachment URL.");
   return url;
-}
-
-export function isVideoPreviewRequestCurrent(
-  requestThreadKey: string,
-  currentThreadKey: string,
-  requestId: number,
-  currentRequestId: number,
-): boolean {
-  return requestThreadKey === currentThreadKey && requestId === currentRequestId;
 }
 
 export function revokeUserMessagePreviewUrls(message: ChatMessage): void {
@@ -707,12 +708,20 @@ export function hasServerAcknowledgedLocalDispatch(input: {
   runtime: Thread["runtime"] | null;
   hasPendingApproval: boolean;
   hasPendingUserInput: boolean;
+  latestTurnStartFailureId?: string | null;
   threadError: string | null | undefined;
 }): boolean {
   if (!input.localDispatch) {
     return false;
   }
   if (input.hasPendingApproval || input.hasPendingUserInput || Boolean(input.threadError)) {
+    return true;
+  }
+  if (
+    input.latestTurnStartFailureId !== undefined &&
+    input.latestTurnStartFailureId !== null &&
+    input.latestTurnStartFailureId !== input.localDispatch.latestTurnStartFailureId
+  ) {
     return true;
   }
   if (input.phase === "connecting") {

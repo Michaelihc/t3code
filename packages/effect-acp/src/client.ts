@@ -1,6 +1,5 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Stdio from "effect/Stdio";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
@@ -311,7 +310,7 @@ interface BufferedNotificationHandler<A> {
 }
 
 export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
-  stdio: Stdio.Stdio,
+  stdio: AcpProtocol.AcpStdio,
   options: AcpClientOptions = {},
   terminationError?: Effect.Effect<AcpError.AcpError>,
 ): Effect.fn.Return<AcpClient["Service"], never, Scope.Scope> {
@@ -582,14 +581,19 @@ export const make = Effect.fn("effect-acp/AcpClient.make")(function* (
   });
 });
 
-export const layer = (stdio: Stdio.Stdio, options: AcpClientOptions = {}): Layer.Layer<AcpClient> =>
-  Layer.effect(AcpClient, make(stdio, options));
+export const layer = (
+  stdio: AcpProtocol.AcpStdio,
+  options: AcpClientOptions = {},
+): Layer.Layer<AcpClient> => Layer.effect(AcpClient, make(stdio, options));
 
 export const layerChildProcess = (
   handle: ChildProcessSpawner.ChildProcessHandle,
   options: AcpClientOptions = {},
 ): Layer.Layer<AcpClient> => {
-  const stdio = makeChildStdio(handle);
+  const stdio = {
+    ...makeChildStdio(handle),
+    stdin: options.transformStdout?.(handle.stdout) ?? handle.stdout,
+  };
   const terminationError = makeTerminationError(handle);
   return Layer.effect(AcpClient, make(stdio, options, terminationError));
 };
