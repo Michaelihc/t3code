@@ -2489,6 +2489,12 @@ export function makeClaudeAdapterV2(
         // ended, and its task_notification must both count as wake evidence
         // and hydrate the original subagent node instead of being dropped.
         const sessionSubagentsByTaskId = yield* Ref.make(new Map<string, ActiveClaudeSubagent>());
+        // Workflow member snapshots must survive root-turn settlement too. A
+        // delayed task_notification is replayed through a fresh turn context,
+        // but still has to terminalize the original run's synthetic children.
+        const sessionWorkflowMembersByTaskId = yield* Ref.make(
+          new Map<string, Map<number, OrchestrationV2Subagent>>(),
+        );
         const wakeBuffers = yield* Ref.make(
           new Map<
             string,
@@ -3529,16 +3535,28 @@ export function makeClaudeAdapterV2(
         }) {
           const now = yield* DateTime.now;
           const existingMembers =
-            input.context.workflowMembersByTaskId.get(input.taskId) ?? new Map();
+            input.context.workflowMembersByTaskId.get(input.taskId) ??
+            (yield* Ref.get(sessionWorkflowMembersByTaskId)).get(input.taskId) ??
+            new Map();
 
           for (const entry of input.entries) {
             if (entry.type !== "workflow_agent") continue;
 
             const existing = existingMembers.get(entry.index);
+            const status = claudeWorkflowAgentStatus(entry);
             const attemptIncreased =
               entry.attempt !== undefined &&
               existing?.attempt !== undefined &&
               entry.attempt > existing.attempt;
+            const active = status === "pending" || status === "running" || status === "waiting";
+            const terminalToActive =
+              active &&
+              existing !== undefined &&
+              (existing.status === "completed" ||
+                existing.status === "failed" ||
+                existing.status === "cancelled" ||
+                existing.status === "interrupted");
+            const resetTelemetry = attemptIncreased || terminalToActive;
             const nativeItemId = `${input.taskId}:workflow-agent:${entry.index}`;
             const nodeId =
               existing?.id ??
@@ -3546,10 +3564,9 @@ export function makeClaudeAdapterV2(
                 driver: CLAUDE_PROVIDER,
                 nativeItemId,
               });
-            const status = claudeWorkflowAgentStatus(entry);
             const startedAt = dateTimeFromClaudeEpoch(
               entry.startedAt ?? entry.queuedAt,
-              attemptIncreased ? now : (existing?.startedAt ?? now),
+              resetTelemetry ? now : (existing?.startedAt ?? now),
             );
             const updatedAt = dateTimeFromClaudeEpoch(
               entry.lastProgressAt,
@@ -3610,7 +3627,7 @@ export function makeClaudeAdapterV2(
                   startedAt,
                 };
               }
-              if (!attemptIncreased) return existing;
+              if (!resetTelemetry) return existing;
               const {
                 error: _error,
                 lastToolName: _lastToolName,
@@ -3673,6 +3690,9 @@ export function makeClaudeAdapterV2(
           }
 
           input.context.workflowMembersByTaskId.set(input.taskId, existingMembers);
+          yield* Ref.update(sessionWorkflowMembersByTaskId, (current) =>
+            new Map(current).set(input.taskId, existingMembers),
+          );
         });
 
         const terminalizeClaudeWorkflowMembers = Effect.fnUntraced(function* (input: {
@@ -3680,8 +3700,14 @@ export function makeClaudeAdapterV2(
           readonly taskId: string;
           readonly status: "completed" | "failed" | "cancelled";
         }) {
-          const members = input.context.workflowMembersByTaskId.get(input.taskId);
+          const members =
+            input.context.workflowMembersByTaskId.get(input.taskId) ??
+            (yield* Ref.get(sessionWorkflowMembersByTaskId)).get(input.taskId);
           if (members === undefined) return;
+          input.context.workflowMembersByTaskId.set(input.taskId, members);
+          const coordinator =
+            input.context.subagentsByTaskId.get(input.taskId) ??
+            (yield* Ref.get(sessionSubagentsByTaskId)).get(input.taskId);
           const completedAt = yield* DateTime.now;
 
           for (const [index, member] of members) {
@@ -3708,7 +3734,7 @@ export function makeClaudeAdapterV2(
                 threadId: terminalMember.threadId,
                 runId: terminalMember.runId,
                 parentNodeId: terminalMember.parentNodeId,
-                rootNodeId: input.context.input.rootNodeId,
+                rootNodeId: coordinator?.task.parentNodeId ?? input.context.input.rootNodeId,
                 kind: "subagent",
                 status: terminalMember.status,
                 countsForRun: false,
@@ -3727,6 +3753,9 @@ export function makeClaudeAdapterV2(
               subagent: terminalMember,
             });
           }
+          yield* Ref.update(sessionWorkflowMembersByTaskId, (current) =>
+            new Map(current).set(input.taskId, members),
+          );
         });
 
         const emitClaudePlanProjection = Effect.fnUntraced(function* (input: {

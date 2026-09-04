@@ -3637,6 +3637,101 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(retriedMember, "progress");
         assert.notProperty(retriedMember, "usage");
 
+        const beforeAttemptlessTerminalCount = subagentEvents().length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Web survey failed without attempt telemetry",
+            usage: { total_tokens: 5_500, tool_uses: 12, duration_ms: 70_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                startedAt: 1_788_400_070_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting another failure",
+                tokens: 300,
+                toolCalls: 2,
+                resultPreview: "Stale terminal result",
+                error: "Retry failed without an attempt number",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000156",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () => subagentEvents().length > beforeAttemptlessTerminalCount,
+          "attempt-less terminal workflow member projected",
+        );
+        const attemptLessTerminal = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(attemptLessTerminal?.status, "failed");
+        assert.equal(attemptLessTerminal?.error, "Retry failed without an attempt number");
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Retrying without attempt telemetry",
+            usage: { total_tokens: 5_500, tool_uses: 12, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_080_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000157",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" &&
+                event.subagent.agentIndex === 2 &&
+                event.subagent.status === "running" &&
+                event.subagent.startedAt !== null &&
+                DateTime.toEpochMillis(event.subagent.startedAt) === 1_788_400_080_000,
+            ),
+          "attempt-less workflow retry projected",
+        );
+        const attemptLessRetry = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(attemptLessRetry?.status, "running");
+        assert.equal(attemptLessRetry?.result, null);
+        if (attemptLessRetry?.startedAt === undefined || attemptLessRetry.startedAt === null) {
+          throw new Error("Expected the attempt-less workflow retry to adopt its own start time.");
+        }
+        assert.equal(DateTime.toEpochMillis(attemptLessRetry.startedAt), 1_788_400_080_000);
+        assert.notProperty(attemptLessRetry, "error");
+        assert.notProperty(attemptLessRetry, "lastToolName");
+        assert.notProperty(attemptLessRetry, "progress");
+        assert.notProperty(attemptLessRetry, "usage");
+
+        // Let the root settle first. The notification is then buffered and
+        // replayed into a fresh continuation context, which must rehydrate and
+        // terminalize the original synthetic workflow members.
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root terminal");
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -3651,8 +3746,31 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
-        yield* Queue.offer(harness.sdkMessages, turnOneResult);
-        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow turn terminal");
+        yield* awaitUntil(() => harness.continuationRequests.length === 1, "workflow continuation");
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000158",
+            result: "The workflow finished its delayed work.",
+          }),
+        );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-continuation"),
+            text: "Workflow completed.",
+            attachments: [],
+            providerTurnOrdinal: 2,
+            messageCreatedBy: "agent",
+            messageCreationSource: "provider",
+          }),
+        );
+        yield* awaitUntil(
+          () => harness.terminalEvents().length === 2,
+          "workflow continuation terminal",
+        );
         const terminalCoordinator = subagentEvents()
           .map((event) => event.subagent)
           .findLast((subagent) => subagent.kind === "workflow");
@@ -3668,6 +3786,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(latestMembers.get(2)?.status, "completed");
         assert.isNotNull(latestMembers.get(1)?.completedAt);
         assert.isNotNull(latestMembers.get(2)?.completedAt);
+        assert.equal(latestMembers.get(1)?.runId, members[0]?.runId);
+        assert.equal(latestMembers.get(2)?.runId, members[1]?.runId);
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );
