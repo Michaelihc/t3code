@@ -3561,6 +3561,126 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             subtype: "task_progress",
             task_id: taskId,
             tool_use_id: toolUseId,
+            description: "Server survey duration advanced",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "progress",
+                startedAt: 1_788_400_000_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                durationMs: 42_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000160",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" &&
+                event.subagent.agentIndex === 1 &&
+                event.subagent.usage?.durationMs === 42_000,
+            ),
+          "partial workflow usage projected",
+        );
+        const partialUsageMember = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 1);
+        assert.deepEqual(partialUsageMember?.usage, {
+          totalTokens: 3_000,
+          toolUses: 6,
+          durationMs: 42_000,
+        });
+        const memberOneEventCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Repeated cumulative workflow snapshot",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "progress",
+                startedAt: 1_788_400_000_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                durationMs: 42_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000161",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Marker after repeated snapshot",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastToolSummary: "Repeated snapshot processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000162",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) => event.subagent.progress === "Repeated snapshot processed",
+            ),
+          "post-duplicate workflow marker projected",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
+          ).length,
+          memberOneEventCount,
+        );
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
             description: "Web survey failed",
             usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 43_000 },
             workflow_progress: [

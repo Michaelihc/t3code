@@ -1290,6 +1290,53 @@ function dateTimeFromClaudeEpoch(value: number | undefined, fallback: DateTime.U
   return Option.getOrElse(DateTime.make(value), () => fallback);
 }
 
+function claudeWorkflowDateTimeEqual(
+  left: DateTime.Utc | null,
+  right: DateTime.Utc | null,
+): boolean {
+  if (left === null || right === null) return left === right;
+  return DateTime.toEpochMillis(left) === DateTime.toEpochMillis(right);
+}
+
+function claudeWorkflowUsageEqual(
+  left: OrchestrationV2Subagent["usage"],
+  right: OrchestrationV2Subagent["usage"],
+): boolean {
+  return (
+    left?.totalTokens === right?.totalTokens &&
+    left?.inputTokens === right?.inputTokens &&
+    left?.cachedInputTokens === right?.cachedInputTokens &&
+    left?.outputTokens === right?.outputTokens &&
+    left?.reasoningOutputTokens === right?.reasoningOutputTokens &&
+    left?.toolUses === right?.toolUses &&
+    left?.durationMs === right?.durationMs
+  );
+}
+
+function claudeWorkflowMemberEqual(
+  left: OrchestrationV2Subagent,
+  right: OrchestrationV2Subagent,
+): boolean {
+  return (
+    left.status === right.status &&
+    left.title === right.title &&
+    left.model === right.model &&
+    left.role === right.role &&
+    left.phaseIndex === right.phaseIndex &&
+    left.phaseTitle === right.phaseTitle &&
+    left.attempt === right.attempt &&
+    left.workflowName === right.workflowName &&
+    left.progress === right.progress &&
+    left.lastToolName === right.lastToolName &&
+    left.result === right.result &&
+    left.error === right.error &&
+    claudeWorkflowUsageEqual(left.usage, right.usage) &&
+    claudeWorkflowDateTimeEqual(left.startedAt, right.startedAt) &&
+    claudeWorkflowDateTimeEqual(left.completedAt, right.completedAt) &&
+    claudeWorkflowDateTimeEqual(left.updatedAt, right.updatedAt)
+  );
+}
+
 function sandboxPolicyKindForClaudeRuntimePolicy(
   runtimePolicy: ProviderAdapterV2RuntimePolicy,
 ): ClaudeRuntimeSandboxPolicyKindName | undefined {
@@ -3588,16 +3635,19 @@ export function makeClaudeAdapterV2(
             const lastToolName = trimmedClaudeWorkflowString(entry.lastToolName);
             const result = trimmedClaudeWorkflowString(entry.resultPreview);
             const error = trimmedClaudeWorkflowString(entry.error);
-            const usage =
-              entry.tokens === undefined &&
-              entry.toolCalls === undefined &&
-              entry.durationMs === undefined
-                ? undefined
-                : {
-                    totalTokens: entry.tokens ?? 0,
-                    ...(entry.toolCalls === undefined ? {} : { toolUses: entry.toolCalls }),
-                    ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
-                  };
+            const hasUsage =
+              entry.tokens !== undefined ||
+              entry.toolCalls !== undefined ||
+              entry.durationMs !== undefined;
+            const priorUsage = resetTelemetry ? undefined : existing?.usage;
+            const usage = !hasUsage
+              ? undefined
+              : {
+                  ...priorUsage,
+                  totalTokens: entry.tokens ?? priorUsage?.totalTokens ?? 0,
+                  ...(entry.toolCalls === undefined ? {} : { toolUses: entry.toolCalls }),
+                  ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+                };
             const terminal = status === "completed" || status === "failed";
             const existingTask = (() => {
               if (existing === undefined) {
@@ -3637,7 +3687,15 @@ export function makeClaudeAdapterV2(
               } = existing;
               return { ...resetTask, result: null, startedAt };
             })();
-            const task = {
+            const completedAt = terminal
+              ? existing?.status === status && existing.completedAt !== null
+                ? existing.completedAt
+                : updatedAt
+              : null;
+            const hasReportedUpdatedAt =
+              entry.lastProgressAt !== undefined ||
+              (terminal && entry.startedAt !== undefined && entry.durationMs !== undefined);
+            const candidateTask = {
               ...existingTask,
               status,
               title,
@@ -3656,32 +3714,46 @@ export function makeClaudeAdapterV2(
               ...(lastToolName === undefined ? {} : { lastToolName }),
               ...(result === undefined ? {} : { result }),
               ...(error === undefined ? {} : { error }),
-              completedAt: terminal ? updatedAt : null,
+              completedAt,
+              updatedAt: hasReportedUpdatedAt ? updatedAt : (existing?.updatedAt ?? updatedAt),
+            } satisfies OrchestrationV2Subagent;
+            if (existing !== undefined && claudeWorkflowMemberEqual(existing, candidateTask)) {
+              continue;
+            }
+            const task = {
+              ...candidateTask,
               updatedAt,
             } satisfies OrchestrationV2Subagent;
 
             existingMembers.set(entry.index, task);
-            yield* emitProviderEvent({
-              type: "node.updated",
-              driver: CLAUDE_PROVIDER,
-              node: {
-                id: task.id,
-                threadId: task.threadId,
-                runId: task.runId,
-                parentNodeId: task.parentNodeId,
-                rootNodeId: input.coordinator.task.parentNodeId,
-                kind: "subagent",
-                status: task.status,
-                countsForRun: false,
-                providerThreadId: input.context.input.providerThread.id,
-                providerTurnId: input.context.providerTurnId,
-                nativeItemRef: task.nativeTaskRef,
-                runtimeRequestId: null,
-                checkpointScopeId: null,
-                startedAt: task.startedAt,
-                completedAt: task.completedAt,
-              },
-            });
+            const lifecycleChanged =
+              existing === undefined ||
+              existing.status !== task.status ||
+              !claudeWorkflowDateTimeEqual(existing.startedAt, task.startedAt) ||
+              !claudeWorkflowDateTimeEqual(existing.completedAt, task.completedAt);
+            if (lifecycleChanged) {
+              yield* emitProviderEvent({
+                type: "node.updated",
+                driver: CLAUDE_PROVIDER,
+                node: {
+                  id: task.id,
+                  threadId: task.threadId,
+                  runId: task.runId,
+                  parentNodeId: task.parentNodeId,
+                  rootNodeId: input.coordinator.task.parentNodeId,
+                  kind: "subagent",
+                  status: task.status,
+                  countsForRun: false,
+                  providerThreadId: input.context.input.providerThread.id,
+                  providerTurnId: input.context.providerTurnId,
+                  nativeItemRef: task.nativeTaskRef,
+                  runtimeRequestId: null,
+                  checkpointScopeId: null,
+                  startedAt: task.startedAt,
+                  completedAt: task.completedAt,
+                },
+              });
+            }
             yield* emitProviderEvent({
               type: "subagent.updated",
               driver: CLAUDE_PROVIDER,
