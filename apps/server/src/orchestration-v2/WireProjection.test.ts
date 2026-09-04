@@ -106,6 +106,28 @@ describe("orchestration V2 wire projection", () => {
     expect(projectTurnItemForWire(item)).toEqual(item);
   });
 
+  it("keeps a bounded Workflow script in oversized dynamic tool input", () => {
+    const script = `export const meta = { name: "survey", description: "Inspect the repo" };\n${'\\"x'.repeat(20_000)}`;
+    const item = {
+      ...base,
+      toolName: "Workflow",
+      input: { script, extra: "y".repeat(20_000) },
+    } satisfies OrchestrationV2TurnItem;
+
+    const projected = projectTurnItemForWire(item);
+    expect(item.input).toEqual({ script, extra: "y".repeat(20_000) });
+    expect(projected.type).toBe("dynamic_tool");
+    if (projected.type !== "dynamic_tool") return;
+    expect(projected.input).toMatchObject({ truncated: true });
+    expect(Reflect.get(projected.input as object, "script")).toMatch(
+      /^export const meta = \{ name: "survey", description: "Inspect the repo" \};/u,
+    );
+    expect(Reflect.get(projected.input as object, "script")).toContain(
+      "workflow script truncated for transport",
+    );
+    expect(Buffer.byteLength(JSON.stringify(projected.input), "utf8")).toBeLessThanOrEqual(16_384);
+  });
+
   it("keeps undefined dynamic input intact", () => {
     const item = { ...base, input: undefined } satisfies OrchestrationV2TurnItem;
     expect(projectTurnItemForWire(item)).toEqual(item);

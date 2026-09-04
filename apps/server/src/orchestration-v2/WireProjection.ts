@@ -6,6 +6,7 @@ import type {
 
 const MAX_DETAIL_STRING_BYTES = 32_768;
 const MAX_DYNAMIC_VALUE_BYTES = 16_384;
+const WORKFLOW_SCRIPT_TRUNCATION_SUFFIX = "\n… workflow script truncated for transport";
 
 function encodedBytes(value: unknown): number {
   try {
@@ -48,6 +49,42 @@ function summarizeDynamicValue(value: unknown): unknown {
   };
 }
 
+function summarizeDynamicInput(toolName: string | null | undefined, value: unknown): unknown {
+  if (encodedBytes(value) <= MAX_DYNAMIC_VALUE_BYTES) {
+    return value;
+  }
+  if (
+    toolName?.trim().toLowerCase() !== "workflow" ||
+    typeof value !== "object" ||
+    value === null
+  ) {
+    return summarizeDynamicValue(value);
+  }
+  const script = Reflect.get(value, "script");
+  if (typeof script !== "string" || script.trim().length === 0) {
+    return summarizeDynamicValue(value);
+  }
+
+  const candidate = (end: number) => {
+    const prefix = script.slice(0, end).replace(/[\uD800-\uDBFF]$/u, "");
+    return {
+      script: end < script.length ? `${prefix}${WORKFLOW_SCRIPT_TRUNCATION_SUFFIX}` : prefix,
+      truncated: true,
+    };
+  };
+  let lower = 0;
+  let upper = script.length;
+  while (lower < upper) {
+    const midpoint = Math.ceil((lower + upper) / 2);
+    if (encodedBytes(candidate(midpoint)) <= MAX_DYNAMIC_VALUE_BYTES) {
+      lower = midpoint;
+    } else {
+      upper = midpoint - 1;
+    }
+  }
+  return candidate(lower);
+}
+
 export function projectTurnItemForWire(item: OrchestrationV2TurnItem): OrchestrationV2TurnItem {
   switch (item.type) {
     case "command_execution":
@@ -69,7 +106,7 @@ export function projectTurnItemForWire(item: OrchestrationV2TurnItem): Orchestra
     case "dynamic_tool":
       return {
         ...item,
-        input: summarizeDynamicValue(item.input),
+        input: summarizeDynamicInput(item.toolName, item.input),
         ...(item.output === undefined ? {} : { output: summarizeDynamicValue(item.output) }),
       };
     default:
