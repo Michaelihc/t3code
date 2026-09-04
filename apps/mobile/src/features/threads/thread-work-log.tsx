@@ -666,6 +666,7 @@ export function ThreadWorkLog(props: {
                     currentThreadId={props.currentThreadId}
                     environmentId={props.environmentId}
                     iconColor={props.iconSubtleColor}
+                    workflow={workflowGroup?.workflow}
                     workspaceRoot={props.workspaceRoot}
                   />
                 </Animated.View>

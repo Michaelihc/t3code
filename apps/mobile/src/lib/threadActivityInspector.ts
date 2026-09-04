@@ -1,4 +1,5 @@
 import type { V2ItemSupport } from "@t3tools/client-runtime/state/item-support";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
@@ -60,6 +61,14 @@ function durationLabel(
   return formatDuration(Math.max(0, end - start));
 }
 
+function workflowElapsedLabel(startedAt: string | null, completedAt: string | null): string | null {
+  if (startedAt === null) return null;
+  const start = Date.parse(startedAt);
+  const end = completedAt === null ? Date.now() : Date.parse(completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return formatDuration(Math.max(0, end - start));
+}
+
 function addBlock(
   blocks: ThreadActivityInspectorBlock[],
   label: string,
@@ -74,14 +83,17 @@ export function buildThreadActivityInspector(
   activity: ThreadFeedActivity,
   support: V2ItemSupport,
   currentThreadId: ThreadId,
+  workflow?: Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt">,
 ): ThreadActivityInspectorModel {
   const row = activity.projectedItem;
   const item = row.item;
   const fields: ThreadActivityInspectorField[] = [
     { label: "Item", value: item.type.replaceAll("_", " ") },
-    { label: "Status", value: item.status.replaceAll("_", " ") },
+    { label: "Status", value: (workflow?.status ?? item.status).replaceAll("_", " ") },
   ];
-  const duration = durationLabel(item.startedAt, item.completedAt);
+  const duration = workflow
+    ? workflowElapsedLabel(workflow.startedAt, workflow.completedAt)
+    : durationLabel(item.startedAt, item.completedAt);
   if (duration) fields.push({ label: "Duration", value: duration });
   if (row.visibility !== "local") fields.push({ label: "Visibility", value: row.visibility });
   if (support.run) fields.push({ label: "Run", value: support.run.status });

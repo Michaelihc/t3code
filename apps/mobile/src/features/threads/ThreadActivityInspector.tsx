@@ -1,5 +1,6 @@
 import * as Haptics from "expo-haptics";
 import { SymbolView } from "expo-symbols";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { useNavigation } from "@react-navigation/native";
 import { useMemo, useState } from "react";
@@ -19,6 +20,7 @@ export function ThreadActivityInspector(props: {
   readonly currentThreadId: ThreadId;
   readonly environmentId: EnvironmentId;
   readonly iconColor: ColorValue;
+  readonly workflow?: Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt">;
   readonly workspaceRoot?: string | null;
 }) {
   const navigation = useNavigation();
@@ -29,8 +31,9 @@ export function ThreadActivityInspector(props: {
     sourceItemId: row.sourceItemId,
   });
   const model = useMemo(
-    () => buildThreadActivityInspector(props.activity, support, props.currentThreadId),
-    [props.activity, props.currentThreadId, support],
+    () =>
+      buildThreadActivityInspector(props.activity, support, props.currentThreadId, props.workflow),
+    [props.activity, props.currentThreadId, props.workflow, support],
   );
   const revertCheckpoint = useAtomCommand(threadEnvironment.revertCheckpoint, {
     label: "checkpoint rollback",
