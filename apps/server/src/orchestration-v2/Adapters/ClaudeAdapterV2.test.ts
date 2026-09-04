@@ -3900,6 +3900,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           throw new Error("Expected the attempt-less workflow retry to adopt its own start time.");
         }
         assert.equal(DateTime.toEpochMillis(attemptLessRetry.startedAt), 1_788_400_080_000);
+        assert.notProperty(attemptLessRetry, "attempt");
         assert.notProperty(attemptLessRetry, "error");
         assert.notProperty(attemptLessRetry, "lastToolName");
         assert.notProperty(attemptLessRetry, "progress");

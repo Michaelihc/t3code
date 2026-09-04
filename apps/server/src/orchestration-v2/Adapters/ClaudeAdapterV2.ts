@@ -3698,6 +3698,7 @@ export function makeClaudeAdapterV2(
               }
               if (!resetTelemetry) return existing;
               const {
+                attempt: _attempt,
                 error: _error,
                 lastToolName: _lastToolName,
                 progress: _progress,
