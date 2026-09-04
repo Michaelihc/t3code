@@ -380,6 +380,8 @@ export const MessagesTimeline = memo(function MessagesTimeline({
       const summary = {
         name: workflow.workflowName ?? workflow.title,
         agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
+        startedAt: workflow.startedAt,
+        completedAt: workflow.completedAt,
       };
       summaries.set(runId, [...(summaries.get(runId) ?? []), summary]);
     }
@@ -1480,10 +1482,15 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
   const ctx = use(TimelineRowCtx);
   const workflowCtx = use(TimelineWorkflowCtx);
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
-  const label = formatClaudeWorkflowFoldLabel(
-    row.label,
-    workflowCtx.workflowSummaryByRunId.get(row.runId) ?? [],
-  );
+  const workflows = workflowCtx.workflowSummaryByRunId.get(row.runId) ?? [];
+  const live = workflows.some((workflow) => workflow.completedAt === null);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [live]);
+  const label = formatClaudeWorkflowFoldLabel(row.label, workflows, now);
 
   return (
     <div className="pb-2 pt-1">
