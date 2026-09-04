@@ -3643,7 +3643,7 @@ export function makeClaudeAdapterV2(
               entry.startedAt ?? entry.queuedAt,
               resetTelemetry ? now : (existing?.startedAt ?? now),
             );
-            const updatedAt = dateTimeFromClaudeEpoch(
+            const reportedUpdatedAt = dateTimeFromClaudeEpoch(
               entry.lastProgressAt,
               status === "completed" || status === "failed"
                 ? dateTimeFromClaudeEpoch(
@@ -3654,6 +3654,12 @@ export function makeClaudeAdapterV2(
                   )
                 : now,
             );
+            const updatedAt =
+              !resetTelemetry &&
+              existing !== undefined &&
+              DateTime.toEpochMillis(existing.updatedAt) > DateTime.toEpochMillis(reportedUpdatedAt)
+                ? existing.updatedAt
+                : reportedUpdatedAt;
             const model =
               trimmedClaudeWorkflowString(entry.model) ??
               trimmedClaudeWorkflowString(entry.fallbackModel);
@@ -3672,9 +3678,13 @@ export function makeClaudeAdapterV2(
               ? undefined
               : {
                   ...priorUsage,
-                  totalTokens: entry.tokens ?? priorUsage?.totalTokens ?? 0,
-                  ...(entry.toolCalls === undefined ? {} : { toolUses: entry.toolCalls }),
-                  ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
+                  totalTokens: Math.max(priorUsage?.totalTokens ?? 0, entry.tokens ?? 0),
+                  ...(entry.toolCalls === undefined
+                    ? {}
+                    : { toolUses: Math.max(priorUsage?.toolUses ?? 0, entry.toolCalls) }),
+                  ...(entry.durationMs === undefined
+                    ? {}
+                    : { durationMs: Math.max(priorUsage?.durationMs ?? 0, entry.durationMs) }),
                 };
             const terminal = status === "completed" || status === "failed";
             const existingTask = (() => {

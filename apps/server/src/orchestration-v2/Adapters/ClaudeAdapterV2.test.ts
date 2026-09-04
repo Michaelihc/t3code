@@ -3616,7 +3616,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             subtype: "task_progress",
             task_id: taskId,
             tool_use_id: toolUseId,
-            description: "Repeated cumulative workflow snapshot",
+            description: "Delayed cumulative workflow snapshot",
             usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
             workflow_progress: [
               {
@@ -3631,8 +3631,10 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 startedAt: 1_788_400_000_000,
                 lastToolName: "Read",
                 lastToolSummary: "Inspecting ClaudeAdapterV2",
-                lastProgressAt: 1_788_400_042_000,
-                durationMs: 42_000,
+                lastProgressAt: 1_788_400_041_000,
+                tokens: 2_000,
+                toolCalls: 4,
+                durationMs: 40_000,
               },
             ],
             uuid: "00000000-0000-4000-8000-000000000161",
