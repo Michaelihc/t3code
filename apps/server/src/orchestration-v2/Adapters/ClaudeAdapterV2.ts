@@ -3174,7 +3174,7 @@ export function makeClaudeAdapterV2(
           readonly result?: string;
           readonly status: Extract<
             OrchestrationV2ExecutionNode["status"],
-            "running" | "completed" | "failed" | "cancelled"
+            "running" | "completed" | "failed" | "cancelled" | "interrupted"
           >;
           readonly reopen?: boolean;
         }) {
@@ -3836,7 +3836,7 @@ export function makeClaudeAdapterV2(
         const terminalizeClaudeWorkflowMembers = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly taskId: string;
-          readonly status: "completed" | "failed" | "cancelled";
+          readonly status: "completed" | "failed" | "cancelled" | "interrupted";
         }) {
           const members =
             input.context.workflowMembersByTaskId.get(input.taskId) ??
@@ -3896,6 +3896,50 @@ export function makeClaudeAdapterV2(
             });
           }
           yield* releaseClaudeWorkflowState(input);
+        });
+
+        const terminalizeClaudeWorkflowsOwnedByTurn = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly status: "failed" | "cancelled" | "interrupted";
+        }) {
+          const taskIds = new Set(input.context.workflowMembersByTaskId.keys());
+          for (const [taskId, owner] of yield* Ref.get(sessionWorkflowContextByTaskId)) {
+            if (owner === input.context) taskIds.add(taskId);
+          }
+          for (const taskId of taskIds) {
+            yield* updateClaudeSubagentNode({
+              context: input.context,
+              taskId,
+              status: input.status,
+            });
+            yield* terminalizeClaudeWorkflowMembers({
+              context: input.context,
+              taskId,
+              status: input.status,
+            });
+          }
+        });
+
+        const terminalizeClaudeWorkflowsForNativeThread = Effect.fnUntraced(function* (input: {
+          readonly nativeThreadId: string;
+          readonly status: "failed" | "interrupted";
+        }) {
+          const workflows = yield* Ref.get(sessionWorkflowContextByTaskId);
+          for (const [taskId, owner] of workflows) {
+            if (owner.input.providerThread.nativeThreadRef?.nativeId !== input.nativeThreadId) {
+              continue;
+            }
+            yield* updateClaudeSubagentNode({
+              context: owner,
+              taskId,
+              status: input.status,
+            });
+            yield* terminalizeClaudeWorkflowMembers({
+              context: owner,
+              taskId,
+              status: input.status,
+            });
+          }
         });
 
         const emitClaudePlanProjection = Effect.fnUntraced(function* (input: {
@@ -4200,6 +4244,12 @@ export function makeClaudeAdapterV2(
           readonly failure?: OrchestrationV2ProviderFailure;
           readonly threadDisposition?: "reusable" | "broken";
         }) {
+          if (input.status !== "completed") {
+            yield* terminalizeClaudeWorkflowsOwnedByTurn({
+              context: input.context,
+              status: input.status,
+            });
+          }
           for (const toolCall of input.context.toolCalls.values()) {
             const artifacts = buildToolCallArtifacts({
               context: input.context,
@@ -4442,39 +4492,46 @@ export function makeClaudeAdapterV2(
           );
         });
 
-        const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (
-          cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>,
-        ) {
+        const finalizeActiveTurnAfterQueryExit = Effect.fnUntraced(function* (exitInput: {
+          readonly nativeThreadId: string;
+          readonly cause?: Cause.Cause<ClaudeAgentSdkQueryRunnerError>;
+        }) {
           const context = yield* Ref.get(activeTurn);
-          if (context === null) {
-            return;
-          }
           const completedAt = yield* DateTime.now;
-          const interrupted = (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
-          yield* finalizeActiveTurn({
-            context,
-            status: interrupted ? "interrupted" : "failed",
-            completedAt,
-            ...(interrupted
-              ? {}
-              : {
-                  failure: makeProviderFailure({
-                    cause: cause === undefined ? undefined : Cause.squash(cause),
-                    class: "transport_error",
+          const interrupted =
+            context !== null && (yield* Ref.get(interruptedTurns)).has(context.providerTurnId);
+          const status = interrupted ? "interrupted" : "failed";
+          if (context !== null) {
+            yield* finalizeActiveTurn({
+              context,
+              status,
+              completedAt,
+              ...(interrupted
+                ? {}
+                : {
+                    failure: makeProviderFailure({
+                      cause:
+                        exitInput.cause === undefined ? undefined : Cause.squash(exitInput.cause),
+                      class: "transport_error",
+                    }),
                   }),
-                }),
+            });
+            yield* Ref.update(interruptedTurns, (current) => {
+              const next = new Set(current);
+              next.delete(context.providerTurnId);
+              return next;
+            });
+          }
+          yield* terminalizeClaudeWorkflowsForNativeThread({
+            nativeThreadId: exitInput.nativeThreadId,
+            status,
           });
-          yield* Ref.update(interruptedTurns, (current) => {
-            const next = new Set(current);
-            next.delete(context.providerTurnId);
-            return next;
-          });
-          if (cause !== undefined) {
+          if (exitInput.cause !== undefined && context !== null) {
             yield* Effect.logWarning("orchestration-v2.claude-query-stream-failed", {
               providerSessionId: input.providerSessionId,
               providerThreadId: context.input.providerThread.id,
               providerTurnId: context.providerTurnId,
-              cause,
+              cause: exitInput.cause,
             });
           }
         });
@@ -5622,9 +5679,10 @@ export function makeClaudeAdapterV2(
                   current?.query === querySession ? [true, null] : [false, current],
                 );
                 if (ownsLiveQuery) {
-                  yield* finalizeActiveTurnAfterQueryExit(
-                    exit._tag === "Failure" ? exit.cause : undefined,
-                  );
+                  yield* finalizeActiveTurnAfterQueryExit({
+                    nativeThreadId,
+                    ...(exit._tag === "Failure" ? { cause: exit.cause } : {}),
+                  });
                 }
               }),
             ),
@@ -5850,6 +5908,10 @@ export function makeClaudeAdapterV2(
               context: currentTurn,
               status: "interrupted",
               completedAt,
+            });
+            yield* terminalizeClaudeWorkflowsForNativeThread({
+              nativeThreadId: existing.nativeThreadId,
+              status: "interrupted",
             });
             yield* Deferred.succeed(existing.closed, undefined);
           },

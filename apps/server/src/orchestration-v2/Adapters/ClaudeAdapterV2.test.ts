@@ -4207,6 +4207,199 @@ describe("ClaudeAdapterV2 background wake turns", () => {
     ),
   );
 
+  it.effect("cleans up workflow state when the owning query is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const idAllocator = yield* IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-interrupted-query";
+        const toolUseId = "toolu-workflow-interrupted-query";
+        const attemptId = RunAttemptId.make("attempt-claude-workflow-interrupted-query");
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "Run a workflow and then stop.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run the interruptible workflow",
+            task_type: "local_workflow",
+            workflow_name: "interruptible-workflow",
+            uuid: "00000000-0000-4000-8000-000000000165",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Agent is still running",
+            usage: { total_tokens: 200, tool_uses: 1, duration_ms: 2_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "running-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000166",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
+            ),
+          "interruptible workflow roster projected",
+        );
+
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId,
+        });
+        yield* awaitUntil(
+          () =>
+            harness.terminalEvents().some((event) => event.status === "interrupted") &&
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow" && event.subagent.status === "interrupted",
+            ) &&
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
+            ),
+          "interrupted workflow state released",
+        );
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("cleans up a continuing workflow when its idle query stream exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-idle-query-exit";
+        const toolUseId = "toolu-workflow-idle-query-exit";
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-idle-query-exit"),
+            text: "Start a workflow that outlives this turn.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run beyond the root turn",
+            task_type: "local_workflow",
+            workflow_name: "idle-query-workflow",
+            uuid: "00000000-0000-4000-8000-000000000167",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Still running after root settle",
+            usage: { total_tokens: 300, tool_uses: 2, duration_ms: 3_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "late-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000168",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
+            ),
+          "idle-query workflow roster projected",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000169",
+            result: "The workflow is continuing.",
+          }),
+        );
+        yield* awaitUntil(() => harness.terminalEvents().length === 1, "workflow root settled");
+
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+            ) &&
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
+            ),
+          "idle-query workflow state released",
+        );
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
   it.effect("wakes and hydrates a subagent that completes after the root turn settled", () =>
     Effect.scoped(
       Effect.gen(function* () {
