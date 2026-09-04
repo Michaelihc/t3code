@@ -3244,6 +3244,17 @@ export function makeClaudeAdapterV2(
                     existingSubagent.task,
                   )
                 : existingSubagent.task;
+          const phases =
+            input.phases === undefined
+              ? undefined
+              : [
+                  ...new Map(
+                    [...(priorTask?.phases ?? []), ...input.phases].map((phase) => [
+                      phase.index,
+                      phase,
+                    ]),
+                  ).values(),
+                ].sort((left, right) => left.index - right.index);
           const task = {
             ...(priorTask ?? {
               id: nodeId,
@@ -3299,7 +3310,7 @@ export function makeClaudeAdapterV2(
             ...(input.phaseTitle === undefined ? {} : { phaseTitle: input.phaseTitle }),
             ...(input.attempt === undefined ? {} : { attempt: input.attempt }),
             ...(input.workflowName === undefined ? {} : { workflowName: input.workflowName }),
-            ...(input.phases === undefined ? {} : { phases: input.phases }),
+            ...(phases === undefined ? {} : { phases }),
             ...(input.runHandles === undefined ? {} : { runHandles: input.runHandles }),
             ...(input.progress === undefined ? {} : { progress: input.progress }),
             ...(input.result === undefined ? {} : { result: input.result }),
@@ -3730,7 +3741,7 @@ export function makeClaudeAdapterV2(
             }
             const task = {
               ...candidateTask,
-              updatedAt,
+              updatedAt: hasReportedUpdatedAt ? updatedAt : now,
             } satisfies OrchestrationV2Subagent;
 
             existingMembers.set(entry.index, task);

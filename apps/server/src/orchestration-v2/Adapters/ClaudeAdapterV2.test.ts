@@ -3470,7 +3470,6 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             last_tool_name: "Read",
             workflow_progress: [
               { type: "workflow_phase", index: 1, title: "Survey", kind: "parallel" },
-              { type: "workflow_phase", index: 2, title: "Synthesize", kind: "serial" },
               {
                 type: "workflow_agent",
                 index: 1,
@@ -3520,10 +3519,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           .find((subagent) => subagent.kind === "workflow" && subagent.phases !== undefined);
         assert.equal(coordinator?.workflowName, "sandbox-project-survey");
         assert.equal(coordinator?.toolUseId, toolUseId);
-        assert.deepEqual(coordinator?.phases, [
-          { index: 1, title: "Survey" },
-          { index: 2, title: "Synthesize" },
-        ]);
+        assert.deepEqual(coordinator?.phases, [{ index: 1, title: "Survey" }]);
         assert.deepEqual(coordinator?.usage, {
           totalTokens: 5_000,
           toolUses: 9,
@@ -3564,6 +3560,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             description: "Server survey duration advanced",
             usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
             workflow_progress: [
+              { type: "workflow_phase", index: 2, title: "Synthesize", kind: "serial" },
               {
                 type: "workflow_agent",
                 index: 1,
@@ -3576,6 +3573,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 startedAt: 1_788_400_000_000,
                 lastToolName: "Read",
                 lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_042_000,
                 durationMs: 42_000,
               },
             ],
@@ -3601,6 +3599,13 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           toolUses: 6,
           durationMs: 42_000,
         });
+        const incrementallyPhasedCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepEqual(incrementallyPhasedCoordinator?.phases, [
+          { index: 1, title: "Survey" },
+          { index: 2, title: "Synthesize" },
+        ]);
         const memberOneEventCount = subagentEvents().filter(
           (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
         ).length;
@@ -3626,6 +3631,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
                 startedAt: 1_788_400_000_000,
                 lastToolName: "Read",
                 lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_042_000,
                 durationMs: 42_000,
               },
             ],
