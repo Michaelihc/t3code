@@ -180,7 +180,10 @@ describe("buildThreadActivityInspector", () => {
       ...itemBase("workflow"),
       type: "dynamic_tool",
       toolName: "Workflow",
-      input: { script: "export const meta = { name: 'survey' };" },
+      input: {
+        script:
+          "export const meta = { name: 'survey', description: 'Survey the repo', phases: [{ title: 'Inspect', detail: 'Read files' }] };",
+      },
     };
     const workflow = {
       status: "running" as const,
@@ -206,6 +209,13 @@ describe("buildThreadActivityInspector", () => {
     expect(model.fields).toContainEqual({ label: "Duration", value: "1m 41s" });
     expect(model.fields).not.toContainEqual({ label: "Duration", value: "2.0s" });
     expect(nextModel.fields).toContainEqual({ label: "Duration", value: "1m 42s" });
+    expect(model.blocks).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: expect.stringContaining("export const meta") }),
+      ]),
+    );
+    expect(model.structuredDetails).not.toContain("export const meta");
+    expect(model.structuredDetails).not.toContain('"script"');
   });
 
   it("enables rollback only for the matching ready checkpoint", () => {

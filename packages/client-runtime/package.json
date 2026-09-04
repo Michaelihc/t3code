@@ -31,6 +31,10 @@
       "types": "./src/codexMarkdownDirectives.ts",
       "default": "./src/codexMarkdownDirectives.ts"
     },
+    "./claude-workflow-meta": {
+      "types": "./src/claudeWorkflowMeta.ts",
+      "default": "./src/claudeWorkflowMeta.ts"
+    },
     "./errors": {
       "types": "./src/errors/index.ts",
       "default": "./src/errors/index.ts"

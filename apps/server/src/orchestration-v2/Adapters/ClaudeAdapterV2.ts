@@ -3850,6 +3850,7 @@ export function makeClaudeAdapterV2(
             input.context.subagentsByTaskId.get(input.taskId) ??
             (yield* Ref.get(sessionSubagentsByTaskId)).get(input.taskId);
           const completedAt = yield* DateTime.now;
+          const remainderStatus = input.status === "failed" ? "interrupted" : input.status;
 
           for (const [index, member] of members) {
             if (
@@ -3862,7 +3863,7 @@ export function makeClaudeAdapterV2(
             }
             const terminalMember = {
               ...member,
-              status: input.status,
+              status: remainderStatus,
               completedAt,
               updatedAt: completedAt,
             } satisfies OrchestrationV2Subagent;
@@ -4744,6 +4745,16 @@ export function makeClaudeAdapterV2(
           ) {
             return;
           }
+          const existingCoordinator =
+            context.subagentsByTaskId.get(message.task_id) ??
+            (message.tool_use_id === undefined
+              ? undefined
+              : context.subagentsByToolUseId.get(message.tool_use_id)) ??
+            (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id);
+          const priorUsage =
+            existingCoordinator?.task.kind === "workflow"
+              ? existingCoordinator.task.usage
+              : undefined;
           const coordinator = yield* updateClaudeSubagentNode({
             context,
             taskId: message.task_id,
@@ -4752,9 +4763,18 @@ export function makeClaudeAdapterV2(
             ...(progress.length === 0 ? {} : { progress }),
             ...(phases.length === 0 ? {} : { phases }),
             usage: {
-              totalTokens: Math.max(0, Math.trunc(message.usage.total_tokens)),
-              toolUses: Math.max(0, Math.trunc(message.usage.tool_uses)),
-              durationMs: Math.max(0, Math.trunc(message.usage.duration_ms)),
+              totalTokens: Math.max(
+                priorUsage?.totalTokens ?? 0,
+                Math.max(0, Math.trunc(message.usage.total_tokens)),
+              ),
+              toolUses: Math.max(
+                priorUsage?.toolUses ?? 0,
+                Math.max(0, Math.trunc(message.usage.tool_uses)),
+              ),
+              durationMs: Math.max(
+                priorUsage?.durationMs ?? 0,
+                Math.max(0, Math.trunc(message.usage.duration_ms)),
+              ),
             },
             ...(lastToolName === undefined ? {} : { lastToolName }),
             status: "running",

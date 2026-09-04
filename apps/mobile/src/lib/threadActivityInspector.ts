@@ -1,3 +1,4 @@
+import { claudeWorkflowScriptFromToolInput } from "@t3tools/client-runtime/claude-workflow-meta";
 import type { V2ItemSupport } from "@t3tools/client-runtime/state/item-support";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ThreadId } from "@t3tools/contracts";
@@ -83,6 +84,12 @@ function addBlock(
   blocks.push({ label, value: formatStructured(value), monospaced });
 }
 
+function withoutWorkflowScript(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const entries = Object.entries(input).filter(([key]) => key !== "script");
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
 export function buildThreadActivityInspector(
   activity: ThreadFeedActivity,
   support: V2ItemSupport,
@@ -92,6 +99,17 @@ export function buildThreadActivityInspector(
 ): ThreadActivityInspectorModel {
   const row = activity.projectedItem;
   const item = row.item;
+  const workflowScript =
+    item.type === "dynamic_tool"
+      ? claudeWorkflowScriptFromToolInput(item.toolName, item.input)
+      : null;
+  const inspectorItem =
+    item.type !== "dynamic_tool" || workflowScript === null
+      ? item
+      : {
+          ...item,
+          input: withoutWorkflowScript(item.input),
+        };
   const fields: ThreadActivityInspectorField[] = [
     { label: "Item", value: item.type.replaceAll("_", " ") },
     { label: "Status", value: (workflow?.status ?? item.status).replaceAll("_", " ") },
@@ -203,7 +221,7 @@ export function buildThreadActivityInspector(
       }
       break;
     case "dynamic_tool":
-      addBlock(blocks, "Input", item.input);
+      addBlock(blocks, "Input", withoutWorkflowScript(item.input));
       addBlock(blocks, "Output", item.output);
       break;
     case "approval_request":
@@ -319,7 +337,7 @@ export function buildThreadActivityInspector(
       visibility: row.visibility,
       sourceThreadId: row.sourceThreadId,
       sourceItemId: row.sourceItemId,
-      item,
+      item: inspectorItem,
     }),
   };
 }

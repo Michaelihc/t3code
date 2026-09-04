@@ -3942,6 +3942,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.notProperty(attemptLessRetry, "lastToolName");
         assert.notProperty(attemptLessRetry, "progress");
         assert.notProperty(attemptLessRetry, "usage");
+        const coordinatorAfterRegressedUsage = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepEqual(coordinatorAfterRegressedUsage?.usage, {
+          totalTokens: 5_600,
+          toolUses: 13,
+          durationMs: 80_000,
+        });
 
         // Let the root settle first. Late workflow progress must continue to
         // project live while no turn is attached; a later user turn must not
@@ -4066,6 +4074,135 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         assert.equal(latestMembers.get(2)?.runId, members[1]?.runId);
         assert.equal(latestMembers.get(3)?.runId, members[0]?.runId);
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("interrupts unfinished workflow members when the coordinator fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-failed-coordinator";
+        const toolUseId = "toolu-workflow-failed-coordinator";
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-failure"),
+            text: "Run a workflow that fails.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run the failing workflow",
+            task_type: "local_workflow",
+            workflow_name: "failing-workflow",
+            uuid: "00000000-0000-4000-8000-000000000161",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "One agent failed while another was still running",
+            usage: { total_tokens: 800, tool_uses: 3, duration_ms: 10_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "failed-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "error",
+                error: "Agent failed explicitly",
+              },
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "running-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000162",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+            ),
+          "failing workflow roster projected",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "failed",
+            summary: "Workflow failed",
+            uuid: "00000000-0000-4000-8000-000000000163",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+            ) &&
+            subagentEvents().some(
+              (event) =>
+                event.subagent.kind === "workflow_agent" &&
+                event.subagent.agentIndex === 2 &&
+                event.subagent.status === "interrupted",
+            ),
+          "failed workflow terminal states projected",
+        );
+
+        const latestMembers = new Map<number, OrchestrationV2Subagent>();
+        for (const event of subagentEvents()) {
+          if (event.subagent.kind === "workflow_agent" && event.subagent.agentIndex !== undefined) {
+            latestMembers.set(event.subagent.agentIndex, event.subagent);
+          }
+        }
+        assert.equal(latestMembers.get(1)?.status, "failed");
+        assert.equal(latestMembers.get(1)?.error, "Agent failed explicitly");
+        assert.equal(latestMembers.get(2)?.status, "interrupted");
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000164",
+            result: "The workflow failed.",
+          }),
+        );
+        yield* awaitUntil(
+          () => harness.terminalEvents().length === 1,
+          "failed workflow root terminal",
+        );
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );
