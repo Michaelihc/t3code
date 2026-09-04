@@ -3736,6 +3736,32 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           harness.sdkMessages,
           claudeSdkFrame({
             type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A late synthesis agent started",
+            usage: { total_tokens: 5_700, tool_uses: 13, duration_ms: 90_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 3,
+                label: "synthesizer",
+                phaseIndex: 2,
+                phaseTitle: "Synthesize",
+                state: "progress",
+                startedAt: 1_788_400_090_000,
+                lastToolName: "Write",
+                lastToolSummary: "Combining survey results",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000159",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
             subtype: "task_notification",
             task_id: taskId,
             tool_use_id: toolUseId,
@@ -3784,10 +3810,15 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         }
         assert.equal(latestMembers.get(1)?.status, "completed");
         assert.equal(latestMembers.get(2)?.status, "completed");
+        assert.equal(latestMembers.get(3)?.status, "completed");
+        assert.equal(latestMembers.get(3)?.title, "synthesizer");
+        assert.equal(latestMembers.get(3)?.progress, "Combining survey results");
         assert.isNotNull(latestMembers.get(1)?.completedAt);
         assert.isNotNull(latestMembers.get(2)?.completedAt);
+        assert.isNotNull(latestMembers.get(3)?.completedAt);
         assert.equal(latestMembers.get(1)?.runId, members[0]?.runId);
         assert.equal(latestMembers.get(2)?.runId, members[1]?.runId);
+        assert.equal(latestMembers.get(3)?.runId, members[0]?.runId);
         assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),

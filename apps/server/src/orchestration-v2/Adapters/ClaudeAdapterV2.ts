@@ -3669,7 +3669,7 @@ export function makeClaudeAdapterV2(
                 threadId: task.threadId,
                 runId: task.runId,
                 parentNodeId: task.parentNodeId,
-                rootNodeId: input.context.input.rootNodeId,
+                rootNodeId: input.coordinator.task.parentNodeId,
                 kind: "subagent",
                 status: task.status,
                 countsForRun: false,
@@ -4374,6 +4374,12 @@ export function makeClaudeAdapterV2(
             message.type === "system" &&
             message.subtype === "task_started" &&
             (yield* Ref.get(sessionSubagentsByTaskId)).has(message.task_id);
+          const isKnownWorkflowProgress =
+            message.type === "system" &&
+            message.subtype === "task_progress" &&
+            claudeWorkflowProgressEntries(message).length > 0 &&
+            (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id)?.task.kind ===
+              "workflow";
           if (
             isKnownSubagentTaskStarted &&
             message.type === "system" &&
@@ -4405,7 +4411,10 @@ export function makeClaudeAdapterV2(
             message.type === "assistant" ||
             message.type === "user" ||
             message.type === "result";
-          if (!isWakeEvidence) {
+          // Workflow frames do not open a continuation by themselves, but
+          // retaining them lets the eventual task_notification replay every
+          // member update through the fresh continuation context in order.
+          if (!isWakeEvidence && !isKnownWorkflowProgress) {
             return;
           }
           const notificationSummary =
