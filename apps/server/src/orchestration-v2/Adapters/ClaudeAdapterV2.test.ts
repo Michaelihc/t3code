@@ -16,6 +16,7 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Subagent,
   ProjectId,
   ProviderInstanceId,
   type ProviderApprovalDecision,
@@ -3557,13 +3558,96 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           harness.sdkMessages,
           claudeSdkFrame({
             type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Web survey failed",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 43_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                startedAt: 1_788_400_050_000,
+                attempt: 3,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting the stale result",
+                tokens: 200,
+                toolCalls: 1,
+                durationMs: 2_000,
+                resultPreview: "Partial retry output",
+                error: "First retry failed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000153",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Retrying web survey",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 43_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_060_000,
+                attempt: 4,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000154",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+
+        yield* awaitUntil(
+          () =>
+            subagentEvents().some(
+              (event) => event.subagent.kind === "workflow_agent" && event.subagent.attempt === 4,
+            ),
+          "workflow retry projected",
+        );
+        const retriedMember = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.deepInclude(retriedMember, {
+          status: "running",
+          attempt: 4,
+          result: null,
+        });
+        const retryStartedAt = retriedMember?.startedAt;
+        if (retryStartedAt === undefined || retryStartedAt === null) {
+          throw new Error("Expected the workflow retry to adopt its own start time.");
+        }
+        assert.equal(DateTime.toEpochMillis(retryStartedAt), 1_788_400_060_000);
+        assert.notProperty(retriedMember, "error");
+        assert.notProperty(retriedMember, "lastToolName");
+        assert.notProperty(retriedMember, "progress");
+        assert.notProperty(retriedMember, "usage");
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
             subtype: "task_notification",
             task_id: taskId,
             tool_use_id: toolUseId,
             status: "completed",
             output_file: "/tmp/workflow-sandbox-survey.output",
             summary: "Survey complete",
-            uuid: "00000000-0000-4000-8000-000000000153",
+            uuid: "00000000-0000-4000-8000-000000000155",
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
@@ -3574,6 +3658,16 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           .findLast((subagent) => subagent.kind === "workflow");
         assert.equal(terminalCoordinator?.status, "completed");
         assert.equal(terminalCoordinator?.outputFile, "/tmp/workflow-sandbox-survey.output");
+        const latestMembers = new Map<number, OrchestrationV2Subagent>();
+        for (const event of subagentEvents()) {
+          if (event.subagent.kind === "workflow_agent" && event.subagent.agentIndex !== undefined) {
+            latestMembers.set(event.subagent.agentIndex, event.subagent);
+          }
+        }
+        assert.equal(latestMembers.get(1)?.status, "completed");
+        assert.equal(latestMembers.get(2)?.status, "completed");
+        assert.isNotNull(latestMembers.get(1)?.completedAt);
+        assert.isNotNull(latestMembers.get(2)?.completedAt);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );

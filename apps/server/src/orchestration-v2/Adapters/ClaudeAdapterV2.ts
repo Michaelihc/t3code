@@ -3535,6 +3535,10 @@ export function makeClaudeAdapterV2(
             if (entry.type !== "workflow_agent") continue;
 
             const existing = existingMembers.get(entry.index);
+            const attemptIncreased =
+              entry.attempt !== undefined &&
+              existing?.attempt !== undefined &&
+              entry.attempt > existing.attempt;
             const nativeItemId = `${input.taskId}:workflow-agent:${entry.index}`;
             const nodeId =
               existing?.id ??
@@ -3545,7 +3549,7 @@ export function makeClaudeAdapterV2(
             const status = claudeWorkflowAgentStatus(entry);
             const startedAt = dateTimeFromClaudeEpoch(
               entry.startedAt ?? entry.queuedAt,
-              existing?.startedAt ?? now,
+              attemptIncreased ? now : (existing?.startedAt ?? now),
             );
             const updatedAt = dateTimeFromClaudeEpoch(
               entry.lastProgressAt,
@@ -3578,32 +3582,46 @@ export function makeClaudeAdapterV2(
                     ...(entry.durationMs === undefined ? {} : { durationMs: entry.durationMs }),
                   };
             const terminal = status === "completed" || status === "failed";
-            const task = {
-              ...(existing ?? {
-                id: nodeId,
-                threadId: input.coordinator.task.threadId,
-                runId: input.coordinator.task.runId,
-                parentNodeId: input.coordinator.task.id,
-                origin: "provider_native" as const,
-                createdBy: "agent" as const,
-                driver: CLAUDE_PROVIDER,
-                providerInstanceId: input.coordinator.task.providerInstanceId,
-                providerThreadId: null,
-                childThreadId: null,
-                nativeTaskRef: {
+            const existingTask = (() => {
+              if (existing === undefined) {
+                return {
+                  id: nodeId,
+                  threadId: input.coordinator.task.threadId,
+                  runId: input.coordinator.task.runId,
+                  parentNodeId: input.coordinator.task.id,
+                  origin: "provider_native" as const,
+                  createdBy: "agent" as const,
                   driver: CLAUDE_PROVIDER,
-                  nativeId: nativeItemId,
-                  strength: "strong" as const,
-                },
-                prompt: trimmedClaudeWorkflowString(entry.promptPreview) ?? "",
-                title,
-                model: model ?? null,
-                kind: "workflow_agent" as const,
-                parentAgentId: input.coordinator.task.id,
-                agentIndex: entry.index,
-                result: null,
-                startedAt,
-              }),
+                  providerInstanceId: input.coordinator.task.providerInstanceId,
+                  providerThreadId: null,
+                  childThreadId: null,
+                  nativeTaskRef: {
+                    driver: CLAUDE_PROVIDER,
+                    nativeId: nativeItemId,
+                    strength: "strong" as const,
+                  },
+                  prompt: trimmedClaudeWorkflowString(entry.promptPreview) ?? "",
+                  title,
+                  model: model ?? null,
+                  kind: "workflow_agent" as const,
+                  parentAgentId: input.coordinator.task.id,
+                  agentIndex: entry.index,
+                  result: null,
+                  startedAt,
+                };
+              }
+              if (!attemptIncreased) return existing;
+              const {
+                error: _error,
+                lastToolName: _lastToolName,
+                progress: _progress,
+                usage: _usage,
+                ...resetTask
+              } = existing;
+              return { ...resetTask, result: null, startedAt };
+            })();
+            const task = {
+              ...existingTask,
               status,
               title,
               ...(model === undefined ? {} : { model }),
@@ -3655,6 +3673,60 @@ export function makeClaudeAdapterV2(
           }
 
           input.context.workflowMembersByTaskId.set(input.taskId, existingMembers);
+        });
+
+        const terminalizeClaudeWorkflowMembers = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly taskId: string;
+          readonly status: "completed" | "failed" | "cancelled";
+        }) {
+          const members = input.context.workflowMembersByTaskId.get(input.taskId);
+          if (members === undefined) return;
+          const completedAt = yield* DateTime.now;
+
+          for (const [index, member] of members) {
+            if (
+              member.status === "completed" ||
+              member.status === "failed" ||
+              member.status === "cancelled" ||
+              member.status === "interrupted"
+            ) {
+              continue;
+            }
+            const terminalMember = {
+              ...member,
+              status: input.status,
+              completedAt,
+              updatedAt: completedAt,
+            } satisfies OrchestrationV2Subagent;
+            members.set(index, terminalMember);
+            yield* emitProviderEvent({
+              type: "node.updated",
+              driver: CLAUDE_PROVIDER,
+              node: {
+                id: terminalMember.id,
+                threadId: terminalMember.threadId,
+                runId: terminalMember.runId,
+                parentNodeId: terminalMember.parentNodeId,
+                rootNodeId: input.context.input.rootNodeId,
+                kind: "subagent",
+                status: terminalMember.status,
+                countsForRun: false,
+                providerThreadId: input.context.input.providerThread.id,
+                providerTurnId: input.context.providerTurnId,
+                nativeItemRef: terminalMember.nativeTaskRef,
+                runtimeRequestId: null,
+                checkpointScopeId: null,
+                startedAt: terminalMember.startedAt,
+                completedAt: terminalMember.completedAt,
+              },
+            });
+            yield* emitProviderEvent({
+              type: "subagent.updated",
+              driver: CLAUDE_PROVIDER,
+              subagent: terminalMember,
+            });
+          }
         });
 
         const emitClaudePlanProjection = Effect.fnUntraced(function* (input: {
@@ -4706,18 +4778,24 @@ export function makeClaudeAdapterV2(
             });
             if (!wasBackgroundTask && !context.ignoredTaskIds.has(message.task_id)) {
               const outputFile = trimmedClaudeWorkflowString(message.output_file);
+              const status =
+                message.status === "completed"
+                  ? "completed"
+                  : message.status === "stopped"
+                    ? "cancelled"
+                    : "failed";
               yield* updateClaudeSubagentNode({
                 context,
                 taskId: message.task_id,
                 ...(message.tool_use_id === undefined ? {} : { toolUseId: message.tool_use_id }),
                 result: message.summary,
                 ...(outputFile === undefined ? {} : { outputFile }),
-                status:
-                  message.status === "completed"
-                    ? "completed"
-                    : message.status === "stopped"
-                      ? "cancelled"
-                      : "failed",
+                status,
+              });
+              yield* terminalizeClaudeWorkflowMembers({
+                context,
+                taskId: message.task_id,
+                status,
               });
             }
             // Replay tombstone only needs to outlive buffering until this
