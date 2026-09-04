@@ -10,6 +10,7 @@ import {
   MobileWorkflowGroupStore,
   workflowElapsedLabel,
   workflowGroupForProjectedItem,
+  workflowMemberActivity,
   workflowMembers,
 } from "./mobile-workflow-presentation";
 
@@ -103,6 +104,28 @@ describe("mobile workflow presentation", () => {
     expect(workflowMembers({ ...group, unphasedMembers: [orphan] })).toEqual([...members, orphan]);
   });
 
+  it("prefers final workflow member output after completion", () => {
+    expect(
+      workflowMemberActivity(
+        runtimeSubagent({
+          status: "completed",
+          progress: "Still reading files",
+          lastToolName: "Read",
+          result: "Survey complete",
+        }),
+      ),
+    ).toBe("Survey complete");
+    expect(
+      workflowMemberActivity(
+        runtimeSubagent({
+          status: "running",
+          progress: "Reading files",
+          result: "Old result",
+        }),
+      ),
+    ).toBe("Reading files");
+  });
+
   it("uses the coordinator lifecycle rather than the early tool completion", () => {
     expect(workflowElapsedLabel(workflow)).toBe("1m 41s");
     expect(formatMobileWorkflowFoldLabel("Worked for 2s", [group])).toBe(
@@ -149,6 +172,29 @@ describe("mobile workflow presentation", () => {
     expect(otherListener).not.toHaveBeenCalled();
     expect(runListener).toHaveBeenCalledTimes(1);
     expect(store.groupsForRun("run-workflow")).toEqual([updatedGroup]);
+
+    const metadataSnapshot = store.snapshot(["toolu_workflow"]);
+    const metadataGroup = {
+      ...updatedGroup,
+      phases: [
+        {
+          ...updatedGroup.phases[0]!,
+          members: [
+            runtimeSubagent({
+              ...updatedGroup.phases[0]!.members[0]!,
+              title: "Renamed surveyor",
+              model: "claude-opus-4-6",
+            }),
+            ...updatedGroup.phases[0]!.members.slice(1),
+          ],
+        },
+      ],
+    } satisfies AgentPanelWorkflowGroup;
+    store.replace([metadataGroup]);
+
+    expect(store.snapshot(["toolu_workflow"])).toBeGreaterThan(metadataSnapshot);
+    expect(surveyListener).toHaveBeenCalledTimes(2);
+    expect(runListener).toHaveBeenCalledTimes(2);
 
     unsubscribeSurvey();
     unsubscribeOther();

@@ -33,6 +33,7 @@ function workflowGroupRevision(group: AgentPanelWorkflowGroup): string {
     group.workflow.id,
     group.workflow.status,
     group.workflow.workflowName,
+    group.workflow.title,
     group.workflow.startedAt,
     group.workflow.completedAt,
     group.workflow.updatedAt,
@@ -42,11 +43,17 @@ function workflowGroupRevision(group: AgentPanelWorkflowGroup): string {
       phase.state,
       phase.activeCount,
       phase.settledCount,
+      ...phase.members.map((member) => member.id),
     ]),
     ...workflowMembers(group).flatMap((member) => [
       member.id,
       member.status,
       member.updatedAt,
+      member.title,
+      member.model,
+      member.effort,
+      member.phaseIndex,
+      member.phaseTitle,
       member.attempt,
       member.progress,
       member.lastToolName,
@@ -215,6 +222,23 @@ export function formatMobileWorkflowFoldLabel(
 export function workflowIsLive(workflow: RuntimeSubagent): boolean {
   return (
     workflow.status === "pending" || workflow.status === "running" || workflow.status === "waiting"
+  );
+}
+
+export function workflowMemberActivity(member: RuntimeSubagent): string | null {
+  if (workflowIsLive(member)) {
+    return (
+      member.progress ??
+      (member.lastToolName ? `Using ${member.lastToolName}` : null) ??
+      member.result ??
+      member.error
+    );
+  }
+  return (
+    member.error ??
+    member.result ??
+    member.progress ??
+    (member.lastToolName ? `Using ${member.lastToolName}` : null)
   );
 }
 

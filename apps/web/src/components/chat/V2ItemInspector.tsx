@@ -6,7 +6,7 @@ import type {
 } from "@t3tools/contracts";
 import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { ChevronDownIcon, ExternalLinkIcon, GitBranchIcon, RotateCcwIcon } from "lucide-react";
-import { memo, useMemo, useState, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { formatWorkspaceRelativePath } from "../../filePathDisplay";
@@ -32,10 +32,10 @@ interface V2ItemInspectorProps {
   }) => void;
 }
 
-function durationLabel(startedAt: unknown, completedAt: unknown): string | null {
+function durationLabel(startedAt: unknown, completedAt: unknown, now: number): string | null {
   if (startedAt == null) return null;
   const start = Date.parse(String(startedAt));
-  const end = completedAt == null ? Date.now() : Date.parse(String(completedAt));
+  const end = completedAt == null ? now : Date.parse(String(completedAt));
   if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
   const milliseconds = Math.max(0, end - start);
   if (milliseconds < 1_000) return `${milliseconds}ms`;
@@ -154,9 +154,19 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
     sourceThreadId: props.projectedItem.sourceThreadId,
     sourceItemId: props.projectedItem.sourceItemId,
   });
+  const workflowLive =
+    props.workflow?.status === "pending" ||
+    props.workflow?.status === "running" ||
+    props.workflow?.status === "waiting";
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!workflowLive) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [workflowLive]);
   const duration = props.workflow
-    ? durationLabel(props.workflow.startedAt, props.workflow.completedAt)
-    : durationLabel(item.startedAt, item.completedAt);
+    ? durationLabel(props.workflow.startedAt, props.workflow.completedAt, now)
+    : durationLabel(item.startedAt, item.completedAt, now);
   const workflowScript =
     item.type === "dynamic_tool"
       ? claudeWorkflowScriptFromToolInput(item.toolName, item.input)

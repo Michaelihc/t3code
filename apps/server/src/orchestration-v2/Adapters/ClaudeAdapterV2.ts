@@ -3796,6 +3796,25 @@ export function makeClaudeAdapterV2(
           );
         });
 
+        const releaseClaudeWorkflowState = Effect.fnUntraced(function* (input: {
+          readonly context: ActiveClaudeTurnContext;
+          readonly taskId: string;
+        }) {
+          input.context.workflowMembersByTaskId.delete(input.taskId);
+          yield* Ref.update(sessionWorkflowMembersByTaskId, (current) => {
+            if (!current.has(input.taskId)) return current;
+            const updated = new Map(current);
+            updated.delete(input.taskId);
+            return updated;
+          });
+          yield* Ref.update(sessionWorkflowContextByTaskId, (current) => {
+            if (!current.has(input.taskId)) return current;
+            const updated = new Map(current);
+            updated.delete(input.taskId);
+            return updated;
+          });
+        });
+
         const terminalizeClaudeWorkflowMembers = Effect.fnUntraced(function* (input: {
           readonly context: ActiveClaudeTurnContext;
           readonly taskId: string;
@@ -3804,7 +3823,10 @@ export function makeClaudeAdapterV2(
           const members =
             input.context.workflowMembersByTaskId.get(input.taskId) ??
             (yield* Ref.get(sessionWorkflowMembersByTaskId)).get(input.taskId);
-          if (members === undefined) return;
+          if (members === undefined) {
+            yield* releaseClaudeWorkflowState(input);
+            return;
+          }
           input.context.workflowMembersByTaskId.set(input.taskId, members);
           const coordinator =
             input.context.subagentsByTaskId.get(input.taskId) ??
@@ -3854,9 +3876,7 @@ export function makeClaudeAdapterV2(
               subagent: terminalMember,
             });
           }
-          yield* Ref.update(sessionWorkflowMembersByTaskId, (current) =>
-            new Map(current).set(input.taskId, members),
-          );
+          yield* releaseClaudeWorkflowState(input);
         });
 
         const emitClaudePlanProjection = Effect.fnUntraced(function* (input: {
@@ -4479,8 +4499,10 @@ export function makeClaudeAdapterV2(
             message.type === "system" &&
             message.subtype === "task_progress" &&
             claudeWorkflowProgressEntries(message).length > 0 &&
-            (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id)?.task.kind ===
-              "workflow";
+            ((workflow) =>
+              workflow?.task.kind === "workflow" && workflow.task.status === "running")(
+              (yield* Ref.get(sessionSubagentsByTaskId)).get(message.task_id),
+            );
           if (
             isKnownSubagentTaskStarted &&
             message.type === "system" &&

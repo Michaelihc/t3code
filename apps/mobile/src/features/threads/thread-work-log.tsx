@@ -50,6 +50,7 @@ import {
 import {
   workflowElapsedLabel,
   workflowIsLive,
+  workflowMemberActivity,
   workflowMembers,
   workflowToolUseIdForProjectedItem,
   type MobileWorkflowGroupStore,
@@ -447,11 +448,7 @@ function WorkflowMemberRow(props: { readonly member: RuntimeSubagent }) {
     props.member.usage?.toolUses === undefined ? null : `${props.member.usage.toolUses} tools`,
     props.member.attempt === null ? null : `attempt ${props.member.attempt}`,
   ].filter((value): value is string => value !== null && value.length > 0);
-  const activity =
-    props.member.error ??
-    props.member.progress ??
-    (props.member.lastToolName ? `Using ${props.member.lastToolName}` : null) ??
-    props.member.result;
+  const activity = workflowMemberActivity(props.member);
 
   return (
     <View className="min-h-16 border-t border-adaptive-neutral-950-a5-white-a8 py-2 pl-1">
