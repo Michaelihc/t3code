@@ -2272,6 +2272,7 @@ interface ActiveClaudeTurnContext {
   readonly subagentNodesByTaskId: Map<string, OrchestrationV2ExecutionNode["id"]>;
   readonly pendingSubagentModelsByToolUseId: Map<string, string>;
   readonly workflowMembersByTaskId: Map<string, Map<number, OrchestrationV2Subagent>>;
+  readonly workflowSupersededAttemptFloorByTaskId: Map<string, Map<number, number>>;
 }
 
 interface ActiveClaudeProviderRetry {
@@ -3607,11 +3608,21 @@ export function makeClaudeAdapterV2(
             input.context.workflowMembersByTaskId.get(input.taskId) ??
             (yield* Ref.get(sessionWorkflowMembersByTaskId)).get(input.taskId) ??
             new Map();
+          const supersededAttemptFloors =
+            input.context.workflowSupersededAttemptFloorByTaskId.get(input.taskId) ?? new Map();
 
           for (const entry of input.entries) {
             if (entry.type !== "workflow_agent") continue;
 
             const existing = existingMembers.get(entry.index);
+            const supersededAttemptFloor = supersededAttemptFloors.get(entry.index);
+            if (
+              entry.attempt !== undefined &&
+              supersededAttemptFloor !== undefined &&
+              entry.attempt <= supersededAttemptFloor
+            ) {
+              continue;
+            }
             if (
               entry.attempt !== undefined &&
               existing?.attempt !== null &&
@@ -3641,6 +3652,23 @@ export function makeClaudeAdapterV2(
               continue;
             }
             const resetTelemetry = attemptIncreased || terminalToActive;
+            if (
+              terminalToActive &&
+              entry.attempt === undefined &&
+              existing.attempt !== null &&
+              existing.attempt !== undefined
+            ) {
+              supersededAttemptFloors.set(
+                entry.index,
+                Math.max(supersededAttemptFloor ?? 0, existing.attempt),
+              );
+            } else if (
+              entry.attempt !== undefined &&
+              supersededAttemptFloor !== undefined &&
+              entry.attempt > supersededAttemptFloor
+            ) {
+              supersededAttemptFloors.delete(entry.index);
+            }
             const nativeItemId = `${input.taskId}:workflow-agent:${entry.index}`;
             const nodeId =
               existing?.id ??
@@ -3810,6 +3838,10 @@ export function makeClaudeAdapterV2(
           }
 
           input.context.workflowMembersByTaskId.set(input.taskId, existingMembers);
+          input.context.workflowSupersededAttemptFloorByTaskId.set(
+            input.taskId,
+            supersededAttemptFloors,
+          );
           yield* Ref.update(sessionWorkflowMembersByTaskId, (current) =>
             new Map(current).set(input.taskId, existingMembers),
           );
@@ -3820,6 +3852,7 @@ export function makeClaudeAdapterV2(
           readonly taskId: string;
         }) {
           input.context.workflowMembersByTaskId.delete(input.taskId);
+          input.context.workflowSupersededAttemptFloorByTaskId.delete(input.taskId);
           yield* Ref.update(sessionWorkflowMembersByTaskId, (current) => {
             if (!current.has(input.taskId)) return current;
             const updated = new Map(current);
@@ -5738,6 +5771,7 @@ export function makeClaudeAdapterV2(
               subagentNodesByTaskId: new Map(),
               pendingSubagentModelsByToolUseId: new Map(),
               workflowMembersByTaskId: new Map(),
+              workflowSupersededAttemptFloorByTaskId: new Map(),
             };
             // Continuation turns attach to the wake output the CLI already
             // produced instead of prompting it again: drain the buffered wake
