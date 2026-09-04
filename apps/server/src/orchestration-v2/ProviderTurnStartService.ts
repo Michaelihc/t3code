@@ -26,8 +26,6 @@ import {
 } from "./ContextHandoffService.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
-import { ProviderAdapterEnsureThreadError } from "./ProviderAdapter.ts";
-import { makeProviderFailure } from "./ProviderFailure.ts";
 import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
 import {
   canRouteRelatedSubagent,
@@ -45,7 +43,6 @@ export class ProviderTurnStartError extends Schema.TaggedErrorClass<ProviderTurn
 ) {}
 
 const isProviderTurnStartError = Schema.is(ProviderTurnStartError);
-const isProviderAdapterEnsureThreadError = Schema.is(ProviderAdapterEnsureThreadError);
 
 export interface ProviderTurnStartServiceV2Shape {
   readonly start: (input: {
@@ -222,116 +219,8 @@ export const layer: Layer.Layer<
           ? {}
           : { resumeFromSession: existingSessionProjection }),
       });
-      const terminalizeTimedOutStart = Effect.fn(
-        "orchestrationV2.providerTurnStart.terminalizeTimedOutStart",
-      )(function* (cause: ProviderAdapterEnsureThreadError) {
-        const now = yield* DateTime.now;
-        const failure = makeProviderFailure({
-          message: `${providerThread.driver} did not respond while starting this turn. The turn was stopped instead of waiting indefinitely.`,
-          code: "thread_start_timeout",
-          class: "transport_error",
-          retryable: true,
-          cause,
-        });
-        const failureItemOrdinal =
-          Math.max(0, ...projection.turnItems.map((item) => item.ordinal)) + 1;
-        const events: Array<OrchestrationV2DomainEvent> = [
-          {
-            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-            type: "run-attempt.updated",
-            threadId: projection.thread.id,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: now,
-            payload: { ...attempt, status: "failed", completedAt: now },
-          },
-          {
-            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-            type: "node.updated",
-            threadId: projection.thread.id,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: now,
-            payload: { ...rootNode, status: "failed", completedAt: now },
-          },
-          {
-            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-            type: "turn-item.updated",
-            threadId: projection.thread.id,
-            runId: run.id,
-            nodeId: rootNode.id,
-            driver: providerThread.driver,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: now,
-            payload: {
-              id: idAllocator.derive.turnItemFromProviderItem({
-                driver: providerThread.driver,
-                nativeItemId: `provider-thread-start-timeout:${run.id}`,
-              }),
-              threadId: projection.thread.id,
-              runId: run.id,
-              nodeId: rootNode.id,
-              providerThreadId: providerThread.id,
-              providerTurnId: null,
-              nativeItemRef: null,
-              parentItemId: null,
-              ordinal: failureItemOrdinal,
-              status: "failed",
-              title: "Provider start timed out",
-              startedAt: now,
-              completedAt: now,
-              updatedAt: now,
-              type: "error",
-              failure,
-            },
-          },
-          {
-            id: yield* idAllocator.allocate.event({ threadId: projection.thread.id }),
-            type: "run.updated",
-            threadId: projection.thread.id,
-            runId: run.id,
-            nodeId: rootNode.id,
-            providerInstanceId: run.providerInstanceId,
-            occurredAt: now,
-            payload: {
-              ...run,
-              status: "failed",
-              queuePosition: null,
-              completedAt: now,
-            },
-          },
-        ];
-        yield* eventSink.writeIfRunCurrent({
-          threadId: projection.thread.id,
-          runId: run.id,
-          activeAttemptId: attempt.id,
-          expectedStatus: "starting",
-          events,
-        });
-        yield* providerSessions
-          .release({
-            providerSessionId,
-            reason: "runtime_error",
-            detail: `Provider thread start timed out for run ${run.id}.`,
-          })
-          .pipe(
-            Effect.catchCause((releaseCause) =>
-              Effect.logWarning(
-                "orchestration-v2.provider-turn-start.timeout-session-release-failed",
-                {
-                  threadId: projection.thread.id,
-                  runId: run.id,
-                  providerSessionId,
-                  cause: releaseCause,
-                },
-              ),
-            ),
-          );
-      });
       let effectiveHandoffs = handoffs;
-      const loadedProviderThreadResult = yield* Effect.gen(function* () {
+      const loadedProviderThread = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
           const sourceProjection = yield* projectionStore.getThreadProjection(
             nativeForkTransfer.sourceThreadId,
@@ -454,18 +343,7 @@ export const layer: Layer.Layer<
           ],
         });
         return replacement;
-      }).pipe(
-        Effect.map((providerThread) => ({ type: "loaded" as const, providerThread })),
-        Effect.catch((cause) =>
-          isProviderAdapterEnsureThreadError(cause) && cause.timedOut === true
-            ? terminalizeTimedOutStart(cause).pipe(Effect.as({ type: "timed_out" as const }))
-            : Effect.fail(cause),
-        ),
-      );
-      if (loadedProviderThreadResult.type === "timed_out") {
-        return;
-      }
-      const loadedProviderThread = loadedProviderThreadResult.providerThread;
+      });
       if (!(yield* isCurrentAttemptInStatus("starting"))) {
         return;
       }

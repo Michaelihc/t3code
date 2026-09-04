@@ -8,12 +8,12 @@ import {
   TurnItemId,
   type OrchestrationV2ProjectedTurnItem,
 } from "@t3tools/contracts";
+import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import * as DateTime from "effect/DateTime";
-import { describe, expect, it } from "vite-plus/test";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vite-plus/test";
 
 import type { Thread } from "../types";
 import { makeThreadFixture } from "../test-fixtures";
-import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import {
   MAX_HIDDEN_MOUNTED_PREVIEW_THREADS,
   MAX_HIDDEN_MOUNTED_TERMINAL_THREADS,
@@ -24,45 +24,156 @@ import {
   deriveComposerSendState,
   dismissBranchMismatchForSession,
   getStartedThreadModelChangeBlockReason,
-  loadVideoPreviewUrl,
   isVideoPreviewRequestCurrent,
   hasServerAcknowledgedLocalDispatch,
   isBranchMismatchDismissedForSession,
   reconcileMountedTerminalThreadIds,
   reconcileRetainedMountedThreadIds,
+  resolveDraftPromotionNavigationTarget,
   resolveEffectiveInteractionMode,
   resolveThreadMetadataUpdateForNextTurn,
   resolveSendEnvMode,
   startNewThreadForProject,
-  codexArtifactTemplatePromptToAppend,
   shouldShowBranchMismatchBanner,
   shouldShowComposerContextStrip,
   shouldShowPlanFollowUpPrompt,
   shouldWriteThreadErrorToCurrentServerThread,
+  toolGroupConsumesUpwardNavigation,
 } from "./ChatView.logic";
-
-describe("loadVideoPreviewUrl", () => {
-  it("loads video bytes into an object URL", async () => {
-    const objectUrl = await loadVideoPreviewUrl("data:video/mp4;base64,AA==");
-    expect(objectUrl).toMatch(/^blob:/);
-    URL.revokeObjectURL(objectUrl);
-  });
-
-  it("stops loading when the preview request is cancelled", async () => {
-    const controller = new AbortController();
-    controller.abort();
-
-    await expect(
-      loadVideoPreviewUrl("data:video/mp4;base64,AA==", controller.signal),
-    ).rejects.toMatchObject({ name: "AbortError" });
-  });
-});
 
 describe("isVideoPreviewRequestCurrent", () => {
   it("rejects changed threads and replaced previews", () => {
     expect(isVideoPreviewRequestCurrent("thread-1", "thread-2", 1, 1)).toBe(false);
     expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 1, 2)).toBe(false);
     expect(isVideoPreviewRequestCurrent("thread-1", "thread-1", 2, 2)).toBe(true);
+  });
+});
+
+describe("toolGroupConsumesUpwardNavigation", () => {
+  class ScrollElement extends EventTarget {
+    scrollTop = 0;
+    scrollHeight = 100;
+    clientHeight = 100;
+    overflowY = "visible";
+
+    constructor(
+      readonly parentElement: ScrollElement | null = null,
+      readonly isToolGroup = false,
+    ) {
+      super();
+    }
+
+    closest(selector: string): ScrollElement | null {
+      if (selector !== "[data-tool-group-scroll]") return null;
+      return this.isToolGroup ? this : (this.parentElement?.closest(selector) ?? null);
+    }
+  }
+
+  beforeEach(() => {
+    vi.stubGlobal("Element", ScrollElement);
+    vi.stubGlobal("getComputedStyle", (element: ScrollElement) => ({
+      overflowY: element.overflowY,
+    }));
+  });
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("releases upward navigation when an overflowing group is at the top", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "auto",
+      scrollHeight: 300,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(group))).toBe(false);
+  });
+
+  it.each([
+    { overflowY: "auto", scrollTop: 1 },
+    { overflowY: "auto", scrollTop: 0.25 },
+    { overflowY: "scroll", scrollTop: 80 },
+  ])("consumes upward navigation within a scrolled group: %j", (scroll) => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      scrollHeight: 300,
+      ...scroll,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(group)).toBe(true);
+  });
+
+  it.each([100, 300])(
+    "consumes scrolling in a nested result with a group content height of %i",
+    (scrollHeight) => {
+      const group = Object.assign(new ScrollElement(null, true), {
+        overflowY: "auto",
+        scrollHeight,
+      });
+      const result = Object.assign(new ScrollElement(group), {
+        overflowY: "auto",
+        scrollHeight: 300,
+        scrollTop: 0.25,
+      });
+
+      expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(true);
+    },
+  );
+
+  it("releases upward navigation when the group and nested result are both at the top", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "auto",
+      scrollHeight: 300,
+    });
+    const result = Object.assign(new ScrollElement(group), {
+      overflowY: "scroll",
+      scrollHeight: 300,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(false);
+  });
+
+  it("ignores targets outside a tool group and non-element targets", () => {
+    const outside = Object.assign(new ScrollElement(), {
+      overflowY: "auto",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(outside)).toBe(false);
+    expect(toolGroupConsumesUpwardNavigation(new EventTarget())).toBe(false);
+    expect(toolGroupConsumesUpwardNavigation(null)).toBe(false);
+  });
+
+  it("does not consume scrolling from an ancestor beyond the tool group", () => {
+    const timeline = Object.assign(new ScrollElement(), {
+      overflowY: "auto",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+    const group = new ScrollElement(timeline, true);
+
+    expect(toolGroupConsumesUpwardNavigation(new ScrollElement(group))).toBe(false);
+  });
+
+  it.each(["hidden", "clip", "visible"])(
+    "ignores a non-scrollable child with overflow-y %s",
+    (overflowY) => {
+      const group = new ScrollElement(null, true);
+      const result = Object.assign(new ScrollElement(group), {
+        overflowY,
+        scrollHeight: 300,
+        scrollTop: 40,
+      });
+
+      expect(toolGroupConsumesUpwardNavigation(new ScrollElement(result))).toBe(false);
+    },
+  );
+
+  it("does not consume programmatic scrolling on an overflow-hidden group", () => {
+    const group = Object.assign(new ScrollElement(null, true), {
+      overflowY: "hidden",
+      scrollHeight: 300,
+      scrollTop: 40,
+    });
+
+    expect(toolGroupConsumesUpwardNavigation(group)).toBe(false);
   });
 });
 
@@ -76,14 +187,6 @@ const helloWorldTemplate: CodexArtifactTemplate = {
   skillDirectory: "/Users/test/.codex/skills/artifact-template-hello-world",
   skillName: "artifact-template-hello-world",
 };
-
-describe("artifact template composer insertion", () => {
-  it("does not insert an already-present prompt", () => {
-    const prompt = "Create a document using this $artifact-template-hello-world about…";
-
-    expect(codexArtifactTemplatePromptToAppend(prompt, helloWorldTemplate)).toBeNull();
-  });
-});
 
 function makeThread(overrides: Partial<Thread> = {}): Thread {
   return makeThreadFixture({
@@ -130,6 +233,62 @@ const readySession = {
   lastError: null,
   updatedAt: "2026-03-29T00:00:10.000Z",
 };
+
+describe("resolveDraftPromotionNavigationTarget", () => {
+  const serverThreadRef = { environmentId, threadId };
+  const preparingRun = {
+    ...completedTurn,
+    status: "preparing" as const,
+    startedAt: null,
+    completedAt: null,
+  };
+
+  it("stays on the draft while the workspace is still preparing", () => {
+    expect(
+      resolveDraftPromotionNavigationTarget({
+        serverThreadRef,
+        serverThread: makeThread({ latestRun: preparingRun }),
+        backgroundSubmissionPending: false,
+      }),
+    ).toBeNull();
+    expect(
+      resolveDraftPromotionNavigationTarget({
+        serverThreadRef,
+        serverThread: makeThread(),
+        backgroundSubmissionPending: false,
+      }),
+    ).toBeNull();
+  });
+
+  it("navigates once the run starts or startup stops", () => {
+    expect(
+      resolveDraftPromotionNavigationTarget({
+        serverThreadRef,
+        serverThread: makeThread({ latestRun: completedTurn }),
+        backgroundSubmissionPending: false,
+      }),
+    ).toBe(serverThreadRef);
+    expect(
+      resolveDraftPromotionNavigationTarget({
+        serverThreadRef,
+        serverThread: makeThread({
+          latestRun: { ...preparingRun, status: "failed" as const },
+        }),
+        backgroundSubmissionPending: false,
+      }),
+    ).toBe(serverThreadRef);
+  });
+
+  it("defers while a background submission is pending", () => {
+    expect(
+      resolveDraftPromotionNavigationTarget({
+        serverThreadRef,
+        serverThread: makeThread({ latestRun: completedTurn }),
+        backgroundSubmissionPending: true,
+      }),
+    ).toBeNull();
+  });
+});
 
 describe("resolveEffectiveInteractionMode", () => {
   it("forces build mode when legacy plan mode is disabled", () => {

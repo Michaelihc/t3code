@@ -76,7 +76,7 @@ interface ShowExternalLinkContextMenuOptions {
 function resolveExternalWebLink(href: string | null | undefined): URL | null {
   if (!href) return null;
   try {
-    const url = new URL(href);
+    const url = new URL(href.startsWith("//") ? `https:${href}` : href);
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     return url;
   } catch {

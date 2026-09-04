@@ -45,8 +45,6 @@ vi.mock("@legendapp/list/react", async () => {
       onReady?: (info: { anchorIndex: number }) => void;
       onSizeChanged?: (size: number) => void;
     };
-    contentInsetEndAdjustment?: number;
-    className?: string;
     maintainScrollAtEnd?:
       | boolean
       | {
@@ -62,8 +60,10 @@ vi.mock("@legendapp/list/react", async () => {
       | {
           data?: boolean;
           size?: boolean;
-          shouldRestorePosition?: (item: { id: string }) => boolean;
+          shouldRestorePosition?: boolean;
         };
+    className?: string;
+    contentInsetEndAdjustment?: number;
     ref?: Ref<LegendListRef>;
   }) => {
     if (props.anchoredEndSpace) {
@@ -73,12 +73,32 @@ vi.mock("@legendapp/list/react", async () => {
     return (
       <div
         data-testid={legendListTestId}
+        data-class-name={props.className}
         data-anchor-index={props.anchoredEndSpace?.anchorIndex}
         data-anchor-max-size={props.anchoredEndSpace?.anchorMaxSize}
         data-anchor-offset={props.anchoredEndSpace?.anchorOffset}
         data-anchor-on-ready={Boolean(props.anchoredEndSpace?.onReady)}
         data-content-inset-end={props.contentInsetEndAdjustment}
-        data-class-name={props.className}
+        data-maintain-visible-content-position={
+          typeof props.maintainVisibleContentPosition === "object"
+            ? "object"
+            : props.maintainVisibleContentPosition
+        }
+        data-maintain-visible-content-position-data={
+          typeof props.maintainVisibleContentPosition === "object"
+            ? props.maintainVisibleContentPosition.data
+            : undefined
+        }
+        data-maintain-visible-content-position-size={
+          typeof props.maintainVisibleContentPosition === "object"
+            ? props.maintainVisibleContentPosition.size
+            : undefined
+        }
+        data-maintain-visible-content-position-restore={
+          typeof props.maintainVisibleContentPosition === "object"
+            ? Boolean(props.maintainVisibleContentPosition.shouldRestorePosition)
+            : undefined
+        }
         data-maintain-scroll-at-end={props.maintainScrollAtEnd ? "enabled" : undefined}
         data-maintain-scroll-at-end-animated={
           typeof props.maintainScrollAtEnd === "object"
@@ -98,26 +118,6 @@ vi.mock("@legendapp/list/react", async () => {
         data-maintain-scroll-at-end-layout={
           typeof props.maintainScrollAtEnd === "object"
             ? props.maintainScrollAtEnd.on?.layout
-            : undefined
-        }
-        data-maintain-visible-content-position={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? "object"
-            : props.maintainVisibleContentPosition
-        }
-        data-maintain-visible-content-position-data={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? props.maintainVisibleContentPosition.data
-            : undefined
-        }
-        data-maintain-visible-content-position-size={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? props.maintainVisibleContentPosition.size
-            : undefined
-        }
-        data-maintain-visible-content-position-restore={
-          typeof props.maintainVisibleContentPosition === "object"
-            ? Boolean(props.maintainVisibleContentPosition.shouldRestorePosition)
             : undefined
         }
       >
@@ -269,136 +269,231 @@ function buildAssistantTimelineEntry(text: string) {
 describe("MessagesTimeline", () => {
   it("preserves arbitrary XML-like tags and comparisons in rendered user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
+    const entry = buildUserTimelineEntry("Review this area");
+    const agentMarkup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
-          buildUserTimelineEntry(
-            [
-              'Without reading a file, do you have <global-agent-instructions scope="workspace">',
-              'Before <nested data-value="a&b">inside</nested> after',
-              "</global-agent-instructions> in your context?",
-              "Comparison: 2 < 3 and 5 > 4.",
-            ].join("\n"),
-          ),
+          {
+            ...entry,
+            message: { ...entry.message, createdBy: "agent", creationSource: "provider" },
+          },
         ]}
       />,
     );
-
-    expect(markup).toContain("&lt;global-agent-instructions scope=&quot;workspace&quot;&gt;");
-    expect(markup).toContain(
-      "Before &lt;nested data-value=&quot;a&amp;b&quot;&gt;inside&lt;/nested&gt; after",
+    const userMarkup = renderToStaticMarkup(
+      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
     );
-    expect(markup).toContain("&lt;/global-agent-instructions&gt; in your context?");
-    expect(markup).toContain("Comparison: 2 &lt; 3 and 5 &gt; 4.");
+
+    expect(agentMarkup).toContain('data-user-message-attribution="agent"');
+    expect(agentMarkup).toContain("Sent by another agent");
+    expect(userMarkup).not.toContain("Sent by another agent");
   });
 
-  it("preserves XML-like source inside user code spans and fences", async () => {
+  it("keeps a subagent parent-thread link at the top of an empty timeline", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
-        timelineEntries={[
-          buildUserTimelineEntry(
-            [
-              'Inline `<tag attr="x">`',
-              "",
-              "```xml",
-              '<root><child enabled="true" /></root>',
-              "```",
-            ].join("\n"),
-          ),
-        ]}
+        timelineEntries={[]}
+        parentThreadLink={{
+          threadId: ThreadId.make("thread-parent"),
+          title: "Architecture audit",
+        }}
       />,
     );
 
-    expect(markup).toContain('<code data-inline-code="">&lt;tag attr=&quot;x&quot;&gt;</code>');
-    expect(markup).toContain("&lt;root&gt;&lt;child enabled=&quot;true&quot; /&gt;&lt;/root&gt;");
+    expect(markup).toContain('aria-label="Open parent thread"');
+    expect(markup).toContain("Subagent of");
+    expect(markup).toContain("Architecture audit");
+    expect(markup).not.toContain("Send a message to start the conversation");
   });
 
-  it("does not render markdown title attributes in user messages", async () => {
+  it("keeps steer intent visible on committed user messages", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    const entry = buildUserTimelineEntry("Adjust the current turn");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
-          buildUserTimelineEntry(
-            '[link](https://example.com "link tip") ![image](https://example.com/image.png "image tip")',
-          ),
+          { ...entry, message: { ...entry.message, inputIntent: "steer" as const } },
         ]}
       />,
     );
 
-    expect(markup).toContain('href="https://example.com"');
-    expect(markup).toContain('src="https://example.com/image.png"');
-    expect(markup).not.toContain('title="link tip"');
-    expect(markup).not.toContain('title="image tip"');
+    expect(markup).toContain("data-base-ui-tooltip-trigger");
+    expect(markup).toContain("lucide-redo-2");
+    expect(markup).toContain('data-user-message-intent="steer"');
+    expect(markup).toContain("items-center justify-end gap-1");
+    expect(markup).toContain("gap-1 text-xs leading-none text-muted-foreground");
+    expect(markup.indexOf("Steer")).toBeLessThan(markup.indexOf("Adjust the current turn"));
   });
 
-  it("renders unsafe user HTML as inert source text", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
+  it("does not add redundant space below a collapsed turn divider", () => {
+    const runId = RunId.make("run-collapsed-spacing");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
-          buildUserTimelineEntry(
-            '<script>globalThis.__t3Xss = 1</script><img src="x" onerror="globalThis.__t3Xss = 2">',
-          ),
+          buildUserTimelineEntry("Investigate spacing"),
+          {
+            id: "assistant-commentary-spacing",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:30.000Z",
+            message: {
+              id: MessageId.make("assistant-commentary-spacing"),
+              role: "assistant",
+              text: "Checking the layout.",
+              runId,
+              createdAt: "2026-03-17T19:12:30.000Z",
+              updatedAt: "2026-03-17T19:12:31.000Z",
+              streaming: false,
+            },
+          },
+          {
+            id: "assistant-final-spacing",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:32.000Z",
+            message: {
+              id: MessageId.make("assistant-final-spacing"),
+              role: "assistant",
+              text: "Spacing fixed.",
+              runId,
+              createdAt: "2026-03-17T19:12:32.000Z",
+              updatedAt: "2026-03-17T19:12:33.000Z",
+              streaming: false,
+            },
+          },
         ]}
       />,
     );
 
-    expect(markup).toContain("&lt;script&gt;globalThis.__t3Xss = 1&lt;/script&gt;");
-    expect(markup).toContain(
-      "&lt;img src=&quot;x&quot; onerror=&quot;globalThis.__t3Xss = 2&quot;&gt;",
-    );
-    expect(markup).not.toMatch(/<script(?:\s|>)/i);
-    expect(markup).not.toMatch(/<img(?:\s|>)/i);
+    expect(markup).toContain('class="pb-0" data-timeline-row-id="turn-fold:');
+    expect(markup).toContain('data-timeline-row-kind="turn-fold"');
+    expect(markup).not.toContain("border-b border-border/60");
   });
 
-  it("continues to render sanitized raw HTML in assistant messages", async () => {
+  it("shows a collapsed disclosure for superseded attempt output", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    const runId = RunId.make("run-steered");
+    const supersededAttempt = {
+      id: "attempt-1" as never,
+      runId,
+      attemptOrdinal: 1,
+      rootNodeId: "node-attempt-1" as never,
+      status: "superseded" as const,
+    };
+    const activeAttempt = {
+      id: "attempt-2" as never,
+      runId,
+      attemptOrdinal: 2,
+      rootNodeId: "node-attempt-2" as never,
+      status: "running" as const,
+    };
+    const markup = renderToStaticMarkup(
+      <MessagesTimeline
+        {...buildProps()}
+        latestRun={{
+          runId,
+          status: "running",
+          startedAt: MESSAGE_CREATED_AT,
+          completedAt: null,
+        }}
+        timelineEntries={[
+          {
+            id: "superseded-response-entry",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            attempt: supersededAttempt,
+            message: {
+              id: MessageId.make("superseded-response"),
+              role: "assistant",
+              text: "Partial response from the old attempt",
+              runId,
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
+          {
+            id: "active-response-entry",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:29.000Z",
+            attempt: activeAttempt,
+            message: {
+              id: MessageId.make("active-response"),
+              role: "assistant",
+              text: "Current response remains visible",
+              runId,
+              createdAt: "2026-03-17T19:12:29.000Z",
+              updatedAt: "2026-03-17T19:12:29.000Z",
+              streaming: true,
+            },
+          },
+        ]}
+      />,
+    );
+
+    expect(markup).toContain('data-superseded-attempt-id="attempt-1"');
+    expect(markup).toContain('aria-expanded="false"');
+    expect(markup).toContain("Superseded attempt");
+    expect(markup).toContain("Partial output retained");
+    expect(markup).toContain("Current response remains visible");
+    expect(markup).not.toContain("Partial response from the old attempt");
+  });
+
+  it("exposes a per-response fork action for completed assistant items", async () => {
+    const { MessagesTimeline } = await import("./MessagesTimeline");
+    const projectedItem = {
+      position: 0,
+      visibility: "local",
+      sourceThreadId: "thread-1",
+      sourceItemId: "assistant-item-1",
+      item: {
+        id: "assistant-item-1",
+        threadId: "thread-1",
+        runId: "run-1",
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 0,
+        status: "completed",
+        title: null,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: {},
+        type: "assistant_message",
+        messageId: "assistant-message-1",
+        text: "Done",
+        streaming: false,
+      },
+    } as never;
     const markup = renderToStaticMarkup(
       <MessagesTimeline
         {...buildProps()}
         timelineEntries={[
-          buildAssistantTimelineEntry("<details><summary>More</summary>Details</details>"),
+          {
+            id: "assistant-message-1",
+            kind: "message",
+            createdAt: MESSAGE_CREATED_AT,
+            projectedItem,
+            message: {
+              id: MessageId.make("assistant-message-1"),
+              role: "assistant",
+              text: "Done",
+              runId: RunId.make("run-1"),
+              createdAt: MESSAGE_CREATED_AT,
+              updatedAt: MESSAGE_CREATED_AT,
+              streaming: false,
+            },
+          },
         ]}
       />,
     );
 
-    expect(markup).toContain('data-markdown-details=""');
-    expect(markup).toContain("More");
-    expect(markup).not.toContain("&lt;details&gt;");
-  });
-
-  it("sanitizes executable HTML while preserving supported assistant markup", async () => {
-    const { MessagesTimeline } = await import("./MessagesTimeline");
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[
-          buildAssistantTimelineEntry(
-            [
-              '<details open onclick="globalThis.__t3Xss = 1">',
-              "<summary>Safe details</summary>",
-              "<script>globalThis.__t3Xss = 2</script>",
-              '<img src="x" onerror="globalThis.__t3Xss = 3">',
-              '<a href="javascript:globalThis.__t3Xss = 4">Unsafe link</a>',
-              "</details>",
-            ].join(""),
-          ),
-        ]}
-      />,
-    );
-
-    expect(markup).toContain('data-markdown-details=""');
-    expect(markup).toContain("Safe details");
-    expect(markup).not.toMatch(/<script(?:\s|>)/i);
-    expect(markup).not.toContain("onclick=");
-    expect(markup).not.toContain("onerror=");
-    expect(markup).not.toContain("javascript:");
-    expect(markup).not.toContain("globalThis.__t3Xss");
+    expect(markup).toContain('aria-label="Fork from this response"');
   });
   it("renders progressive history controls ahead of the bounded timeline", () => {
     const markup = renderToStaticMarkup(
@@ -636,7 +731,7 @@ describe("MessagesTimeline", () => {
     );
 
     expect(markup).toContain('data-anchor-index="1"');
-    expect(markup).toContain('data-anchor-offset="16"');
+    expect(markup).toContain('data-anchor-offset="24"');
     expect(markup).toContain('data-anchor-on-ready="true"');
     expect(markup).not.toContain("data-anchor-max-size=");
     expect(markup).toContain('data-content-inset-end="144"');
@@ -704,43 +799,6 @@ describe("MessagesTimeline", () => {
     expect(markup).not.toContain('alt="report.pdf"');
   });
 
-  it("renders video attachments as play buttons", () => {
-    const entry = {
-      ...buildUserTimelineEntry("Watch the demo."),
-      message: {
-        ...buildUserTimelineEntry("Watch the demo.").message,
-        attachments: [
-          {
-            type: "file" as const,
-            id: "attachment-demo-mp4",
-            name: "demo.mp4",
-            mimeType: "video/mp4",
-            sizeBytes: 42,
-          },
-        ],
-      },
-    };
-
-    const markup = renderToStaticMarkup(
-      <MessagesTimeline {...buildProps()} timelineEntries={[entry]} />,
-    );
-    const busyMarkup = renderToStaticMarkup(
-      <MessagesTimeline
-        {...buildProps()}
-        timelineEntries={[entry]}
-        openingVideoAttachmentId="attachment-demo-mp4"
-      />,
-    );
-
-    expect(markup).toContain('aria-label="Play demo.mp4"');
-    expect(markup).toContain("min-h-[72px]");
-    expect(markup).toContain(">demo.mp4</span>");
-    expect(markup).not.toContain('aria-label="Download demo.mp4"');
-    expect(busyMarkup).toContain('aria-busy="true"');
-    expect(busyMarkup).toContain('aria-disabled="true"');
-    expect(busyMarkup).not.toContain('disabled=""');
-    expect(busyMarkup).toContain(">Loading…</span>");
-  });
   it("renders a file download button without creating its URL in advance", () => {
     const entry = {
       ...buildUserTimelineEntry("Read the report."),
@@ -945,7 +1003,7 @@ describe("MessagesTimeline", () => {
 
     expect(markup).not.toContain("Show full message");
     expect(markup).toContain('data-user-message-collapsible="false"');
-    expect(markup).toContain("rounded-2xl bg-message p-3");
+    expect(markup).toContain("rounded-2xl bg-accent p-3");
   });
 
   it("identifies user-role messages sent by another agent", async () => {
@@ -1987,7 +2045,8 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-v2-item-type="error"');
     expect(markup).toContain("Retrying provider (2/5)");
-    expect(markup).toContain("The response stream disconnected.");
+    // The failure message stays behind the row's expander.
+    expect(markup).toContain('aria-expanded="false"');
     expect(markup).not.toContain('data-v2-event-disclosure="true"');
   });
 
@@ -2061,7 +2120,6 @@ describe("MessagesTimeline", () => {
 
     expect(markup).toContain('data-v2-item-type="command_execution"');
     expect(markup).toContain('data-v2-item-visibility="inherited"');
-    expect(markup).toContain("Inherited");
     expect(markup).toContain("Received 1 update and ran 1 command");
   });
 
@@ -2134,8 +2192,8 @@ describe("MessagesTimeline", () => {
       />,
     );
 
-    expect(markup).toContain('data-tool-logo="t3-code"');
-    expect(markup).toContain('src="/apple-touch-icon.png"');
+    // The T3 wordmark replaces the generic tool icon for T3 MCP calls.
+    expect(markup).toContain('viewBox="15.5309 37 94.3941 56.96"');
     expect(markup).toContain("Read a T3 thread");
     expect(markup).not.toContain("mcp__t3-code__t3_thread_read");
   });

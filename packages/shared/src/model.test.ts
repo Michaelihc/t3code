@@ -3,6 +3,7 @@ import { ProviderDriverKind, ProviderInstanceId, type ModelCapabilities } from "
 
 import {
   applyClaudePromptEffortPrefix,
+  buildExplicitProviderOptionSelectionsFromDescriptors,
   buildProviderOptionSelectionsFromDescriptors,
   createModelCapabilities,
   createModelSelection,
@@ -38,10 +39,11 @@ const codexCaps: ModelCapabilities = createModelCapabilities({
 
 describe("model slug normalization", () => {
   it("preserves exact custom slugs instead of expanding provider aliases", () => {
+    // Claude aliases now resolve through the model catalog (#9084), so the
+    // provider alias table passes unknown slugs through unchanged.
     const claude = ProviderDriverKind.make("claudeAgent");
 
-    expect(normalizeModelSlug("fable", claude)).toBe("claude-fable-5-1");
-    expect(normalizeModelSlug("opus", claude)).toBe("claude-opus-5");
+    expect(normalizeModelSlug("opus", claude)).toBe("opus");
     expect(normalizeCustomModelSlug(" opus ")).toBe("opus");
   });
 });
@@ -122,6 +124,22 @@ describe("descriptor helpers", () => {
       { id: "reasoningEffort", value: "high" },
       { id: "fastMode", value: true },
     ]);
+  });
+
+  it("builds dispatch options only from explicit selections", () => {
+    const descriptors = getProviderOptionDescriptors({
+      caps: codexCaps,
+      selections: [{ id: "fastMode", value: true }],
+    });
+
+    expect(buildExplicitProviderOptionSelectionsFromDescriptors(descriptors, undefined)).toBe(
+      undefined,
+    );
+    expect(
+      buildExplicitProviderOptionSelectionsFromDescriptors(descriptors, [
+        { id: "fastMode", value: true },
+      ]),
+    ).toEqual([{ id: "fastMode", value: true }]);
   });
 
   it("stores option selection arrays in model selections", () => {

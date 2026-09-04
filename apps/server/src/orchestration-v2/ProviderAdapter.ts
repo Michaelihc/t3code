@@ -208,14 +208,10 @@ export class ProviderAdapterEnsureThreadError extends Schema.TaggedErrorClass<Pr
   {
     driver: ProviderDriverKind,
     threadId: ThreadId,
-    timedOut: Schema.optional(Schema.Boolean),
     cause: Schema.optional(Schema.Defect()),
   },
 ) {
   override get message(): string {
-    if (this.timedOut === true) {
-      return `Timed out while ensuring ${this.driver} provider thread for app thread ${this.threadId}.`;
-    }
     return `Failed to ensure ${this.driver} provider thread for app thread ${this.threadId}.`;
   }
 }

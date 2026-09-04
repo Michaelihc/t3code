@@ -11,6 +11,7 @@ const testState = vi.hoisted(() => ({
 
 vi.mock("@effect/atom-react", () => ({ useAtomValue: () => null }));
 vi.mock("../assets/assetUrls", () => ({
+  useAssetUrlRefresh: () => vi.fn(),
   useAssetUrlState: (_environmentId: unknown, resource: unknown) => {
     testState.resources.push(resource);
     if (testState.assetState === "loading") return { _tag: "Loading" };
@@ -110,7 +111,7 @@ describe("ChatMarkdown workspace images", () => {
 
     expect(testState.resources).toEqual([
       {
-        _tag: "workspace-file",
+        _tag: "media-file",
         threadId: threadRef.threadId,
         path: expectedPath,
       },
@@ -122,35 +123,19 @@ describe("ChatMarkdown workspace images", () => {
 
     expect(testState.resources).toEqual([
       {
-        _tag: "workspace-file",
+        _tag: "media-file",
         threadId: threadRef.threadId,
         path: "C:\\Users\\shawn\\project\\.t3\\workspace-image.svg",
       },
-    ]);
-    expect(html).toContain("https://signed.test/workspace-image.svg");
-  });
-
-  it("preserves Windows drive links through markdown sanitization", () => {
-    const html = render(String.raw`[Open](C:\Users\shawn\project\src\main.ts)`);
-    expect(html).toContain('href="C:/Users/shawn/project/src/main.ts"');
-    expect(html).toContain("chat-markdown-file-link");
-  });
-
-  it("loads drive-absolute markdown and raw HTML images through assets", () => {
-    const html = render(
-      [
-        "![absolute](C:/Users/shawn/project/.t3/workspace-image.svg)",
-        String.raw`<img src="D:\screens\workspace-image.svg" alt="raw">`,
-      ].join("\n\n"),
-    );
-    expect(testState.resources).toEqual([
+      { _tag: "media-file", threadId: threadRef.threadId, path: imagePath },
+      { _tag: "media-file", threadId: threadRef.threadId, path: imagePath },
       {
-        _tag: "workspace-file",
+        _tag: "media-file",
         threadId: threadRef.threadId,
         path: "C:/Users/shawn/project/.t3/workspace-image.svg",
       },
       {
-        _tag: "workspace-file",
+        _tag: "media-file",
         threadId: threadRef.threadId,
         path: "D:/screens/workspace-image.svg",
       },

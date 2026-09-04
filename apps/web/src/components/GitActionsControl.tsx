@@ -16,7 +16,15 @@ import type {
 } from "@t3tools/contracts";
 import { useNavigate } from "@tanstack/react-router";
 import * as Option from "effect/Option";
-import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
+import {
+  type MouseEvent,
+  useCallback,
+  useEffect,
+  useEffectEvent,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { flushSync } from "react-dom";
 import {
   CheckIcon,
@@ -36,7 +44,7 @@ import { AzureDevOpsIcon, BitbucketIcon, GitHubIcon, GitLabIcon } from "~/compon
 import { RadioGroup } from "~/components/ui/radio-group";
 import { Spinner } from "~/components/ui/spinner";
 import { cn } from "~/lib/utils";
-import { openPullRequestLink } from "~/lib/openPullRequestLink";
+import { openPullRequestLink, useOpenPrLink } from "~/lib/openPullRequestLink";
 import {
   buildMenuItems,
   formatGitActionElapsed,
@@ -1119,6 +1127,7 @@ export default function GitActionsControl({
     [activeThreadRef],
   );
   const activeServerThread = useThreadShell(activeThreadRef);
+  const openPrLink = useOpenPrLink(activeThreadRef ?? undefined);
   const activeDraftThread = useComposerDraftStore((store) =>
     draftId
       ? store.getDraftSession(draftId)
@@ -1459,7 +1468,7 @@ export default function GitActionsControl({
       const toastCta = actionResult.toast.cta;
       let toastActionProps: {
         children: string;
-        onClick: () => void;
+        onClick: (event: MouseEvent<HTMLButtonElement>) => void;
       } | null = null;
       if (toastCta.kind === "run_action") {
         toastActionProps = {
@@ -1474,11 +1483,9 @@ export default function GitActionsControl({
       } else if (toastCta.kind === "open_pr") {
         toastActionProps = {
           children: toastCta.label,
-          onClick: () => {
-            const api = readLocalApi();
-            if (!api) return;
+          onClick: (event) => {
             closeResultToast();
-            void api.shell.openExternal(toastCta.url);
+            openPrLink(event, toastCta.url);
           },
         };
       }

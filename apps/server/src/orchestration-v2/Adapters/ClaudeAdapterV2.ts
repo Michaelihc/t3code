@@ -74,11 +74,20 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
+import { planClaudeSkillDispatch } from "../../provider/Drivers/ClaudeSkillDispatch.ts";
+import { discoverClaudeSkills } from "../../provider/Drivers/ClaudeSkills.ts";
 import { compileClaudeModelSelection } from "../../claudeModelOptions.ts";
 import { ServerConfig } from "../../config.ts";
 import { makeClaudeEnvironment } from "../../provider/Drivers/ClaudeHome.ts";
-import { resolveClaudeContextWindow } from "../../provider/Layers/ClaudeProvider.ts";
-import type { EventNdjsonLogger } from "../../provider/Layers/EventNdjsonLogger.ts";
+import {
+  BUNDLED_CLAUDE_MODEL_CATALOG,
+  resolveClaudeCatalogContextWindow,
+} from "../../provider/ClaudeModelCatalog.ts";
+import {
+  boundProviderEventForLogging,
+  type EventNdjsonLogger,
+  shouldPersistProviderEvent,
+} from "../../provider/Layers/EventNdjsonLogger.ts";
 import { ProviderEventLoggers } from "../../provider/Layers/ProviderEventLoggers.ts";
 import { mergeProviderInstanceEnvironment } from "../../provider/ProviderInstanceEnvironment.ts";
 import { T3_CODE_ORCHESTRATION_INSTRUCTIONS } from "../../provider/T3OrchestrationInstructions.ts";
@@ -134,7 +143,9 @@ function claudeContextWindow(modelSelection: ModelSelection): number | null {
   if (modelSelection.model === "claude-opus-4-6" || modelSelection.model === "claude-opus-4-7") {
     return 1_000_000;
   }
-  return resolveClaudeContextWindow(modelSelection) === "1m" ? 1_000_000 : 200_000;
+  return resolveClaudeCatalogContextWindow(BUNDLED_CLAUDE_MODEL_CATALOG, modelSelection) === "1m"
+    ? 1_000_000
+    : 200_000;
 }
 
 export function claudeProviderTurnTokenUsage(
@@ -511,19 +522,21 @@ export function makeClaudeAgentSdkProtocolLogger(input: {
     return undefined;
   }
 
-  return (event) =>
-    nativeEventLogger
+  return (event) => {
+    if (!shouldPersistProviderEvent("native", event)) return Effect.void;
+    return nativeEventLogger
       .write(
         {
           provider: CLAUDE_PROVIDER,
           protocol: CLAUDE_AGENT_SDK_QUERY_PROTOCOL,
           kind: "protocol",
           providerSessionId: input.providerSessionId,
-          event,
+          event: boundProviderEventForLogging(event),
         },
         input.threadId,
       )
       .pipe(Effect.ignore);
+  };
 }
 
 export const claudeAgentSdkQueryRunnerLiveLayer: Layer.Layer<
@@ -1059,12 +1072,28 @@ function isSupportedClaudeImageMimeType(
 export function makeClaudeUserMessage(input: {
   readonly text: string;
   readonly priority?: SDKUserMessage["priority"];
+  readonly skillNames?: ReadonlySet<string>;
 }): SDKUserMessage {
+  // Claude Code expands a skill only from the LAST text block, and only when
+  // `/name` is its first character. A `$skill` chip anywhere in the prompt is
+  // therefore split into [leading text, "/name trailing text"] so the CLI
+  // runs it natively and the prose around it survives. See ClaudeSkillDispatch.
+  const dispatch =
+    input.skillNames === undefined
+      ? undefined
+      : planClaudeSkillDispatch(input.text, input.skillNames);
   return {
     type: "user",
     message: {
       role: "user",
-      content: input.text,
+      content: dispatch
+        ? [
+            ...(dispatch.leadingText === undefined
+              ? []
+              : [{ type: "text" as const, text: dispatch.leadingText }]),
+            { type: "text" as const, text: dispatch.commandText },
+          ]
+        : input.text,
     },
     parent_tool_use_id: null,
     ...(input.priority === undefined ? {} : { priority: input.priority }),
@@ -1077,10 +1106,12 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
   readonly priority?: SDKUserMessage["priority"];
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
+  readonly skillNames?: ReadonlySet<string>;
 }) {
   if (input.attachments.length === 0) {
     return makeClaudeUserMessage({
       text: input.text,
+      ...(input.skillNames === undefined ? {} : { skillNames: input.skillNames }),
       ...(input.priority === undefined ? {} : { priority: input.priority }),
     });
   }
@@ -1094,8 +1125,16 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
     attachmentsDir: input.attachmentsDir,
   });
 
+  const dispatch =
+    input.skillNames === undefined
+      ? undefined
+      : planClaudeSkillDispatch(textWithAttachmentPaths, input.skillNames);
   const content: Array<ClaudeUserContentBlock> = [];
-  if (textWithAttachmentPaths.length > 0) {
+  if (dispatch) {
+    if (dispatch.leadingText !== undefined) {
+      content.push({ type: "text", text: dispatch.leadingText });
+    }
+  } else if (textWithAttachmentPaths.length > 0) {
     content.push({ type: "text", text: textWithAttachmentPaths });
   }
 
@@ -1139,6 +1178,12 @@ const makeClaudeUserMessageWithAttachments = Effect.fnUntraced(function* (input:
         data: Buffer.from(bytes).toString("base64"),
       },
     });
+  }
+
+  // Images go before the command block: a text block after them still
+  // expands, a command block followed by an image does not.
+  if (dispatch) {
+    content.push({ type: "text", text: dispatch.commandText });
   }
 
   return {
@@ -2312,6 +2357,7 @@ export interface ClaudeAdapterV2Options {
   readonly environment: NodeJS.ProcessEnv;
   readonly attachmentsDir: string;
   readonly fileSystem: FileSystem.FileSystem;
+  readonly path: Path.Path;
   readonly idAllocator: IdAllocatorV2Shape;
   readonly queryRunner: ClaudeAgentSdkQueryRunnerShape;
   /** Sink for wake-turn continuation requests; defaults to dropping them. */
@@ -2323,10 +2369,32 @@ export interface ClaudeAdapterV2Options {
 export function makeClaudeAdapterV2(
   adapterOptions: ClaudeAdapterV2Options,
 ): ProviderAdapterV2Shape {
-  const { attachmentsDir, fileSystem, idAllocator, queryRunner } = adapterOptions;
+  const { attachmentsDir, fileSystem, path, idAllocator, queryRunner } = adapterOptions;
   const continuationRequests = adapterOptions.continuationRequests ?? {
     offer: () => Effect.void,
   };
+
+  // Re-scan on every send: skills are added and switched off mid-session, and
+  // the scan is a few directory reads. A skill switched off via skillOverrides,
+  // or reserved for the agent with `user-invocable: false`, is left as prose:
+  // the CLI would answer `/name` with a notice instead of running it.
+  const userInvocableSkillNames = (cwd: string | null) =>
+    discoverClaudeSkills(
+      adapterOptions.settings,
+      cwd ?? undefined,
+      adapterOptions.environment,
+    ).pipe(
+      Effect.map(
+        (skills) =>
+          new Set(
+            skills
+              .filter((skill) => skill.enabled && skill.userInvocable !== false)
+              .map((skill) => skill.name),
+          ),
+      ),
+      Effect.provideService(FileSystem.FileSystem, fileSystem),
+      Effect.provideService(Path.Path, path),
+    );
 
   return ProviderAdapterV2.of({
     instanceId: adapterOptions.instanceId,
@@ -5096,6 +5164,7 @@ export function makeClaudeAdapterV2(
                   attachments: turnInput.message.attachments,
                   attachmentsDir,
                   fileSystem,
+                  skillNames: yield* userInvocableSkillNames(turnInput.runtimePolicy.cwd),
                 });
             const querySession = yield* openQuery(turnInput, nativeThreadId);
             yield* Ref.set(activeTurn, context);
@@ -5269,6 +5338,7 @@ export function makeClaudeAdapterV2(
               priority: "now",
               attachmentsDir,
               fileSystem,
+              skillNames: yield* userInvocableSkillNames(currentTurn.input.runtimePolicy.cwd),
             });
             yield* Ref.update(steeredTurns, (current) => {
               const next = new Set(current);
@@ -5659,12 +5729,14 @@ export const ClaudeAdapterV2Driver: ProviderAdapterDriver<
       const continuationRequests = yield* ProviderContinuationRequests;
       const baseEnvironment = mergeProviderInstanceEnvironment(environment, hostEnvironment);
       const claudeEnvironment = yield* makeClaudeEnvironment(config, baseEnvironment);
+      const path = yield* Path.Path;
       return makeClaudeAdapterV2({
         instanceId,
         settings: { ...config, enabled },
         environment: claudeEnvironment,
         attachmentsDir: serverConfig.attachmentsDir,
         fileSystem,
+        path,
         idAllocator,
         queryRunner,
         continuationRequests,
@@ -5687,6 +5759,7 @@ export const ClaudeAdapterV2Driver: ProviderAdapterDriver<
 
 const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   const hostEnvironment = yield* HostProcessEnvironment;
   const idAllocator = yield* IdAllocatorV2;
   const queryRunner = yield* ClaudeAgentSdkQueryRunner;
@@ -5699,6 +5772,7 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
     environment: hostEnvironment,
     attachmentsDir: serverConfig.attachmentsDir,
     fileSystem,
+    path,
     idAllocator,
     queryRunner,
     continuationRequests,
@@ -5708,5 +5782,5 @@ const makeDefaultClaudeAdapterV2 = Effect.fn("ClaudeAdapterV2.layer")(function* 
 export const layer: Layer.Layer<
   ProviderAdapterV2,
   never,
-  ClaudeAgentSdkQueryRunner | FileSystem.FileSystem | IdAllocatorV2 | ServerConfig
+  ClaudeAgentSdkQueryRunner | FileSystem.FileSystem | IdAllocatorV2 | Path.Path | ServerConfig
 > = Layer.effect(ProviderAdapterV2, makeDefaultClaudeAdapterV2());

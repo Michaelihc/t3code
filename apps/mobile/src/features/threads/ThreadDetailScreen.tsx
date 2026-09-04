@@ -1,9 +1,5 @@
 import { type EnvironmentConnectionPhase } from "@t3tools/client-runtime/connection";
 import type { EnvironmentThreadShell } from "@t3tools/client-runtime/state/shell";
-import {
-  appendCodexArtifactTemplateUsePrompt,
-  type CodexArtifactTemplate,
-} from "@t3tools/client-runtime/codex-artifact-templates";
 import type { EnvironmentThreadStatus } from "@t3tools/client-runtime/state/threads";
 import { useKeyboardChatComposerInset, useKeyboardScrollToEnd } from "@legendapp/list/keyboard";
 import type { LegendListRef } from "@legendapp/list/react-native";
@@ -295,10 +291,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   // animation, so the composer would ride down flush to the screen edge and
   // then snap up into the inset. On iOS blur precedes the hide, so the
   // focus-keyed inset is already in place while the composer rides down.
-  // Dictation keeps that focus while the composer switches to its compact pill.
-  const composerBottomInset = (
-    Platform.OS === "android" ? isKeyboardVisible : composerExpanded || composerFocused
-  )
+  const composerBottomInset = (Platform.OS === "android" ? isKeyboardVisible : composerExpanded)
     ? 0
     : Math.max(insets.bottom, 12);
   const contentPresentationKind = props.contentPresentation.kind;
@@ -636,22 +629,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     composerEditorRef.current?.blur();
   }, []);
 
-  const handleUseArtifactTemplate = useCallback(
-    (template: CodexArtifactTemplate) => {
-      const currentDraft = draftMessageRef.current;
-      const nextDraft = appendCodexArtifactTemplateUsePrompt(currentDraft, template);
-      if (nextDraft !== currentDraft) {
-        draftMessageRef.current = nextDraft;
-        props.onChangeDraftMessage(nextDraft);
-      }
-      requestAnimationFrame(() => {
-        composerEditorRef.current?.focus();
-        composerEditorRef.current?.setSelection({ start: nextDraft.length, end: nextDraft.length });
-      });
-    },
-    [props.onChangeDraftMessage],
-  );
-
   const handleScrollToEnd = useCallback(() => {
     void Haptics.selectionAsync();
     void scrollMessageToEnd({ animated: true, closeKeyboard: false }).catch(() => {
@@ -704,7 +681,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
           onTouchCancel={handleFeedTouchCancel}
         >
           <ThreadFeed
-            key={props.selectedThread.id}
+            key={selectedThreadKey}
             environmentId={props.environmentId}
             threadId={props.selectedThread.id}
             workspaceRoot={props.threadCwd}
@@ -735,7 +712,6 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             onHeaderMaterialVisibilityChange={props.onHeaderMaterialVisibilityChange}
             onEndFollowEnabledChange={setEndFollowEnabled}
             skills={selectedProviderSkills}
-            onUseArtifactTemplate={handleUseArtifactTemplate}
           />
         </View>
       ) : (
@@ -852,7 +828,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
                   onUpdateRuntimeMode={props.onUpdateThreadRuntimeMode}
                   onUpdateInteractionMode={props.onUpdateThreadInteractionMode}
                   onExpandedChange={setComposerExpanded}
-                  onEditorFocusChange={handleComposerFocusChange}
+                  onEditorFocusChange={handleOwnedInputFocusChange}
                 />
               </View>
             </View>

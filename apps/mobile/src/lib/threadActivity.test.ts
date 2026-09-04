@@ -614,7 +614,7 @@ describe("buildThreadFeed", () => {
     expect(presented).toEqual([]);
   });
 
-  it("models work-log overflow as list rows", () => {
+  it("keeps expanded work in one group with stable row identities", () => {
     const activity = (
       id: string,
       createdAt: string,
@@ -679,13 +679,19 @@ describe("buildThreadFeed", () => {
     );
     expect(expanded.map((entry) => entry.id)).toEqual([
       "work-toggle:work-group:activity-neutral",
-      "activity-1",
-      "activity-2",
-      "activity-3",
+      "work-details:work-group:activity-neutral",
     ]);
     expect(expanded[0]).toMatchObject({
       type: "work-toggle",
       expanded: true,
+    });
+    expect(expanded[1]).toMatchObject({
+      type: "activity-group",
+      activities: [
+        { id: "activity-1", groupedToolDetail: true, live: false },
+        { id: "activity-2", groupedToolDetail: true, live: false },
+        { id: "activity-3", groupedToolDetail: true, live: false },
+      ],
     });
   });
 

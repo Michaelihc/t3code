@@ -23,6 +23,21 @@ adapter in a child scope. Adapter implementations live beside them in
 [`ProviderAdapter.ts`][adapter]. Read the driver plus its adapter to see how a specific agent's
 transport, config, and event shapes are mapped.
 
+## Provider diagnostics
+
+Native event logs retain protocol lifecycle events, responses, and failures. Token deltas and
+duplicate raw frames are filtered before adapters copy or redact their payloads. The filter accepts
+both legacy native events and the decoded protocol envelopes used by v2. Decode failures remain
+visible through their diagnostic frames.
+
+Log payloads have a 64 KiB encoded budget. Large or deeply nested payloads become structural
+summaries that retain routing identifiers, methods, status, and error fields. Traversal is bounded
+before redaction and serialization, so a large response cannot create several full copies just to
+write a diagnostic record. These limits apply to logging; provider event handling is unchanged.
+
+Codex thread resume requests exclude historical turns when only the thread identity and update time
+are needed. The adapter decodes those metadata fields without loading a duplicate transcript.
+
 ## Registry and routing
 
 Two registries separate configuration from live processes:
@@ -36,8 +51,23 @@ Two registries separate configuration from live processes:
 [`ProviderService`][service] sits on top. It combines the adapter registry with the provider session
 directory to route session and turn operations for a thread, so callers name a thread, not an agent.
 
+`ProviderService.sendTurn` expands [assistant citations](./assistant-citations.md) into quoted
+reference data before dispatching to any adapter. Bound user comments remain distinct from the quoted
+assistant text. Persisted messages keep their serialized links.
+
 Adding a driver means writing the driver plus adapter and adding it to `BUILT_IN_DRIVERS`. No
 orchestration, contract, or client change is required for the common case.
+
+### Grok health check
+
+`checkGrokProviderStatus` never opens an ACP session. It runs `grok --version`, then `grok models`
+for login state and model slugs, then a single ACP `initialize` and reads models from
+`_meta.modelState`. `authenticate` and `session/new` are skipped on purpose: `authenticate` can open
+a browser login and `session/new` boots every configured MCP server, both of which made background
+probes hang or surprise the user. A failed `initialize` degrades to `warning` with the CLI's model
+list instead of persisting `error` over a working install. The built-in `grok-build` slug is the
+CLI's product name, not an ACP model id. `applyGrokAcpModelSelection` treats it as "keep the
+session's current model" and never sends it in `session/set_model`.
 
 ## OpenCode server ownership and catalog
 

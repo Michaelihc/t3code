@@ -105,6 +105,20 @@ const decodeElicitationComplete = Schema.decodeUnknownEffect(
   AcpSchema.ElicitationCompleteNotification,
 );
 const parserFactory = RpcSerialization.ndJsonRpc();
+const MAX_BUFFERED_RAW_NOTIFICATIONS = 32;
+// Outbound JSON-RPC notification: no `id`, so peers never treat it as a request.
+const encodeJsonRpcNotification = Schema.encodeUnknownExit(
+  Schema.fromJsonString(
+    Schema.Struct({
+      jsonrpc: Schema.Literal("2.0"),
+      method: Schema.String,
+      params: Schema.Unknown,
+    }),
+  ),
+);
+
+const isEffectRpcRequestId = (requestId: AcpError.AcpRequestId): boolean =>
+  typeof requestId === "number" && Number.isSafeInteger(requestId);
 
 const isEffectRpcRequestId = (requestId: AcpError.AcpRequestId): boolean =>
   typeof requestId === "number" && Number.isSafeInteger(requestId);
@@ -115,7 +129,9 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const parser = parserFactory.makeUnsafe();
   const serverQueue = yield* Queue.unbounded<RpcMessage.FromClientEncoded>();
   const clientQueue = yield* Queue.unbounded<RpcMessage.FromServerEncoded>();
-  const notificationQueue = yield* Queue.unbounded<AcpIncomingNotification>();
+  const notificationQueue = yield* Queue.sliding<AcpIncomingNotification>(
+    MAX_BUFFERED_RAW_NOTIFICATIONS,
+  );
   const disconnects = yield* Queue.unbounded<number>();
   const outgoing = yield* Queue.unbounded<AcpOutgoingWrite, AcpError.AcpError | Cause.Done<void>>();
   const outgoingWriterState = yield* Ref.make<AcpOutgoingWriterState>({
@@ -142,6 +158,11 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
   const offerOutgoing = Effect.fn("offerOutgoing")(function* (
     message: RpcMessage.FromClientEncoded | RpcMessage.FromServerEncoded,
   ) {
+    // RpcClient emits `@effect/rpc/Interrupt` when a pending request's fiber is interrupted.
+    // ACP has no such method; agents log it as an error and cannot act on it, so drop it.
+    if (message._tag === "Interrupt") {
+      return;
+    }
     yield* logProtocol({
       direction: "outgoing",
       stage: "decoded",
@@ -513,11 +534,14 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
 
   yield* options.stdio.stdin.pipe(
     Stream.runForEach((data) =>
-      logProtocol({
-        direction: "incoming",
-        stage: "raw",
-        payload: typeof data === "string" ? data : new TextDecoder().decode(data),
-      }).pipe(
+      (options.logIncoming
+        ? logProtocol({
+            direction: "incoming",
+            stage: "raw",
+            payload: typeof data === "string" ? data : new TextDecoder().decode(data),
+          })
+        : Effect.void
+      ).pipe(
         Effect.flatMap(() =>
           Effect.try({
             try: () =>
@@ -736,17 +760,47 @@ export const makeAcpPatchedProtocol = Effect.fn("makeAcpPatchedProtocol")(functi
     supportsSpanPropagation: true,
   });
 
+  // JSON-RPC notifications carry no `id`. The generic Request encoder emits `id: ""` plus
+  // `headers`, which real agents (Grok CLI) parse as a malformed request and silently drop.
+  // That made `session/cancel` a no-op against Grok while the lenient mock agent accepted it.
   const sendNotification = Effect.fn("sendNotification")(function* (
     method: string,
     payload: unknown,
   ) {
-    yield* offerOutgoing({
-      _tag: "Request",
-      id: "",
-      tag: method,
-      payload,
-      headers: [],
+    yield* logProtocol({
+      direction: "outgoing",
+      stage: "decoded",
+      payload: { _tag: "Notification", tag: method, payload },
     });
+    const exit = encodeJsonRpcNotification({ jsonrpc: "2.0", method, params: payload });
+    if (Exit.isFailure(exit)) {
+      return yield* AcpError.AcpProtocolParseError.fromEncodingError(
+        method,
+        undefined,
+        Cause.squash(exit.cause),
+      );
+    }
+    const encoded = `${exit.value}\n`;
+    yield* logProtocol({ direction: "outgoing", stage: "raw", payload: encoded });
+    // FIFO queue admission preserves wire ordering against later requests
+    // (a session/prompt sent after session/cancel cannot overtake it).
+    yield* Queue.offer(outgoing, { payload: encoded }).pipe(
+      Effect.mapError(
+        (cause) =>
+          new AcpError.AcpTransportError({
+            detail: "Failed to queue an outgoing ACP notification",
+            cause,
+          }),
+      ),
+      Effect.filterOrFail(
+        (accepted) => accepted,
+        () =>
+          new AcpError.AcpTransportError({
+            detail: "The ACP output queue was closed before accepting a notification",
+            cause: "Output queue closed",
+          }),
+      ),
+    );
   });
 
   const sendRequest = Effect.fn("sendRequest")(function* (method: string, payload: unknown) {

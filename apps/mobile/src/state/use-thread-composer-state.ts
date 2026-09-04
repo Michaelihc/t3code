@@ -43,6 +43,10 @@ import { copyTextWithHaptic } from "../lib/copyTextWithHaptic";
 import { buildThreadFeed } from "../lib/threadActivity";
 import { appAtomRegistry } from "../state/atom-registry";
 import {
+  composerAttachmentUploadBlockReason,
+  composerAttachmentUploadsAtom,
+} from "../state/composer-attachment-uploads";
+import {
   appendComposerDraftAttachments,
   appendComposerDraftText,
   clearComposerDraftContent,
@@ -213,6 +217,16 @@ export function useThreadComposerState() {
     const thread = selectedThreadShell;
     const text = draft.text.trim();
     const attachments = draft.attachments;
+    if (
+      composerAttachmentUploadBlockReason({
+        environmentId: selectedThreadShell.environmentId,
+        attachments,
+        connected: selectedEnvironmentRuntime?.connectionState === "connected",
+        serverConfig: selectedEnvironmentRuntime?.serverConfig ?? null,
+        states: appAtomRegistry.get(composerAttachmentUploadsAtom),
+      }) !== null
+    )
+      return null;
     if (text.length === 0 && attachments.length === 0) {
       return null;
     }
@@ -311,26 +325,18 @@ export function useThreadComposerState() {
       interactionMode: draft.interactionMode ?? thread.interactionMode,
       createdAt: metadata.createdAt,
     });
-    clearComposerDraftContent(threadKey, { deferAttachmentCleanup: true });
-    enqueuePromise.then(
-      () => {
-        // The queued message owns the files now; the sweep sees that and
-        // spares them. Deferred to here so a failed write cannot roll the
-        // message out of the queue mid-sweep and lose the bytes.
-        scheduleUnusedComposerAttachmentCleanup(attachments);
-      },
-      (error: unknown) => {
-        // Restore text via merge (idempotent) but attachments via the uncapped
-        // append: the merge path slots existing attachments first and truncates
-        // at the send limit, which would silently drop this message's images if
-        // the user attached new ones while the write was in flight.
-        void mergeComposerDraftContent(threadKey, { text, attachments: [] });
-        appendComposerDraftAttachments(threadKey, attachments, { allowOverflow: true });
-        setPendingConnectionError(
-          error instanceof Error ? error.message : "Failed to save the queued message.",
-        );
-      },
-    );
+    clearComposerDraftContent(threadKey);
+    enqueuePromise.catch((error: unknown) => {
+      // Restore text via merge (idempotent) but attachments via the uncapped
+      // append: the merge path slots existing attachments first and truncates
+      // at the send limit, which would silently drop this message's images if
+      // the user attached new ones while the write was in flight.
+      void mergeComposerDraftContent(threadKey, { text, attachments: [] });
+      appendComposerDraftAttachments(threadKey, attachments);
+      setPendingConnectionError(
+        error instanceof Error ? error.message : "Failed to save the queued message.",
+      );
+    });
     return messageId;
   }, [
     selectedEnvironmentRuntime?.serverConfig?.providers,

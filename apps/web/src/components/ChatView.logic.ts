@@ -1,4 +1,7 @@
 import {
+  type AssetCreateUrlInput,
+  type AssetCreateUrlResult,
+  type ChatFileAttachment,
   type EnvironmentId,
   isProviderDriverKind,
   ProjectId,
@@ -14,12 +17,18 @@ import {
   type RunId,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
-import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
+import { resolveAssetUrl } from "@t3tools/client-runtime/state/assets";
+import {
+  squashAtomCommandFailure,
+  type AtomCommandResult,
+} from "@t3tools/client-runtime/state/runtime";
+import { videoMimeType } from "@t3tools/shared/video";
 import {
   appendCodexArtifactTemplateUsePrompt,
   codexArtifactTemplateUsePrompt,
   type CodexArtifactTemplate,
 } from "@t3tools/client-runtime/codex-artifact-templates";
+import { presentThreadShell } from "@t3tools/client-runtime/state/shell";
 import {
   type ChatMessage,
   isImageAttachment,
@@ -46,6 +55,15 @@ export const MAX_HIDDEN_MOUNTED_TERMINAL_THREADS = 10;
 export const MAX_HIDDEN_MOUNTED_PREVIEW_THREADS = 3;
 export const ENVIRONMENT_RECONNECT_WARNING_GRACE_MS = 2_000;
 
+export function codexArtifactTemplatePromptToAppend(
+  currentDraft: string,
+  template: CodexArtifactTemplate,
+): string | null {
+  return appendCodexArtifactTemplateUsePrompt(currentDraft, template) === currentDraft
+    ? null
+    : codexArtifactTemplateUsePrompt(template);
+}
+
 export const LastInvokedScriptByProjectSchema = Schema.Record(ProjectId, Schema.String);
 
 export function resolveEffectiveInteractionMode(input: {
@@ -55,15 +73,6 @@ export function resolveEffectiveInteractionMode(input: {
 }): ProviderInteractionMode {
   if (!input.planModeEnabled) return "default";
   return input.composerInteractionMode ?? input.threadInteractionMode ?? "default";
-}
-
-export function codexArtifactTemplatePromptToAppend(
-  currentDraft: string,
-  template: CodexArtifactTemplate,
-): string | null {
-  return appendCodexArtifactTemplateUsePrompt(currentDraft, template) === currentDraft
-    ? null
-    : codexArtifactTemplateUsePrompt(template);
 }
 
 export function shouldDockDraftHeroForSubmission(input: {
@@ -76,6 +85,22 @@ export function shouldDockDraftHeroForSubmission(input: {
     input.isDraftHeroState &&
     input.activeThreadKey !== null
   );
+}
+
+export function toolGroupConsumesUpwardNavigation(target: EventTarget | null): boolean {
+  const elementTarget = target instanceof Element ? target : null;
+  const group = elementTarget?.closest<HTMLElement>("[data-tool-group-scroll]");
+  if (!group) return false;
+
+  // A nested result or the group itself can consume an upward scroll.
+  for (let element = elementTarget; element; element = element.parentElement) {
+    if (element.scrollTop > 0) {
+      const overflowY = getComputedStyle(element).overflowY;
+      if (overflowY === "auto" || overflowY === "scroll") return true;
+    }
+    if (element === group) break;
+  }
+  return false;
 }
 
 export function resolveDraftHeroState(input: {
@@ -98,13 +123,21 @@ export function resolveDraftHeroState(input: {
 
 export function resolveDraftPromotionNavigationTarget(input: {
   serverThreadRef: ScopedThreadRef | null;
-  serverThreadStarted: boolean;
+  serverThread: Pick<Thread, "latestRun"> | null | undefined;
   backgroundSubmissionPending: boolean;
 }): ScopedThreadRef | null {
   if (input.backgroundSubmissionPending) {
     return null;
   }
-  return input.serverThreadStarted ? input.serverThreadRef : null;
+  const latestRun = input.serverThread?.latestRun ?? null;
+  const runStarted = latestRun?.startedAt != null;
+  const startupStopped =
+    latestRun?.status === "failed" ||
+    latestRun?.status === "interrupted" ||
+    latestRun?.status === "cancelled";
+  // Keep local preparation feedback mounted until the server can render the
+  // running turn or its startup error on the canonical thread route.
+  return runStarted || startupStopped ? input.serverThreadRef : null;
 }
 
 export function scheduleEnvironmentReconnectWarning(showWarning: () => void): () => void {
@@ -268,10 +301,32 @@ export function revokeBlobPreviewUrl(previewUrl: string | undefined): void {
   URL.revokeObjectURL(previewUrl);
 }
 
-export async function loadVideoPreviewUrl(url: string, signal?: AbortSignal): Promise<string> {
-  const response = await fetch(url, signal ? { signal } : {});
-  if (!response.ok) throw new Error(`Could not load video (${response.status}).`);
-  return URL.createObjectURL(await response.blob());
+/** Signs an attachment URL without reading its bytes, so video playback can request byte ranges. */
+export async function resolveFileAttachmentUrl(input: {
+  attachment: ChatFileAttachment;
+  environmentId: EnvironmentId;
+  httpBaseUrl: string;
+  createAssetUrl: (input: {
+    environmentId: EnvironmentId;
+    input: AssetCreateUrlInput;
+  }) => Promise<AtomCommandResult<AssetCreateUrlResult, unknown>>;
+}): Promise<string> {
+  const { attachment } = input;
+  const result = await input.createAssetUrl({
+    environmentId: input.environmentId,
+    input: {
+      resource: {
+        _tag: "attachment",
+        attachmentId: attachment.id,
+        fileName: attachment.name,
+        mimeType: videoMimeType(attachment) ?? attachment.mimeType,
+      },
+    },
+  });
+  if (result._tag === "Failure") throw squashAtomCommandFailure(result);
+  const url = resolveAssetUrl(input.httpBaseUrl, result.value.relativeUrl);
+  if (url === null) throw new Error("The environment returned an invalid attachment URL.");
+  return url;
 }
 
 export function isVideoPreviewRequestCurrent(

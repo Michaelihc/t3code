@@ -676,6 +676,26 @@ describe("ClaudeAdapterV2 native protocol logging", () => {
       }
 
       yield* protocolLogger({
+        direction: "incoming",
+        stage: "decoded",
+        payload: {
+          type: "stream_event",
+          uuid: "00000000-0000-0000-0000-000000000001",
+          session_id: "native-thread",
+          parent_tool_use_id: null,
+          event: {
+            type: "content_block_delta",
+            index: 0,
+            delta: {
+              type: "text_delta",
+              get text(): string {
+                throw new Error("streaming text must not be inspected");
+              },
+            },
+          },
+        },
+      });
+      yield* protocolLogger({
         direction: "outgoing",
         stage: "decoded",
         payload: {
@@ -884,6 +904,7 @@ describe("ClaudeAdapterV2 resume compaction", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed("native-thread-claude-resume"),
@@ -1100,6 +1121,7 @@ describe("ClaudeAdapterV2 attachments", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed("native-thread-claude-attachments"),
@@ -1237,6 +1259,7 @@ describe("ClaudeAdapterV2 attachments", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed("native-thread-claude-unsupported-attachment"),
@@ -1328,6 +1351,7 @@ describe("ClaudeAdapterV2 native fork", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed("source-native-session"),
@@ -1497,6 +1521,7 @@ describe("ClaudeAdapterV2 native session identity", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           queryRunner: {
             allocateSessionId: Effect.succeed("native-session-identity"),
@@ -1719,6 +1744,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         environment: {},
         attachmentsDir,
         fileSystem,
+        path: yield* Path.Path,
         idAllocator,
         continuationRequests: {
           offer: (request) =>
@@ -2301,6 +2327,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           continuationRequests: { offer: () => Effect.void },
           queryRunner: {
@@ -2412,6 +2439,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             environment: {},
             attachmentsDir,
             fileSystem,
+            path: yield* Path.Path,
             idAllocator,
             continuationRequests: {
               offer: () => Effect.void,
@@ -4481,6 +4509,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           continuationRequests: {
             offer: (request) =>
@@ -4747,6 +4776,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             environment: {},
             attachmentsDir,
             fileSystem,
+            path: yield* Path.Path,
             idAllocator,
             continuationRequests: {
               offer: (request) =>
@@ -4979,6 +5009,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             environment: {},
             attachmentsDir,
             fileSystem,
+            path: yield* Path.Path,
             idAllocator,
             continuationRequests: {
               offer: (request) =>
@@ -5169,6 +5200,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             environment: {},
             attachmentsDir,
             fileSystem,
+            path: yield* Path.Path,
             idAllocator,
             continuationRequests: {
               offer: () => Effect.void,
@@ -5302,6 +5334,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             environment: {},
             attachmentsDir,
             fileSystem,
+            path: yield* Path.Path,
             idAllocator,
             continuationRequests: {
               offer: (request) =>
@@ -5496,6 +5529,7 @@ describe("ClaudeAdapterV2 background wake turns", () => {
           environment: {},
           attachmentsDir,
           fileSystem,
+          path: yield* Path.Path,
           idAllocator,
           continuationRequests: {
             offer: () => Effect.void,
