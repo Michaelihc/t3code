@@ -3655,23 +3655,6 @@ export function makeClaudeAdapterV2(
               continue;
             }
             const resetTelemetry = attemptIncreased || terminalToActive;
-            if (
-              terminalToActive &&
-              entry.attempt === undefined &&
-              existing.attempt !== null &&
-              existing.attempt !== undefined
-            ) {
-              supersededAttemptFloors.set(
-                entry.index,
-                Math.max(supersededAttemptFloor ?? 0, existing.attempt),
-              );
-            } else if (
-              entry.attempt !== undefined &&
-              supersededAttemptFloor !== undefined &&
-              entry.attempt > supersededAttemptFloor
-            ) {
-              supersededAttemptFloors.delete(entry.index);
-            }
             const nativeItemId = `${input.taskId}:workflow-agent:${entry.index}`;
             const nodeId =
               existing?.id ??
@@ -3693,12 +3676,31 @@ export function makeClaudeAdapterV2(
             const reportedUpdatedAt = dateTimeFromClaudeEpoch(reportedProgressAt, now);
             const lastReportedProgressAt = lastReportedProgressAtByMember.get(entry.index);
             if (
-              !resetTelemetry &&
+              !attemptIncreased &&
               reportedProgressAt !== undefined &&
               lastReportedProgressAt !== undefined &&
               reportedProgressAt < lastReportedProgressAt
             ) {
               continue;
+            }
+            // Only accepted progress may supersede an attempt. An older
+            // attempt-less active frame is not evidence of a retry.
+            if (
+              terminalToActive &&
+              entry.attempt === undefined &&
+              existing.attempt !== null &&
+              existing.attempt !== undefined
+            ) {
+              supersededAttemptFloors.set(
+                entry.index,
+                Math.max(supersededAttemptFloor ?? 0, existing.attempt),
+              );
+            } else if (
+              entry.attempt !== undefined &&
+              supersededAttemptFloor !== undefined &&
+              entry.attempt > supersededAttemptFloor
+            ) {
+              supersededAttemptFloors.delete(entry.index);
             }
             const updatedAt =
               !resetTelemetry &&

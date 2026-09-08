@@ -4067,6 +4067,64 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         const beforeSameAttemptActiveCount = subagentEvents().filter(
           (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
         ).length;
+        for (const attempt of [5, undefined]) {
+          const marker = `Same-attempt marker processed: ${attempt ?? "omitted"}`;
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_progress",
+              task_id: taskId,
+              tool_use_id: toolUseId,
+              description: "A delayed active frame from the completed attempt arrived",
+              usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 78_000 },
+              workflow_progress: [
+                {
+                  type: "workflow_agent",
+                  index: 2,
+                  label: "web-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state: "progress",
+                  ...(attempt === undefined ? {} : { attempt }),
+                  startedAt: 1_788_400_075_000,
+                  lastProgressAt: 1_788_400_076_000,
+                  lastToolSummary: "Stale same-attempt progress",
+                },
+                {
+                  type: "workflow_agent",
+                  index: 1,
+                  label: "server-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state: "progress",
+                  lastToolSummary: marker,
+                },
+              ],
+              uuid: "00000000-0000-4000-8000-00000000016a",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* takeReceipt(
+            harness.subagentReceipts,
+            (event) => event.subagent.progress === marker,
+          );
+          assert.equal(
+            subagentEvents().filter(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+            ).length,
+            beforeSameAttemptActiveCount,
+          );
+          assert.equal(
+            subagentEvents()
+              .map((event) => event.subagent)
+              .findLast(
+                (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+              )?.status,
+            "failed",
+          );
+        }
         yield* Queue.offer(
           harness.sdkMessages,
           claudeSdkFrame({
@@ -4074,50 +4132,26 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             subtype: "task_progress",
             task_id: taskId,
             tool_use_id: toolUseId,
-            description: "A delayed active frame from the completed attempt arrived",
+            description: "The rejected frame did not supersede attempt five",
             usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 78_000 },
             workflow_progress: [
               {
                 type: "workflow_agent",
                 index: 2,
                 label: "web-surveyor",
-                phaseIndex: 1,
-                phaseTitle: "Survey",
-                state: "progress",
+                state: "error",
                 attempt: 5,
-                startedAt: 1_788_400_075_000,
-                lastToolSummary: "Stale same-attempt progress",
-              },
-              {
-                type: "workflow_agent",
-                index: 1,
-                label: "server-surveyor",
-                phaseIndex: 1,
-                phaseTitle: "Survey",
-                state: "progress",
-                lastToolSummary: "Same-attempt marker processed",
+                lastProgressAt: 1_788_400_078_000,
+                lastToolSummary: "Attempt five remains current",
               },
             ],
-            uuid: "00000000-0000-4000-8000-00000000016a",
+            uuid: "00000000-0000-4000-8000-000000000173",
             session_id: WAKE_NATIVE_SESSION,
           }),
         );
         yield* takeReceipt(
           harness.subagentReceipts,
-          (event) => event.subagent.progress === "Same-attempt marker processed",
-        );
-        assert.equal(
-          subagentEvents().filter(
-            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
-          ).length,
-          beforeSameAttemptActiveCount,
-        );
-        assert.equal(
-          subagentEvents()
-            .map((event) => event.subagent)
-            .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2)
-            ?.status,
-          "failed",
+          (event) => event.subagent.progress === "Attempt five remains current",
         );
         yield* Queue.offer(
           harness.sdkMessages,

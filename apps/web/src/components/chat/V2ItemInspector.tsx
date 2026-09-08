@@ -187,8 +187,8 @@ export const V2ItemInspector = memo(function V2ItemInspector(props: V2ItemInspec
         <DataField label="Item">{item.type}</DataField>
         <DataField label="Status">{props.workflow?.status ?? item.status}</DataField>
         <DurationField
-          startedAt={props.workflow?.startedAt ?? item.startedAt}
-          completedAt={props.workflow?.completedAt ?? item.completedAt}
+          startedAt={props.workflow ? props.workflow.startedAt : item.startedAt}
+          completedAt={props.workflow ? props.workflow.completedAt : item.completedAt}
           live={workflowLive}
         />
         {support.run ? <DataField label="Run">{support.run.status}</DataField> : null}
