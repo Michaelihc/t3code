@@ -1,4 +1,10 @@
 import {
+  TimelineWorkflowStore,
+  workflowRowSnapshotsEqual,
+  type TimelineWorkflow,
+  type TimelineWorkflowRowSnapshot,
+} from "./timelineWorkflowStore";
+import {
   type ChatFileAttachment,
   type EnvironmentId,
   type MessageId,
@@ -202,11 +208,6 @@ interface TimelineRowActivityState {
   latestRunId: RunId | null;
 }
 
-interface TimelineWorkflowState {
-  workflowByToolUseId: ReadonlyMap<string, RuntimeSubagent>;
-  workflowAgentCountByParentId: ReadonlyMap<string, number>;
-}
-
 const EMPTY_WORKFLOW_FOLD_SUMMARIES: ReadonlyArray<ClaudeWorkflowFoldSummary> = [];
 
 function workflowFoldSummariesEqual(
@@ -228,53 +229,14 @@ function workflowFoldSummariesEqual(
   );
 }
 
-class TimelineWorkflowSummaryStore {
-  private summariesByRunId: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>;
-  private readonly listenersByRunId = new Map<RunId, Set<() => void>>();
-
-  constructor(summaries: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>) {
-    this.summariesByRunId = summaries;
-  }
-
-  readonly getSnapshot = (runId: RunId): ReadonlyArray<ClaudeWorkflowFoldSummary> =>
-    this.summariesByRunId.get(runId) ?? EMPTY_WORKFLOW_FOLD_SUMMARIES;
-
-  readonly subscribe = (runId: RunId, listener: () => void): (() => void) => {
-    const listeners = this.listenersByRunId.get(runId) ?? new Set();
-    listeners.add(listener);
-    this.listenersByRunId.set(runId, listeners);
-    return () => {
-      listeners.delete(listener);
-      if (listeners.size === 0) this.listenersByRunId.delete(runId);
-    };
-  };
-
-  replace(next: ReadonlyMap<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>): void {
-    const stable = new Map<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>();
-    const changedRunIds = new Set<RunId>();
-    for (const [runId, summaries] of next) {
-      const previous = this.summariesByRunId.get(runId);
-      if (previous !== undefined && workflowFoldSummariesEqual(previous, summaries)) {
-        stable.set(runId, previous);
-      } else {
-        stable.set(runId, summaries);
-        changedRunIds.add(runId);
-      }
-    }
-    for (const runId of this.summariesByRunId.keys()) {
-      if (!next.has(runId)) changedRunIds.add(runId);
-    }
-    this.summariesByRunId = stable;
-    for (const runId of changedRunIds) {
-      for (const listener of this.listenersByRunId.get(runId) ?? []) listener();
-    }
-  }
-}
-
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
-const TimelineWorkflowCtx = createContext<TimelineWorkflowState>(null!);
-const TimelineWorkflowSummaryCtx = createContext<TimelineWorkflowSummaryStore>(null!);
+const TimelineWorkflowCtx = createContext<
+  TimelineWorkflowStore<string, TimelineWorkflowRowSnapshot>
+>(null!);
+const TimelineWorkflowSummaryCtx = createContext<
+  TimelineWorkflowStore<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>
+>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
@@ -450,18 +412,41 @@ export const MessagesTimeline = memo(function MessagesTimeline({
     return summaries;
   }, [subagents, workflowAgentCountByParentId]);
   const [workflowSummaryStore] = useState(
-    () => new TimelineWorkflowSummaryStore(workflowSummaryByRunId),
+    () =>
+      new TimelineWorkflowStore<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>(
+        workflowSummaryByRunId,
+        workflowFoldSummariesEqual,
+      ),
   );
   useLayoutEffect(() => {
     workflowSummaryStore.replace(workflowSummaryByRunId);
   }, [workflowSummaryByRunId, workflowSummaryStore]);
-  const workflowState = useMemo<TimelineWorkflowState>(
-    () => ({
-      workflowByToolUseId,
-      workflowAgentCountByParentId,
-    }),
+  const workflowRows = useMemo(
+    () =>
+      new Map(
+        [...workflowByToolUseId].map(
+          ([toolUseId, workflow]) =>
+            [
+              toolUseId,
+              {
+                workflow,
+                agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
+              },
+            ] as const,
+        ),
+      ),
     [workflowAgentCountByParentId, workflowByToolUseId],
   );
+  const [workflowStore] = useState(
+    () =>
+      new TimelineWorkflowStore<string, TimelineWorkflowRowSnapshot>(
+        workflowRows,
+        workflowRowSnapshotsEqual,
+      ),
+  );
+  useLayoutEffect(() => {
+    workflowStore.replace(workflowRows);
+  }, [workflowRows, workflowStore]);
 
   useEffect(() => {
     return () => {
@@ -829,7 +814,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowCtx value={sharedState}>
-      <TimelineWorkflowCtx value={workflowState}>
+      <TimelineWorkflowCtx value={workflowStore}>
         <TimelineWorkflowSummaryCtx value={workflowSummaryStore}>
           <TimelineRowActivityCtx value={activityState}>
             <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
@@ -1555,7 +1540,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
     [row.runId, workflowSummaryStore],
   );
   const getSnapshot = useCallback(
-    () => workflowSummaryStore.getSnapshot(row.runId),
+    () => workflowSummaryStore.getSnapshot(row.runId) ?? EMPTY_WORKFLOW_FOLD_SUMMARIES,
     [row.runId, workflowSummaryStore],
   );
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
@@ -3051,7 +3036,7 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
-function workflowElapsedLabel(workflow: RuntimeSubagent): string | null {
+function workflowElapsedLabel(workflow: TimelineWorkflow): string | null {
   if (!workflow.startedAt) return null;
   const start = Date.parse(workflow.startedAt);
   const end = workflow.completedAt ? Date.parse(workflow.completedAt) : Date.now();
@@ -3063,7 +3048,7 @@ function workflowElapsedLabel(workflow: RuntimeSubagent): string | null {
   return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
 }
 
-function WorkflowElapsed({ workflow }: { readonly workflow: RuntimeSubagent }) {
+function WorkflowElapsed({ workflow }: { readonly workflow: TimelineWorkflow }) {
   const textRef = useRef<HTMLSpanElement>(null);
   const live =
     workflow.status === "pending" || workflow.status === "running" || workflow.status === "waiting";
@@ -3113,16 +3098,22 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: SimpleWorkEnt
 const WorkflowSimpleWorkEntryRow = memo(function WorkflowSimpleWorkEntryRow(
   props: SimpleWorkEntryRowProps & { workflowScript: string },
 ) {
-  const workflowCtx = use(TimelineWorkflowCtx);
+  const workflowStore = use(TimelineWorkflowCtx);
   const projectedItem = props.workEntry.projectedItem?.item;
   const workflowToolUseId =
     projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
-  const workflow = workflowToolUseId
-    ? workflowCtx.workflowByToolUseId.get(workflowToolUseId)
-    : undefined;
-  const workflowAgentCount = workflow
-    ? (workflowCtx.workflowAgentCountByParentId.get(workflow.id) ?? 0)
-    : 0;
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      workflowToolUseId ? workflowStore.subscribe(workflowToolUseId, listener) : () => {},
+    [workflowStore, workflowToolUseId],
+  );
+  const getSnapshot = useCallback(
+    () => (workflowToolUseId ? workflowStore.getSnapshot(workflowToolUseId) : undefined),
+    [workflowStore, workflowToolUseId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const workflow = snapshot?.workflow;
+  const workflowAgentCount = snapshot?.agentCount ?? 0;
   return (
     <SimpleWorkEntryRowContent
       {...props}
@@ -3134,7 +3125,7 @@ const WorkflowSimpleWorkEntryRow = memo(function WorkflowSimpleWorkEntryRow(
 
 function SimpleWorkEntryRowContent(
   props: SimpleWorkEntryRowProps & {
-    workflow: RuntimeSubagent | undefined;
+    workflow: TimelineWorkflow | undefined;
     workflowAgentCount: number;
     workflowScript: string | null;
   },
