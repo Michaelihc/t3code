@@ -4,7 +4,15 @@ import { type AppSymbolName, SymbolView } from "../../components/AppSymbol";
 import type { EnvironmentId, ThreadId } from "@t3tools/contracts";
 import { MaskedView } from "@expo/ui/community/masked-view";
 import { useIsFocused, useNavigation } from "@react-navigation/native";
-import { useEffect, useId, useState, type ComponentProps } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+  type ComponentProps,
+} from "react";
 import { AccessibilityInfo, AppState, type ColorValue, Pressable, View } from "react-native";
 import Svg, { Defs, LinearGradient, Rect, Stop } from "react-native-svg";
 
@@ -13,6 +21,12 @@ import { T3_CODE_BRAND_MARK_SOURCE } from "../../components/brandAssets";
 import { cn } from "../../lib/cn";
 import { threadFeedActivityIsVisible, type ThreadFeedActivity } from "../../lib/threadActivity";
 import type { ToolGroupSummaryKind } from "@t3tools/client-runtime/work-log/presentation";
+import {
+  formatSubagentModelLabel,
+  formatSubagentTokenCount,
+  type AgentPanelWorkflowGroup,
+  type RuntimeSubagent,
+} from "@t3tools/client-runtime/state/subagentRuntime";
 import Animated, {
   cancelAnimation,
   Easing,
@@ -33,6 +47,14 @@ import {
   resolveThreadActivityMetadata,
   resolveThreadActivityStatus,
 } from "./thread-activity-row-presentation";
+import {
+  workflowElapsedLabel,
+  workflowIsLive,
+  workflowMemberActivity,
+  workflowMembers,
+  workflowToolUseIdForProjectedItem,
+  type MobileWorkflowGroupStore,
+} from "./mobile-workflow-presentation";
 
 const SHIMMER_WIDTH = 72;
 const SHIMMER_SWEEP_MS = 1_350;
@@ -364,6 +386,122 @@ function isFreshRow(createdAt: string): boolean {
   return Number.isFinite(timestamp) && Date.now() - timestamp < FRESH_ROW_WINDOW_MS;
 }
 
+const WORKFLOW_STATUS_VISUALS: Record<
+  RuntimeSubagent["status"],
+  { readonly dotClass: string; readonly label: string }
+> = {
+  pending: { dotClass: "bg-sky-500", label: "Working" },
+  running: { dotClass: "bg-sky-500", label: "Working" },
+  waiting: { dotClass: "bg-sky-500", label: "Waiting" },
+  idle: { dotClass: "bg-adaptive-neutral-500-400", label: "Idle" },
+  completed: { dotClass: "bg-emerald-500", label: "Completed" },
+  failed: { dotClass: "bg-rose-500", label: "Failed" },
+  cancelled: { dotClass: "bg-adaptive-neutral-500-400", label: "Stopped" },
+  interrupted: { dotClass: "bg-adaptive-neutral-500-400", label: "Stopped" },
+};
+
+function WorkflowStatusDot(props: { readonly status: RuntimeSubagent["status"] }) {
+  const visuals = WORKFLOW_STATUS_VISUALS[props.status];
+  return (
+    <View
+      accessible
+      accessibilityRole="text"
+      accessibilityLabel={visuals.label}
+      className={cn("size-2 shrink-0 rounded-full", visuals.dotClass)}
+    />
+  );
+}
+
+function WorkflowSummary(props: { readonly group: AgentPanelWorkflowGroup }) {
+  const live = workflowIsLive(props.group.workflow);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const interval = setInterval(() => setNow(Date.now()), 1_000);
+    return () => clearInterval(interval);
+  }, [live]);
+
+  const members = workflowMembers(props.group);
+  const elapsed = workflowElapsedLabel(props.group.workflow, now);
+  return (
+    <View className="min-w-0 flex-1 flex-row items-center gap-2">
+      <WorkflowStatusDot status={props.group.workflow.status} />
+      <Text className="min-w-0 flex-1 text-sm text-foreground" numberOfLines={1}>
+        <Text className="font-t3-medium text-foreground">
+          {props.group.workflow.workflowName ?? props.group.workflow.title}
+        </Text>
+        <Text className="text-foreground-muted">
+          {` · ${members.length} ${members.length === 1 ? "agent" : "agents"}`}
+          {elapsed ? ` · ${elapsed}` : ""}
+        </Text>
+      </Text>
+    </View>
+  );
+}
+
+function WorkflowMemberRow(props: { readonly member: RuntimeSubagent }) {
+  const visuals = WORKFLOW_STATUS_VISUALS[props.member.status];
+  const model = formatSubagentModelLabel(props.member.model, props.member.effort);
+  const metadata = [
+    model,
+    props.member.usage ? `${formatSubagentTokenCount(props.member.usage.totalTokens)} tok` : null,
+    props.member.usage?.toolUses === undefined ? null : `${props.member.usage.toolUses} tools`,
+    props.member.attempt === null ? null : `attempt ${props.member.attempt}`,
+  ].filter((value): value is string => value !== null && value.length > 0);
+  const activity = workflowMemberActivity(props.member);
+
+  return (
+    <View className="min-h-16 border-t border-adaptive-neutral-950-a5-white-a8 py-2 pl-1">
+      <View className="flex-row items-center gap-2">
+        <WorkflowStatusDot status={props.member.status} />
+        <Text className="min-w-0 flex-1 font-t3-medium text-sm text-foreground" numberOfLines={1}>
+          {props.member.title}
+        </Text>
+        <Text className="shrink-0 text-2xs text-foreground-muted">{visuals.label}</Text>
+      </View>
+      {activity ? (
+        <Text className="ml-4 mt-0.5 text-xs text-foreground-muted" numberOfLines={1}>
+          {activity}
+        </Text>
+      ) : null}
+      {metadata.length > 0 ? (
+        <Text className="ml-4 mt-0.5 text-2xs tabular-nums text-foreground-muted" numberOfLines={1}>
+          {metadata.join(" · ")}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+function WorkflowRoster(props: { readonly group: AgentPanelWorkflowGroup }) {
+  return (
+    <View className="mb-2 overflow-hidden rounded-xl border border-adaptive-neutral-950-a10-white-a10 bg-card px-2.5 py-1.5">
+      {props.group.phases.map((phase) => (
+        <View key={phase.index}>
+          <View className="min-h-8 flex-row items-center gap-2 py-1">
+            <Text className="min-w-0 flex-1 font-t3-medium text-xs uppercase tracking-wider text-foreground-muted">
+              {phase.title}
+            </Text>
+            <Text className="shrink-0 text-2xs tabular-nums text-foreground-muted">
+              {phase.state === "pending"
+                ? "Pending"
+                : phase.state === "done"
+                  ? `${phase.settledCount} done`
+                  : `${phase.activeCount} active · ${phase.settledCount} done`}
+            </Text>
+          </View>
+          {phase.members.map((member) => (
+            <WorkflowMemberRow key={member.id} member={member} />
+          ))}
+        </View>
+      ))}
+      {props.group.unphasedMembers.map((member) => (
+        <WorkflowMemberRow key={member.id} member={member} />
+      ))}
+    </View>
+  );
+}
+
 // Routine neutral tool activity carries no signal worth a row. Prominent
 // linked activity stays visible so its live status and thread affordance do.
 export function visibleWorkLogActivities(
@@ -374,6 +512,7 @@ export function visibleWorkLogActivities(
 
 export function ThreadWorkLog(props: {
   readonly activities: ReadonlyArray<ThreadFeedActivity>;
+  readonly workflowStore: MobileWorkflowGroupStore;
   readonly copiedRowId: string | null;
   readonly currentThreadId: ThreadId;
   readonly environmentId: EnvironmentId;
@@ -383,6 +522,24 @@ export function ThreadWorkLog(props: {
   readonly onToggleRow: (rowId: string) => void;
   readonly workspaceRoot?: string | null;
 }) {
+  const workflowToolUseIds = useMemo(
+    () =>
+      props.activities.flatMap((activity) => {
+        const toolUseId = workflowToolUseIdForProjectedItem(activity.projectedItem);
+        return toolUseId === null ? [] : [toolUseId];
+      }),
+    [props.activities],
+  );
+  const subscribeToWorkflows = useCallback(
+    (listener: () => void) => props.workflowStore.subscribe(workflowToolUseIds, listener),
+    [props.workflowStore, workflowToolUseIds],
+  );
+  const getWorkflowSnapshot = useCallback(
+    () => props.workflowStore.snapshot(workflowToolUseIds),
+    [props.workflowStore, workflowToolUseIds],
+  );
+  useSyncExternalStore(subscribeToWorkflows, getWorkflowSnapshot, getWorkflowSnapshot);
+
   const rows = visibleWorkLogActivities(props.activities).map((activity) => ({
     ...activity,
     detail: compactActivityDetail(activity.detail),
@@ -396,11 +553,16 @@ export function ThreadWorkLog(props: {
     <View className="-mx-1 mb-1 px-1 py-0">
       <View className="gap-px">
         {rows.map((row) => {
+          const workflowGroup = props.workflowStore.groupForProjectedItem(row.projectedItem);
           const expanded = props.expandedRows[row.id] ?? false;
-          const canExpand = row.canExpand;
-          const displayText = row.detail ?? row.summary;
+          const canExpand = row.canExpand || workflowGroup !== null;
+          const displayText = workflowGroup
+            ? `${workflowGroup.workflow.workflowName ?? workflowGroup.workflow.title}, ${workflowMembers(workflowGroup).length} agents`
+            : (row.detail ?? row.summary);
           const iconIsDestructive = row.icon === "alert" || row.icon === "warning";
-          const failed = row.status === "failure";
+          const failed = workflowGroup
+            ? workflowGroup.workflow.status === "failed"
+            : row.status === "failure";
           const showIcon = !row.groupedToolDetail || iconIsDestructive || failed;
 
           if (row.prominent) {
@@ -447,7 +609,18 @@ export function ThreadWorkLog(props: {
                 className="rounded-md px-0.5 py-0 active:bg-subtle"
               >
                 <View className="min-h-8 flex-row items-center gap-1.5">
-                  {row.live ? (
+                  {workflowGroup ? (
+                    <>
+                      <View className="h-6 w-6 shrink-0 items-center justify-center">
+                        <WorkRowIcon
+                          row={row}
+                          failed={failed}
+                          iconSubtleColor={props.iconSubtleColor}
+                        />
+                      </View>
+                      <WorkflowSummary group={workflowGroup} />
+                    </>
+                  ) : row.live ? (
                     <ShimmeringWorkContent
                       icon={workRowSymbolName(row.icon)}
                       iconSubtleColor={props.iconSubtleColor}
@@ -508,11 +681,13 @@ export function ThreadWorkLog(props: {
                   layout={WORK_LOG_LAYOUT_TRANSITION}
                   className="ml-7 overflow-hidden border-l border-adaptive-neutral-300-a60-white-a12 pb-1 pl-3 pt-0.5"
                 >
+                  {workflowGroup ? <WorkflowRoster group={workflowGroup} /> : null}
                   <ThreadActivityInspector
                     activity={row}
                     currentThreadId={props.currentThreadId}
                     environmentId={props.environmentId}
                     iconColor={props.iconSubtleColor}
+                    workflow={workflowGroup?.workflow}
                     workspaceRoot={props.workspaceRoot}
                   />
                 </Animated.View>

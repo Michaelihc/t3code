@@ -150,6 +150,7 @@ function AgentRow({ agent }: { agent: RuntimeSubagent }) {
     modelLabel,
     agent.usage ? `${formatSubagentTokenCount(agent.usage.totalTokens)} tok` : "— tok",
     agent.usage?.toolUses !== undefined ? `${agent.usage.toolUses} tools` : null,
+    agent.attempt !== null ? `attempt ${agent.attempt}` : null,
     agent.activationCount > 1 ? `run ${agent.activationCount}` : null,
   ].filter((value): value is string => value !== null);
 

@@ -1,16 +1,23 @@
 import {
+  TimelineWorkflowStore,
+  workflowRowSnapshotsEqual,
+  type TimelineWorkflow,
+  type TimelineWorkflowRowSnapshot,
+} from "./timelineWorkflowStore";
+import {
   type ChatFileAttachment,
   type EnvironmentId,
   type MessageId,
   type OrchestrationV2TurnItem,
+  RunId,
   type RunAttemptId,
   type ScopedThreadRef,
   type ServerProvider,
   type ServerProviderSkill,
-  type RunId,
   type ThreadId,
 } from "@t3tools/contracts";
 import { parseScopedThreadKey } from "@t3tools/client-runtime/environment";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import { canForkProjectedAssistantItem } from "@t3tools/client-runtime/state/thread-workflows";
 import type { CodexArtifactTemplate } from "@t3tools/client-runtime/codex-artifact-templates";
 import { commandProgramName } from "@t3tools/client-runtime/work-log/command-label";
@@ -24,9 +31,11 @@ import {
   use,
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type KeyboardEvent,
   type MouseEvent,
   type ReactNode,
@@ -131,6 +140,12 @@ import { V2ItemInspector } from "./V2ItemInspector";
 import { useV2ItemSupport } from "../../state/v2ItemSupport";
 import { isV2LifecycleItem, V2LifecycleRow, type HandoffTimelineRun } from "./V2LifecycleRow";
 import { TimelineSystemDivider } from "./TimelineSystemDivider";
+import {
+  claudeWorkflowScriptFromToolInput,
+  formatClaudeWorkflowFoldLabel,
+  parseClaudeWorkflowScriptMeta,
+  type ClaudeWorkflowFoldSummary,
+} from "./claudeWorkflowPresentation";
 
 import {
   buildInlineTerminalContextText,
@@ -193,8 +208,35 @@ interface TimelineRowActivityState {
   latestRunId: RunId | null;
 }
 
+const EMPTY_WORKFLOW_FOLD_SUMMARIES: ReadonlyArray<ClaudeWorkflowFoldSummary> = [];
+
+function workflowFoldSummariesEqual(
+  left: ReadonlyArray<ClaudeWorkflowFoldSummary>,
+  right: ReadonlyArray<ClaudeWorkflowFoldSummary>,
+): boolean {
+  return (
+    left.length === right.length &&
+    left.every((summary, index) => {
+      const candidate = right[index];
+      return (
+        candidate !== undefined &&
+        summary.name === candidate.name &&
+        summary.agentCount === candidate.agentCount &&
+        summary.startedAt === candidate.startedAt &&
+        summary.completedAt === candidate.completedAt
+      );
+    })
+  );
+}
+
 const TimelineRowCtx = createContext<TimelineRowSharedState>(null!);
 const TimelineRowActivityCtx = createContext<TimelineRowActivityState>(null!);
+const TimelineWorkflowCtx = createContext<
+  TimelineWorkflowStore<string, TimelineWorkflowRowSnapshot>
+>(null!);
+const TimelineWorkflowSummaryCtx = createContext<
+  TimelineWorkflowStore<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>
+>(null!);
 const TIMELINE_LIST_HEADER = <div className="h-3 sm:h-4" />;
 const TIMELINE_LIST_FADE_HEADER = (
   <div className="h-[var(--workspace-titlebar-scroll-fade-height)]" />
@@ -211,6 +253,7 @@ const TIMELINE_MAINTAIN_SCROLL_AT_END = {
 } as const;
 const EMPTY_TIMELINE_PROVIDERS: ReadonlyArray<ServerProvider> = [];
 const EMPTY_TIMELINE_RUNS: ReadonlyArray<HandoffTimelineRun> = [];
+const EMPTY_TIMELINE_SUBAGENTS: ReadonlyArray<RuntimeSubagent> = [];
 
 // ---------------------------------------------------------------------------
 // Props (public API)
@@ -260,6 +303,7 @@ interface MessagesTimelineProps {
   skills?: ReadonlyArray<Pick<ServerProviderSkill, "name" | "displayName">>;
   providerStatuses?: ReadonlyArray<ServerProvider>;
   runs?: ReadonlyArray<HandoffTimelineRun>;
+  subagents?: ReadonlyArray<RuntimeSubagent>;
   anchorMessageId: MessageId | null;
   onAnchorReady: (messageId: MessageId, anchorIndex: number) => void;
   onAnchorSizeChanged: (messageId: MessageId, size: number) => void;
@@ -310,6 +354,7 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   skills = EMPTY_TIMELINE_SKILLS,
   providerStatuses = EMPTY_TIMELINE_PROVIDERS,
   runs: runsProp = EMPTY_TIMELINE_RUNS,
+  subagents = EMPTY_TIMELINE_SUBAGENTS,
   anchorMessageId,
   onAnchorReady,
   onAnchorSizeChanged,
@@ -331,6 +376,77 @@ export const MessagesTimeline = memo(function MessagesTimeline({
   const disclosureAnchorKeyRef = useRef<string | null>(null);
   const disclosureSettleFrameRef = useRef<number | null>(null);
   const disclosureSettleSecondFrameRef = useRef<number | null>(null);
+  const workflowByToolUseId = useMemo(
+    () =>
+      new Map(
+        subagents.flatMap((subagent) =>
+          subagent.kind === "workflow" && subagent.toolUseId
+            ? [[subagent.toolUseId, subagent] as const]
+            : [],
+        ),
+      ),
+    [subagents],
+  );
+  const workflowAgentCountByParentId = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const subagent of subagents) {
+      if (subagent.kind !== "workflow_agent" || !subagent.parentAgentId) continue;
+      counts.set(subagent.parentAgentId, (counts.get(subagent.parentAgentId) ?? 0) + 1);
+    }
+    return counts;
+  }, [subagents]);
+  const workflowSummaryByRunId = useMemo(() => {
+    const summaries = new Map<RunId, ClaudeWorkflowFoldSummary[]>();
+    for (const workflow of subagents) {
+      if (workflow.kind !== "workflow") continue;
+      if (!workflow.runId) continue;
+      const runId = RunId.make(workflow.runId);
+      const summary = {
+        name: workflow.workflowName ?? workflow.title,
+        agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
+        startedAt: workflow.startedAt,
+        completedAt: workflow.completedAt,
+      };
+      summaries.set(runId, [...(summaries.get(runId) ?? []), summary]);
+    }
+    return summaries;
+  }, [subagents, workflowAgentCountByParentId]);
+  const [workflowSummaryStore] = useState(
+    () =>
+      new TimelineWorkflowStore<RunId, ReadonlyArray<ClaudeWorkflowFoldSummary>>(
+        workflowSummaryByRunId,
+        workflowFoldSummariesEqual,
+      ),
+  );
+  useLayoutEffect(() => {
+    workflowSummaryStore.replace(workflowSummaryByRunId);
+  }, [workflowSummaryByRunId, workflowSummaryStore]);
+  const workflowRows = useMemo(
+    () =>
+      new Map(
+        [...workflowByToolUseId].map(
+          ([toolUseId, workflow]) =>
+            [
+              toolUseId,
+              {
+                workflow,
+                agentCount: workflowAgentCountByParentId.get(workflow.id) ?? 0,
+              },
+            ] as const,
+        ),
+      ),
+    [workflowAgentCountByParentId, workflowByToolUseId],
+  );
+  const [workflowStore] = useState(
+    () =>
+      new TimelineWorkflowStore<string, TimelineWorkflowRowSnapshot>(
+        workflowRows,
+        workflowRowSnapshotsEqual,
+      ),
+  );
+  useLayoutEffect(() => {
+    workflowStore.replace(workflowRows);
+  }, [workflowRows, workflowStore]);
 
   useEffect(() => {
     return () => {
@@ -698,52 +814,56 @@ export const MessagesTimeline = memo(function MessagesTimeline({
 
   return (
     <TimelineRowCtx value={sharedState}>
-      <TimelineRowActivityCtx value={activityState}>
-        <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
-          <LegendList<MessagesTimelineRow>
-            ref={listRef}
-            data={rows}
-            keyExtractor={keyExtractor}
-            getItemType={getItemType}
-            renderItem={renderItem}
-            estimatedItemSize={90}
-            initialScrollAtEnd
-            {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
-            contentInsetEndAdjustment={contentInsetEndAdjustment}
-            // LegendList owns ordinary end-follow (#5449): the app only turns
-            // it off while the user reads history (liveFollowEnabled), while a
-            // sent turn anchors near the top (anchoredEndSpace), or for the
-            // two-frame settle window of a fold toggle.
-            maintainScrollAtEnd={
-              anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
-                ? false
-                : TIMELINE_MAINTAIN_SCROLL_AT_END
-            }
-            maintainVisibleContentPosition={maintainVisibleContentPosition}
-            onScroll={handleScroll}
-            className={cn(
-              "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
-              topFadeEnabled && "topbar-scroll-fade",
-            )}
-            ListHeaderComponent={listHeader}
-            ListFooterComponent={TIMELINE_LIST_FOOTER}
-          />
-          <TimelineMinimap
-            items={minimapItems}
-            hasPersistentGutter={minimapHasPersistentGutter}
-            hitStripWidth={minimapHitStripWidth}
-            stripMap={minimapStripMap}
-            onSelect={(item) => {
-              onManualNavigation();
-              void listRef.current?.scrollToIndex({
-                index: item.rowIndex,
-                animated: true,
-                viewOffset: 24,
-              });
-            }}
-          />
-        </div>
-      </TimelineRowActivityCtx>
+      <TimelineWorkflowCtx value={workflowStore}>
+        <TimelineWorkflowSummaryCtx value={workflowSummaryStore}>
+          <TimelineRowActivityCtx value={activityState}>
+            <div ref={setTimelineViewportElement} className="relative h-full min-h-0">
+              <LegendList<MessagesTimelineRow>
+                ref={listRef}
+                data={rows}
+                keyExtractor={keyExtractor}
+                getItemType={getItemType}
+                renderItem={renderItem}
+                estimatedItemSize={90}
+                initialScrollAtEnd
+                {...(anchoredEndSpace ? { anchoredEndSpace } : {})}
+                contentInsetEndAdjustment={contentInsetEndAdjustment}
+                // LegendList owns ordinary end-follow (#5449): the app only turns
+                // it off while the user reads history (liveFollowEnabled), while a
+                // sent turn anchors near the top (anchoredEndSpace), or for the
+                // two-frame settle window of a fold toggle.
+                maintainScrollAtEnd={
+                  anchoredEndSpace || !liveFollowEnabled || disclosureToggleSettling
+                    ? false
+                    : TIMELINE_MAINTAIN_SCROLL_AT_END
+                }
+                maintainVisibleContentPosition={maintainVisibleContentPosition}
+                onScroll={handleScroll}
+                className={cn(
+                  "messages-timeline-scroll scrollbar-gutter-both h-full min-h-0 overflow-x-hidden overscroll-y-contain px-3 [overflow-anchor:none] sm:px-5",
+                  topFadeEnabled && "topbar-scroll-fade",
+                )}
+                ListHeaderComponent={listHeader}
+                ListFooterComponent={TIMELINE_LIST_FOOTER}
+              />
+              <TimelineMinimap
+                items={minimapItems}
+                hasPersistentGutter={minimapHasPersistentGutter}
+                hitStripWidth={minimapHitStripWidth}
+                stripMap={minimapStripMap}
+                onSelect={(item) => {
+                  onManualNavigation();
+                  void listRef.current?.scrollToIndex({
+                    index: item.rowIndex,
+                    animated: true,
+                    viewOffset: 24,
+                  });
+                }}
+              />
+            </div>
+          </TimelineRowActivityCtx>
+        </TimelineWorkflowSummaryCtx>
+      </TimelineWorkflowCtx>
     </TimelineRowCtx>
   );
 });
@@ -1414,7 +1534,25 @@ function RevertUserMessageButton({ messageId }: { messageId: MessageId }) {
 
 function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-fold" }> }) {
   const ctx = use(TimelineRowCtx);
+  const workflowSummaryStore = use(TimelineWorkflowSummaryCtx);
+  const subscribe = useCallback(
+    (listener: () => void) => workflowSummaryStore.subscribe(row.runId, listener),
+    [row.runId, workflowSummaryStore],
+  );
+  const getSnapshot = useCallback(
+    () => workflowSummaryStore.getSnapshot(row.runId) ?? EMPTY_WORKFLOW_FOLD_SUMMARIES,
+    [row.runId, workflowSummaryStore],
+  );
   const Icon = row.expanded ? ChevronDownIcon : ChevronRightIcon;
+  const workflows = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const live = workflows.some((workflow) => workflow.completedAt === null);
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const interval = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(interval);
+  }, [live]);
+  const label = formatClaudeWorkflowFoldLabel(row.label, workflows, now);
 
   return (
     <div className="pb-2 pt-1">
@@ -1425,7 +1563,7 @@ function TurnFoldTimelineRow({ row }: { row: Extract<TimelineRow, { kind: "turn-
         onClick={() => ctx.onToggleTurnFold(row.runId)}
         className="flex cursor-pointer select-none items-center gap-1 rounded-md px-1 text-xs text-muted-foreground tabular-nums transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/70"
       >
-        <span>{row.label}</span>
+        <span>{label}</span>
         <Icon className="size-3.5" />
       </button>
     </div>
@@ -2898,25 +3036,127 @@ function toolWorkEntryHeading(workEntry: TimelineWorkEntry): string {
 
 const stopRowToggle = (e: { stopPropagation: () => void }) => e.stopPropagation();
 
-const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
+function workflowElapsedLabel(workflow: TimelineWorkflow): string | null {
+  if (!workflow.startedAt) return null;
+  const start = Date.parse(workflow.startedAt);
+  const end = workflow.completedAt ? Date.parse(workflow.completedAt) : Date.now();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  const seconds = Math.max(0, Math.floor((end - start) / 1_000));
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ${String(seconds % 60).padStart(2, "0")}s`;
+  return `${Math.floor(minutes / 60)}h ${String(minutes % 60).padStart(2, "0")}m`;
+}
+
+function WorkflowElapsed({ workflow }: { readonly workflow: TimelineWorkflow }) {
+  const textRef = useRef<HTMLSpanElement>(null);
+  const live =
+    workflow.status === "pending" || workflow.status === "running" || workflow.status === "waiting";
+
+  useEffect(() => {
+    if (!live || !workflow.startedAt) return;
+    const update = () => {
+      if (textRef.current) textRef.current.textContent = workflowElapsedLabel(workflow);
+    };
+    update();
+    const interval = setInterval(update, 1_000);
+    return () => clearInterval(interval);
+  }, [live, workflow.completedAt, workflow.startedAt]);
+
+  const label = workflowElapsedLabel(workflow);
+  return label ? (
+    <span ref={textRef} className="font-mono text-[10px] tabular-nums">
+      {label}
+    </span>
+  ) : null;
+}
+
+interface SimpleWorkEntryRowProps {
   workEntry: TimelineWorkEntry;
   workspaceRoot: string | undefined;
   isExpandedToolGroupEntry?: boolean;
-}) {
+}
+
+const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: SimpleWorkEntryRowProps) {
+  const projectedItem = props.workEntry.projectedItem?.item;
+  const workflowScript =
+    projectedItem?.type === "dynamic_tool"
+      ? claudeWorkflowScriptFromToolInput(projectedItem.toolName, projectedItem.input)
+      : null;
+  return workflowScript === null ? (
+    <SimpleWorkEntryRowContent
+      {...props}
+      workflow={undefined}
+      workflowAgentCount={0}
+      workflowScript={null}
+    />
+  ) : (
+    <WorkflowSimpleWorkEntryRow {...props} workflowScript={workflowScript} />
+  );
+});
+
+const WorkflowSimpleWorkEntryRow = memo(function WorkflowSimpleWorkEntryRow(
+  props: SimpleWorkEntryRowProps & { workflowScript: string },
+) {
+  const workflowStore = use(TimelineWorkflowCtx);
+  const projectedItem = props.workEntry.projectedItem?.item;
+  const workflowToolUseId =
+    projectedItem?.type === "dynamic_tool" ? projectedItem.nativeItemRef?.nativeId : undefined;
+  const subscribe = useCallback(
+    (listener: () => void) =>
+      workflowToolUseId ? workflowStore.subscribe(workflowToolUseId, listener) : () => {},
+    [workflowStore, workflowToolUseId],
+  );
+  const getSnapshot = useCallback(
+    () => (workflowToolUseId ? workflowStore.getSnapshot(workflowToolUseId) : undefined),
+    [workflowStore, workflowToolUseId],
+  );
+  const snapshot = useSyncExternalStore(subscribe, getSnapshot, getSnapshot);
+  const workflow = snapshot?.workflow;
+  const workflowAgentCount = snapshot?.agentCount ?? 0;
+  return (
+    <SimpleWorkEntryRowContent
+      {...props}
+      workflow={workflow}
+      workflowAgentCount={workflowAgentCount}
+    />
+  );
+});
+
+function SimpleWorkEntryRowContent(
+  props: SimpleWorkEntryRowProps & {
+    workflow: TimelineWorkflow | undefined;
+    workflowAgentCount: number;
+    workflowScript: string | null;
+  },
+) {
   const { workEntry, workspaceRoot, isExpandedToolGroupEntry = false } = props;
+  const { workflow, workflowAgentCount, workflowScript } = props;
   const activity = use(TimelineRowActivityCtx);
   const ctx = use(TimelineRowCtx);
   const [expanded, setExpanded] = useState(false);
+  const workflowMeta = useMemo(
+    () => (workflowScript === null ? null : parseClaudeWorkflowScriptMeta(workflowScript)),
+    [workflowScript],
+  );
   const iconConfig = workToneIcon(workEntry.tone);
-  const showFailedIndicator = workEntryDisplayIndicatesToolFailure(workEntry);
+  const showFailedIndicator = workflow
+    ? workflow.status === "failed"
+    : workEntryDisplayIndicatesToolFailure(workEntry);
   const showWarningIndicator = false;
   const entryIconName = showFailedIndicator ? "circle-alert" : workEntryIconName(workEntry);
   const toolPresentation = resolveTimelineToolPresentation(workEntry.toolTitle ?? workEntry.label);
   // Command rows read as the command itself; stdout and the full payload
   // stay behind the expander instead of leaking into the collapsed line.
   const command = workEntry.command?.trim().replaceAll(/\s+/g, " ");
-  const heading = command || (toolPresentation?.displayName ?? toolWorkEntryHeading(workEntry));
-  const rawPreview = command ? null : workEntryPreview(workEntry, workspaceRoot);
+  const heading =
+    command ||
+    workflow?.workflowName ||
+    workflowMeta?.name ||
+    (toolPresentation?.displayName ?? toolWorkEntryHeading(workEntry));
+  const rawPreview = command
+    ? null
+    : (workflowMeta?.description ?? workEntryPreview(workEntry, workspaceRoot));
   const preview =
     rawPreview &&
     normalizeCompactToolLabel(rawPreview).toLowerCase() ===
@@ -2950,10 +3190,17 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
         ? "text-secondary-label"
         : "font-medium text-foreground/82";
   const turnSettled = !activity.activeTurnInProgress;
-  const showNeutralIndicator = !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
-  const showSuccessIndicator =
-    workEntryIndicatesToolSuccess(workEntry) ||
-    (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+  const showNeutralIndicator = workflow
+    ? workflow.status === "cancelled" || workflow.status === "interrupted"
+    : !turnSettled && workEntryIndicatesToolNeutralStatus(workEntry);
+  const showSuccessIndicator = workflow
+    ? workflow.status === "completed"
+    : workEntryIndicatesToolSuccess(workEntry) ||
+      (turnSettled && workEntryIndicatesToolNeutralStatus(workEntry));
+  const showWorkflowLive =
+    workflow?.status === "pending" ||
+    workflow?.status === "running" ||
+    workflow?.status === "waiting";
   const rowToggleProps = canExpand
     ? {
         role: "button" as const,
@@ -3012,6 +3259,12 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-px text-muted-foreground/55">
+            {workflowAgentCount > 0 ? (
+              <span className="pr-1 text-[10px] tabular-nums">
+                {workflowAgentCount} {workflowAgentCount === 1 ? "agent" : "agents"}
+              </span>
+            ) : null}
+            {workflow ? <WorkflowElapsed workflow={workflow} /> : null}
             <span
               className="flex size-4 shrink-0 items-center justify-center"
               aria-hidden={!canExpand}
@@ -3027,7 +3280,21 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
               ) : null}
             </span>
             <span className="flex size-4 shrink-0 items-center justify-center">
-              {showFailedIndicator ? (
+              {showWorkflowLive ? (
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <span
+                        className="flex size-4 items-center justify-center"
+                        aria-label="Workflow running"
+                      />
+                    }
+                  >
+                    <span className="size-1.5 rounded-full bg-info" aria-hidden />
+                  </TooltipTrigger>
+                  <TooltipPopup>Workflow running</TooltipPopup>
+                </Tooltip>
+              ) : showFailedIndicator ? (
                 <Tooltip>
                   <TooltipTrigger
                     render={
@@ -3085,6 +3352,7 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
           {workEntry.projectedItem ? (
             <V2ItemInspector
               projectedItem={workEntry.projectedItem}
+              workflow={workflow}
               environmentId={ctx.activeThreadEnvironmentId}
               cwd={ctx.markdownCwd}
               workspaceRoot={workspaceRoot}
@@ -3099,4 +3367,4 @@ const SimpleWorkEntryRow = memo(function SimpleWorkEntryRow(props: {
       ) : null}
     </div>
   );
-});
+}

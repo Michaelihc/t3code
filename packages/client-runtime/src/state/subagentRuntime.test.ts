@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vite-plus/test";
-import { classifyTaskAgentKind, type OrchestrationThreadActivity } from "@t3tools/contracts";
+import {
+  classifyTaskAgentKind,
+  type OrchestrationThreadActivity,
+  type OrchestrationV2Subagent,
+} from "@t3tools/contracts";
+import * as DateTime from "effect/DateTime";
 import {
   deriveAgentPanelModel,
   foldSubagentActivities,
@@ -8,6 +13,7 @@ import {
   isAgentAttributedToolActivity,
   isSubagentActivityKind,
   isTimelineBypassActivity,
+  projectedSubagentsToRuntime,
   workflowCardMembers,
 } from "./subagentRuntime.ts";
 
@@ -515,6 +521,87 @@ describe("deriveAgentPanelModel", () => {
     const model = deriveAgentPanelModel({ agents: orphans });
     expect(model.workflows).toHaveLength(0);
     expect(model.directAgents.map((agent) => agent.id)).toEqual(["gone:wf:0"]);
+  });
+});
+
+describe("projectedSubagentsToRuntime", () => {
+  it("preserves workflow telemetry and settles stale members with their coordinator", () => {
+    const startedAt = DateTime.makeUnsafe("2026-08-01T10:00:00.000Z");
+    const completedAt = DateTime.makeUnsafe("2026-08-01T10:01:41.000Z");
+    const base = {
+      threadId: "thread-1",
+      runId: "run-1",
+      parentNodeId: "node-root",
+      origin: "provider_native",
+      createdBy: "agent",
+      driver: "claude",
+      providerInstanceId: "claude",
+      providerThreadId: null,
+      childThreadId: null,
+      nativeTaskRef: null,
+      prompt: "",
+      model: null,
+      result: null,
+      startedAt,
+      updatedAt: completedAt,
+    } as const;
+    const projected = projectedSubagentsToRuntime([
+      {
+        ...base,
+        id: "workflow-node",
+        title: "Survey the sandbox",
+        kind: "workflow",
+        workflowName: "sandbox-project-survey",
+        toolUseId: "toolu-workflow",
+        phases: [
+          { index: 1, title: "Survey" },
+          { index: 2, title: "Synthesize" },
+        ],
+        usage: { totalTokens: 8_192, toolUses: 15, durationMs: 101_000 },
+        status: "completed",
+        completedAt,
+      },
+      {
+        ...base,
+        id: "workflow-member-node",
+        title: "api-surveyor",
+        kind: "workflow_agent",
+        role: "Explore",
+        model: "claude-sonnet-4-6",
+        parentAgentId: "workflow-node",
+        agentIndex: 1,
+        phaseIndex: 1,
+        phaseTitle: "Survey",
+        attempt: 2,
+        usage: { totalTokens: 2_048, toolUses: 4, durationMs: 30_000 },
+        lastToolName: "Read",
+        progress: "Inspecting the API surface",
+        status: "running",
+        completedAt: null,
+      },
+    ] as unknown as ReadonlyArray<OrchestrationV2Subagent>);
+
+    expect(projected[0]).toMatchObject({
+      runId: "run-1",
+      kind: "workflow",
+      workflowName: "sandbox-project-survey",
+      toolUseId: "toolu-workflow",
+      usage: { totalTokens: 8_192, toolUses: 15, durationMs: 101_000 },
+      phases: [
+        { index: 1, title: "Survey" },
+        { index: 2, title: "Synthesize" },
+      ],
+    });
+    expect(projected[1]).toMatchObject({
+      kind: "workflow_agent",
+      parentAgentId: "workflow-node",
+      model: "claude-sonnet-4-6",
+      phaseTitle: "Survey",
+      attempt: 2,
+      lastToolName: "Read",
+      status: "completed",
+      completedAt: "2026-08-01T10:01:41.000Z",
+    });
   });
 });
 

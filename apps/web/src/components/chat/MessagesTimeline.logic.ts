@@ -312,6 +312,11 @@ export function workLogEntryIsLocalCodeSearch(entry: WorkLogEntry): boolean {
   );
 }
 
+export function workLogEntryIsWorkflow(entry: WorkLogEntry): boolean {
+  const item = entry.projectedItem?.item;
+  return item?.type === "dynamic_tool" && item.toolName?.trim().toLowerCase() === "workflow";
+}
+
 export function toolGroupAction(entry: WorkLogEntry): ToolGroupAction {
   if (
     entry.itemType === "dynamic_tool" &&
@@ -861,6 +866,17 @@ export function deriveMessagesTimelineRows(input: {
         });
         continue;
       }
+      if (workLogEntryIsWorkflow(timelineEntry.entry)) {
+        nextRows.push({
+          kind: "work",
+          id: timelineEntry.id,
+          createdAt: timelineEntry.createdAt,
+          groupedEntries: [timelineEntry.entry],
+          isExpandedToolGroupEntry: false,
+          isLastExpandedToolGroupEntry: false,
+        });
+        continue;
+      }
       const groupedEntries = [timelineEntry.entry];
       let cursor = index + 1;
       while (cursor < input.timelineEntries.length) {
@@ -869,6 +885,7 @@ export function deriveMessagesTimelineRows(input: {
           !nextEntry ||
           nextEntry.kind !== "work" ||
           nextEntry.entry.tone === "error" ||
+          workLogEntryIsWorkflow(nextEntry.entry) ||
           collapsedEntryIds.has(nextEntry.id) ||
           collapsedSupersededEntryIds.has(nextEntry.id) ||
           foldsByAnchorEntryId.has(nextEntry.id) ||

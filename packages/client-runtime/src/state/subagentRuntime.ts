@@ -18,7 +18,7 @@
  * metadata).
  */
 import * as DateTime from "effect/DateTime";
-import type { OrchestrationThreadActivity } from "@t3tools/contracts";
+import type { OrchestrationThreadActivity, OrchestrationV2Subagent } from "@t3tools/contracts";
 
 export type RuntimeSubagentStatus =
   | "pending"
@@ -59,6 +59,7 @@ export interface SubagentRunHandles {
 
 export interface RuntimeSubagent {
   readonly id: string;
+  readonly runId?: string | null;
   readonly kind: "subagent" | "workflow" | "workflow_agent";
   readonly title: string;
   readonly role: string | null;
@@ -72,6 +73,7 @@ export interface RuntimeSubagent {
   readonly result: string | null;
   readonly error: string | null;
   readonly outputFile: string | null;
+  readonly toolUseId?: string | null;
   readonly parentAgentId: string | null;
   readonly agentIndex: number | null;
   readonly phaseIndex: number | null;
@@ -241,6 +243,7 @@ interface MutableAgent {
   result: string | null;
   error: string | null;
   outputFile: string | null;
+  toolUseId?: string | null;
   parentAgentId: string | null;
   agentIndex: number | null;
   phaseIndex: number | null;
@@ -295,6 +298,7 @@ function getOrCreate(
     result: null,
     error: null,
     outputFile: null,
+    toolUseId: asString(payload.toolUseId) ?? null,
     parentAgentId: asString(payload.parentAgentId) ?? null,
     agentIndex: asCount(payload.agentIndex) ?? null,
     phaseIndex: asCount(payload.phaseIndex) ?? null,
@@ -353,6 +357,8 @@ function fillMetadata(agent: MutableAgent, payload: Record<string, unknown>): vo
   }
   const outputFile = asString(payload.outputFile);
   if (outputFile) agent.outputFile = outputFile;
+  const toolUseId = asString(payload.toolUseId);
+  if (toolUseId) agent.toolUseId = toolUseId;
   if (Array.isArray(payload.phases)) {
     const phases: SubagentWorkflowPhase[] = [];
     for (const entry of payload.phases) {
@@ -718,66 +724,95 @@ export function emptyAgentPanelModel(): AgentPanelModel {
   return EMPTY_PANEL_MODEL;
 }
 
+function projectedUsage(usage: OrchestrationV2Subagent["usage"]): SubagentUsage | null {
+  if (usage === undefined) return null;
+  return {
+    totalTokens: usage.totalTokens,
+    ...(usage.inputTokens === undefined ? {} : { inputTokens: usage.inputTokens }),
+    ...(usage.cachedInputTokens === undefined
+      ? {}
+      : { cachedInputTokens: usage.cachedInputTokens }),
+    ...(usage.outputTokens === undefined ? {} : { outputTokens: usage.outputTokens }),
+    ...(usage.reasoningOutputTokens === undefined
+      ? {}
+      : { reasoningOutputTokens: usage.reasoningOutputTokens }),
+    ...(usage.toolUses === undefined ? {} : { toolUses: usage.toolUses }),
+    ...(usage.durationMs === undefined ? {} : { durationMs: usage.durationMs }),
+  };
+}
+
+function projectedRunHandles(
+  handles: OrchestrationV2Subagent["runHandles"],
+): SubagentRunHandles | null {
+  if (handles === undefined) return null;
+  return {
+    ...(handles.runId === undefined ? {} : { runId: handles.runId }),
+    ...(handles.scriptPath === undefined ? {} : { scriptPath: handles.scriptPath }),
+    ...(handles.transcriptDir === undefined ? {} : { transcriptDir: handles.transcriptDir }),
+    ...(handles.sessionUrl === undefined ? {} : { sessionUrl: handles.sessionUrl }),
+  };
+}
+
 /**
  * The v2 leg of the mapper swap (#5219 spec): project orchestration-v2
  * subagent entities into the same runtime shape the native fold produced.
  * The panel/CTA components never see which source fed them.
  */
 export function projectedSubagentsToRuntime(
-  subagents: ReadonlyArray<{
-    readonly id: string;
-    readonly title: string | null;
-    readonly prompt: string;
-    readonly model: string | null;
-    readonly status:
-      | "pending"
-      | "running"
-      | "waiting"
-      | "completed"
-      | "failed"
-      | "cancelled"
-      | "interrupted";
-    readonly progress?: string | undefined;
-    readonly result: string | null;
-    readonly startedAt: DateTime.Utc | null;
-    readonly completedAt: DateTime.Utc | null;
-    readonly updatedAt: DateTime.Utc;
-  }>,
+  subagents: ReadonlyArray<OrchestrationV2Subagent>,
 ): ReadonlyArray<RuntimeSubagent> {
-  return subagents.map((subagent) => {
+  const runtime = subagents.map((subagent) => {
     const updatedAt = DateTime.formatIso(subagent.updatedAt);
     const startedAt = subagent.startedAt === null ? null : DateTime.formatIso(subagent.startedAt);
     return {
       id: subagent.id,
-      kind: "subagent" as const,
+      runId: subagent.runId,
+      kind: subagent.kind ?? "subagent",
       title:
         subagent.title ??
         (subagent.prompt.length > 80 ? `${subagent.prompt.slice(0, 77)}...` : subagent.prompt),
-      role: null,
+      role: subagent.role ?? null,
       model: subagent.model,
-      effort: null,
+      effort: subagent.effort ?? null,
       status: subagent.status,
       activationCount: 1,
-      usage: null,
+      usage: projectedUsage(subagent.usage),
       progress: subagent.progress ?? null,
-      lastToolName: null,
+      lastToolName: subagent.lastToolName ?? null,
       result: subagent.result,
-      error: subagent.status === "failed" ? (subagent.result ?? null) : null,
-      outputFile: null,
-      parentAgentId: null,
-      agentIndex: null,
-      phaseIndex: null,
-      phaseTitle: null,
-      attempt: null,
-      workflowName: null,
-      phases: [],
-      runHandles: null,
+      error: subagent.error ?? (subagent.status === "failed" ? (subagent.result ?? null) : null),
+      outputFile: subagent.outputFile ?? null,
+      toolUseId: subagent.toolUseId ?? null,
+      parentAgentId: subagent.parentAgentId ?? null,
+      agentIndex: subagent.agentIndex ?? null,
+      phaseIndex: subagent.phaseIndex ?? null,
+      phaseTitle: subagent.phaseTitle ?? null,
+      attempt: subagent.attempt ?? null,
+      workflowName: subagent.workflowName ?? null,
+      phases: subagent.phases ?? [],
+      runHandles: projectedRunHandles(subagent.runHandles),
       recentActivity: [],
       firstSeenAt: startedAt ?? updatedAt,
       startedAt,
       completedAt: subagent.completedAt === null ? null : DateTime.formatIso(subagent.completedAt),
       updatedAt,
     } satisfies RuntimeSubagent;
+  });
+
+  const settledWorkflows = new Map(
+    runtime
+      .filter((agent) => agent.kind === "workflow" && isTerminalSubagentStatus(agent.status))
+      .map((agent) => [agent.id, agent] as const),
+  );
+  return runtime.map((agent) => {
+    const workflow = agent.parentAgentId ? settledWorkflows.get(agent.parentAgentId) : undefined;
+    if (!workflow || !isActiveSubagentStatus(agent.status)) return agent;
+    return {
+      ...agent,
+      status: workflow.status === "completed" ? "completed" : "interrupted",
+      completedAt: agent.completedAt ?? workflow.completedAt ?? workflow.updatedAt,
+      updatedAt: workflow.updatedAt,
+    };
   });
 }
 

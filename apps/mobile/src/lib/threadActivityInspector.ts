@@ -1,4 +1,6 @@
+import { claudeWorkflowScriptFromToolInput } from "@t3tools/client-runtime/claude-workflow-meta";
 import type { V2ItemSupport } from "@t3tools/client-runtime/state/item-support";
+import type { RuntimeSubagent } from "@t3tools/client-runtime/state/subagentRuntime";
 import type { ThreadId } from "@t3tools/contracts";
 import { formatDuration } from "@t3tools/shared/orchestrationTiming";
 import * as DateTime from "effect/DateTime";
@@ -60,6 +62,18 @@ function durationLabel(
   return formatDuration(Math.max(0, end - start));
 }
 
+function workflowElapsedLabel(
+  startedAt: string | null,
+  completedAt: string | null,
+  now: number,
+): string | null {
+  if (startedAt === null) return null;
+  const start = Date.parse(startedAt);
+  const end = completedAt === null ? now : Date.parse(completedAt);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return formatDuration(Math.max(0, end - start));
+}
+
 function addBlock(
   blocks: ThreadActivityInspectorBlock[],
   label: string,
@@ -70,18 +84,39 @@ function addBlock(
   blocks.push({ label, value: formatStructured(value), monospaced });
 }
 
+function withoutWorkflowScript(input: unknown): unknown {
+  if (typeof input !== "object" || input === null || Array.isArray(input)) return input;
+  const entries = Object.entries(input).filter(([key]) => key !== "script");
+  return entries.length === 0 ? undefined : Object.fromEntries(entries);
+}
+
 export function buildThreadActivityInspector(
   activity: ThreadFeedActivity,
   support: V2ItemSupport,
   currentThreadId: ThreadId,
+  workflow?: Pick<RuntimeSubagent, "status" | "startedAt" | "completedAt">,
+  now = Date.now(),
 ): ThreadActivityInspectorModel {
   const row = activity.projectedItem;
   const item = row.item;
+  const workflowScript =
+    item.type === "dynamic_tool"
+      ? claudeWorkflowScriptFromToolInput(item.toolName, item.input)
+      : null;
+  const inspectorItem =
+    item.type !== "dynamic_tool" || workflowScript === null
+      ? item
+      : {
+          ...item,
+          input: withoutWorkflowScript(item.input),
+        };
   const fields: ThreadActivityInspectorField[] = [
     { label: "Item", value: item.type.replaceAll("_", " ") },
-    { label: "Status", value: item.status.replaceAll("_", " ") },
+    { label: "Status", value: (workflow?.status ?? item.status).replaceAll("_", " ") },
   ];
-  const duration = durationLabel(item.startedAt, item.completedAt);
+  const duration = workflow
+    ? workflowElapsedLabel(workflow.startedAt, workflow.completedAt, now)
+    : durationLabel(item.startedAt, item.completedAt);
   if (duration) fields.push({ label: "Duration", value: duration });
   if (row.visibility !== "local") fields.push({ label: "Visibility", value: row.visibility });
   if (support.run) fields.push({ label: "Run", value: support.run.status });
@@ -186,7 +221,11 @@ export function buildThreadActivityInspector(
       }
       break;
     case "dynamic_tool":
-      addBlock(blocks, "Input", item.input);
+      addBlock(
+        blocks,
+        "Input",
+        workflowScript === null ? item.input : withoutWorkflowScript(item.input),
+      );
       addBlock(blocks, "Output", item.output);
       break;
     case "approval_request":
@@ -302,7 +341,7 @@ export function buildThreadActivityInspector(
       visibility: row.visibility,
       sourceThreadId: row.sourceThreadId,
       sourceItemId: row.sourceItemId,
-      item,
+      item: inspectorItem,
     }),
   };
 }

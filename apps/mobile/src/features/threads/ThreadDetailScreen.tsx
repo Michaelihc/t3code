@@ -89,6 +89,7 @@ import {
   ThreadComposer,
 } from "./ThreadComposer";
 import { ThreadFeed, type ThreadFeedHistoryControls } from "./ThreadFeed";
+import type { AgentPanelWorkflowGroup } from "@t3tools/client-runtime/state/subagentRuntime";
 import { ThreadRelationshipsBanner } from "./ThreadRelationshipsBanner";
 import { ThreadQueueControl } from "./ThreadQueueControl";
 import type { ThreadContentPresentation } from "./threadContentPresentation";
@@ -100,6 +101,7 @@ export interface ThreadDetailScreenProps {
   readonly connectionError: string | null;
   readonly environmentLabel: string | null;
   readonly selectedThreadFeed: ReadonlyArray<ThreadFeedEntry>;
+  readonly workflowGroups: ReadonlyArray<AgentPanelWorkflowGroup>;
   readonly activityRun: ThreadFeedLatestRun | null;
   readonly activeWorkStartedAt: string | null;
   readonly activePendingApproval: PendingApproval | null;
@@ -709,6 +711,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
             threadId={props.selectedThread.id}
             workspaceRoot={props.threadCwd}
             feed={props.selectedThreadFeed}
+            workflowGroups={props.workflowGroups}
             contentPresentation={props.contentPresentation}
             agentLabel={agentLabel}
             threadTitle={props.selectedThread.title}

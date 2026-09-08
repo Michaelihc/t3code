@@ -46,6 +46,16 @@ offers to compact the conversation before you continue. You can also select **Co
 from the context meter. On every client, you can enter `/compact` in the message composer, and
 Claude can show its own resume prompt when you continue an old session.
 
+## Follow Claude Workflows
+
+When Claude Code runs a Workflow, open the Agents panel on web or desktop, or expand the Workflow
+row on mobile, to follow its declared phases and each agent's live status, model, attempt, token
+count, tool count, and current tool. The Workflow row in the conversation stays active for the
+lifetime of the workflow rather than the short launch call.
+
+Expand that row to see the workflow description and declared phase details. The generated workflow
+script stays collapsed by default and can be opened as highlighted TypeScript when you need it.
+
 ## Where Claude Skills Are Loaded
 
 T3 Code looks for Claude skills in the Claude config directory's `skills` folder, then

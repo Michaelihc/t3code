@@ -16,6 +16,7 @@ import {
   NodeId,
   type OrchestrationV2AppThread,
   type OrchestrationV2ProviderThread,
+  type OrchestrationV2Subagent,
   ProjectId,
   ProviderInstanceId,
   type ProviderApprovalDecision,
@@ -40,6 +41,7 @@ import * as Queue from "effect/Queue";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { Tool } from "effect/unstable/ai";
 import { formatClaudeResumeCompactionQuestion } from "@t3tools/shared/claudeCompaction";
 
@@ -1697,6 +1699,14 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       return yield* Effect.die(`Timed out waiting for ${label}.`);
     });
 
+  const takeReceipt = <A>(queue: Queue.Queue<A>, predicate: (value: A) => boolean) =>
+    Effect.gen(function* () {
+      while (true) {
+        const value = yield* Queue.take(queue);
+        if (predicate(value)) return value;
+      }
+    });
+
   const makeWakeHarnessWithOptions = (options?: {
     readonly close?: (sdkMessages: Queue.Queue<SDKMessage>) => Effect.Effect<void>;
     readonly interrupt?: Effect.Effect<void>;
@@ -1710,8 +1720,11 @@ describe("ClaudeAdapterV2 background wake turns", () => {
       const sdkMessages = yield* Queue.unbounded<SDKMessage>();
       const offeredMessages: Array<SDKUserMessage> = [];
       const continuationRequests: Array<ProviderContinuationRequest> = [];
+      const continuationReceipts = yield* Queue.unbounded<ProviderContinuationRequest>();
       const terminalReceipts =
         yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "turn.terminal" }>>();
+      const subagentReceipts =
+        yield* Queue.unbounded<Extract<ProviderAdapterV2Event, { type: "subagent.updated" }>>();
       let openedOptions: ClaudeAgentSdkQueryOptions | undefined;
       const adapter = makeClaudeAdapterV2({
         instanceId: CLAUDE_DEFAULT_INSTANCE_ID,
@@ -1722,8 +1735,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         idAllocator,
         continuationRequests: {
           offer: (request) =>
-            Effect.sync(() => {
+            Effect.gen(function* () {
               continuationRequests.push(request);
+              yield* Queue.offer(continuationReceipts, request);
             }),
         },
         queryRunner: {
@@ -1766,6 +1780,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
             if (event.type === "turn.terminal") {
               yield* Queue.offer(terminalReceipts, event);
             }
+            if (event.type === "subagent.updated") {
+              yield* Queue.offer(subagentReceipts, event);
+            }
           }),
         ),
         Effect.forkScoped,
@@ -1787,7 +1804,9 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         offeredMessages,
         continuationRequests,
         events,
+        continuationReceipts,
         terminalReceipts,
+        subagentReceipts,
         getOpenedOptions: () => openedOptions,
         terminalEvents,
         hasPendingBackgroundWork,
@@ -3415,6 +3434,1411 @@ describe("ClaudeAdapterV2 background wake turns", () => {
         yield* awaitUntil(() => harness.terminalEvents().length === 1, "spurious terminal");
         assert.equal(harness.terminalEvents()[0]?.status, "completed");
         assert.lengthOf(harness.offeredMessages, 0);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("projects Claude workflow progress as a coordinator and live member roster", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        yield* TestClock.setTime(1_788_500_000_000);
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-sandbox-survey";
+        const toolUseId = "toolu-workflow-sandbox-survey";
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+        const nodeEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "node.updated" }> =>
+              event.type === "node.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-progress"),
+            text: "Run the sandbox survey workflow.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Survey the sandbox project",
+            task_type: "local_workflow",
+            workflow_name: "sandbox-project-survey",
+            uuid: "00000000-0000-4000-8000-000000000151",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "2 agents active",
+            summary: "Surveying server and web paths",
+            usage: { total_tokens: 5_000, tool_uses: 9, duration_ms: 41_000 },
+            last_tool_name: "Read",
+            workflow_progress: [
+              { type: "workflow_phase", index: 1, title: "Survey", kind: "parallel" },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentId: "agent-server",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "progress",
+                startedAt: 1_788_400_000_000,
+                queuedAt: 1_788_400_000_000,
+                attempt: 1,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_041_000,
+                tokens: 3_000,
+                toolCalls: 6,
+                durationMs: 41_000,
+              },
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                queuedAt: 1_788_400_001_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastProgressAt: 1_788_400_035_000,
+                tokens: 2_000,
+                toolCalls: 3,
+                durationMs: 33_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000152",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "completed",
+        );
+        const coordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .find((subagent) => subagent.kind === "workflow" && subagent.phases !== undefined);
+        assert.equal(coordinator?.workflowName, "sandbox-project-survey");
+        assert.equal(coordinator?.toolUseId, toolUseId);
+        assert.deepEqual(coordinator?.phases, [{ index: 1, title: "Survey" }]);
+        assert.deepEqual(coordinator?.usage, {
+          totalTokens: 5_000,
+          toolUses: 9,
+          durationMs: 41_000,
+        });
+
+        const members = subagentEvents()
+          .map((event) => event.subagent)
+          .filter((subagent) => subagent.kind === "workflow_agent");
+        assert.lengthOf(members, 2);
+        assert.deepInclude(members[0], {
+          title: "server-surveyor",
+          role: "Explore",
+          model: "claude-sonnet-4-6",
+          status: "running",
+          parentAgentId: coordinator?.id,
+          phaseIndex: 1,
+          phaseTitle: "Survey",
+          attempt: 1,
+          lastToolName: "Read",
+          progress: "Inspecting ClaudeAdapterV2",
+          usage: { totalTokens: 3_000, toolUses: 6, durationMs: 41_000 },
+        });
+        assert.deepInclude(members[1], {
+          title: "web-surveyor",
+          status: "completed",
+          attempt: 2,
+          result: "Located the existing workflow panel.",
+        });
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Server survey duration advanced",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              { type: "workflow_phase", index: 2, title: "Synthesize", kind: "serial" },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "progress",
+                startedAt: 1_788_400_000_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_042_000,
+                durationMs: 42_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000160",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 1 &&
+            event.subagent.usage?.durationMs === 42_000,
+        );
+        const partialUsageMember = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 1);
+        assert.deepEqual(partialUsageMember?.usage, {
+          totalTokens: 3_000,
+          toolUses: 6,
+          durationMs: 42_000,
+        });
+        const incrementallyPhasedCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepEqual(incrementallyPhasedCoordinator?.phases, [
+          { index: 1, title: "Survey" },
+          { index: 2, title: "Synthesize" },
+        ]);
+        const memberOneEventCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Delayed omitted-attempt workflow snapshot",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                agentType: "Explore",
+                model: "claude-sonnet-4-6",
+                state: "error",
+                startedAt: 1_788_400_000_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting ClaudeAdapterV2",
+                lastProgressAt: 1_788_400_041_000,
+                tokens: 2_000,
+                toolCalls: 4,
+                durationMs: 40_000,
+                error: "Stale omitted-attempt failure",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000161",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Marker after repeated snapshot",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastToolSummary: "Repeated snapshot processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000162",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Repeated snapshot processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 1,
+          ).length,
+          memberOneEventCount,
+        );
+        const memberTwoEventCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Provider-timed progress followed an untimed receipt",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                startedAt: 1_788_400_002_000,
+                attempt: 2,
+                resultPreview: "Located the existing workflow panel.",
+                lastProgressAt: 1_788_400_036_000,
+                lastToolSummary: "Repeated snapshot processed",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Silent provider watermark advanced",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000171",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Silent provider watermark advanced",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          memberTwoEventCount,
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A conflicting frame predates the silent provider watermark",
+            usage: { total_tokens: 5_100, tool_uses: 9, duration_ms: 42_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                attempt: 2,
+                lastProgressAt: 1_788_400_035_500,
+                error: "Stale failure after silent watermark",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Silent watermark stale-frame marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000172",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Silent watermark stale-frame marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          memberTwoEventCount,
+        );
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Web survey failed",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 43_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                startedAt: 1_788_400_050_000,
+                attempt: 3,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting the stale result",
+                tokens: 200,
+                toolCalls: 1,
+                durationMs: 2_000,
+                resultPreview: "Partial retry output",
+                error: "First retry failed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000153",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Retrying web survey",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 43_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_060_000,
+                attempt: 4,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000154",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.attempt === 4,
+        );
+        const retriedMember = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.deepInclude(retriedMember, {
+          status: "running",
+          attempt: 4,
+          result: null,
+        });
+        const retryStartedAt = retriedMember?.startedAt;
+        if (retryStartedAt === undefined || retryStartedAt === null) {
+          throw new Error("Expected the workflow retry to adopt its own start time.");
+        }
+        assert.equal(DateTime.toEpochMillis(retryStartedAt), 1_788_400_060_000);
+        assert.notProperty(retriedMember, "error");
+        assert.notProperty(retriedMember, "lastToolName");
+        assert.notProperty(retriedMember, "progress");
+        assert.notProperty(retriedMember, "usage");
+
+        const beforeStaleAttemptMemberCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A delayed older attempt arrived",
+            usage: { total_tokens: 5_200, tool_uses: 10, duration_ms: 65_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_050_000,
+                attempt: 3,
+                lastToolSummary: "Stale attempt still reading",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015c",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Web survey failed without attempt telemetry",
+            usage: { total_tokens: 5_500, tool_uses: 12, duration_ms: 70_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                startedAt: 1_788_400_070_000,
+                lastToolName: "Read",
+                lastToolSummary: "Inspecting another failure",
+                tokens: 300,
+                toolCalls: 2,
+                resultPreview: "Stale terminal result",
+                error: "Retry failed without an attempt number",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000156",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.error === "Retry failed without an attempt number",
+        );
+        const attemptLessTerminal = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(attemptLessTerminal?.status, "failed");
+        assert.equal(attemptLessTerminal?.error, "Retry failed without an attempt number");
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeStaleAttemptMemberCount + 1,
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A later retry also failed",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 77_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                attempt: 5,
+                startedAt: 1_788_400_075_000,
+                durationMs: 2_000,
+                error: "The later retry failed too",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015a",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.attempt === 5,
+        );
+        const sameStatusRetry = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(sameStatusRetry?.status, "failed");
+        assert.equal(sameStatusRetry?.attempt, 5);
+        if (sameStatusRetry?.startedAt === undefined || sameStatusRetry.startedAt === null) {
+          throw new Error("Expected the same-status workflow retry to adopt its own start time.");
+        }
+        if (sameStatusRetry.completedAt === null) {
+          throw new Error(
+            "Expected the same-status workflow retry to adopt its own completion time.",
+          );
+        }
+        assert.equal(DateTime.toEpochMillis(sameStatusRetry.startedAt), 1_788_400_075_000);
+        assert.equal(DateTime.toEpochMillis(sameStatusRetry.completedAt), 1_788_400_077_000);
+        const beforeOlderSameAttemptTerminal = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "An older terminal snapshot from the same attempt arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 77_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "done",
+                attempt: 5,
+                lastProgressAt: 1_788_400_076_000,
+                resultPreview: "Stale success",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Older-terminal marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000016e",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Older-terminal marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeOlderSameAttemptTerminal,
+        );
+        assert.deepInclude(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast(
+              (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+            ),
+          { status: "failed", error: "The later retry failed too" },
+        );
+        const beforeSameAttemptActiveCount = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        for (const attempt of [5, undefined]) {
+          const marker = `Same-attempt marker processed: ${attempt ?? "omitted"}`;
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_progress",
+              task_id: taskId,
+              tool_use_id: toolUseId,
+              description: "A delayed active frame from the completed attempt arrived",
+              usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 78_000 },
+              workflow_progress: [
+                {
+                  type: "workflow_agent",
+                  index: 2,
+                  label: "web-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state: "progress",
+                  ...(attempt === undefined ? {} : { attempt }),
+                  startedAt: 1_788_400_075_000,
+                  lastProgressAt: 1_788_400_076_000,
+                  lastToolSummary: "Stale same-attempt progress",
+                },
+                {
+                  type: "workflow_agent",
+                  index: 1,
+                  label: "server-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state: "progress",
+                  lastToolSummary: marker,
+                },
+              ],
+              uuid: "00000000-0000-4000-8000-00000000016a",
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* takeReceipt(
+            harness.subagentReceipts,
+            (event) => event.subagent.progress === marker,
+          );
+          assert.equal(
+            subagentEvents().filter(
+              (event) =>
+                event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+            ).length,
+            beforeSameAttemptActiveCount,
+          );
+          assert.equal(
+            subagentEvents()
+              .map((event) => event.subagent)
+              .findLast(
+                (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+              )?.status,
+            "failed",
+          );
+        }
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "The rejected frame did not supersede attempt five",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 78_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                state: "error",
+                attempt: 5,
+                lastProgressAt: 1_788_400_078_000,
+                lastToolSummary: "Attempt five remains current",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000173",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Attempt five remains current",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Retrying without attempt telemetry",
+            usage: { total_tokens: 5_500, tool_uses: 12, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                startedAt: 1_788_400_080_000,
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000157",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "running" &&
+            event.subagent.startedAt !== null &&
+            DateTime.toEpochMillis(event.subagent.startedAt) === 1_788_400_080_000,
+        );
+        const attemptLessRetry = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(attemptLessRetry?.status, "running");
+        assert.equal(attemptLessRetry?.result, null);
+        if (attemptLessRetry?.startedAt === undefined || attemptLessRetry.startedAt === null) {
+          throw new Error("Expected the attempt-less workflow retry to adopt its own start time.");
+        }
+        assert.equal(DateTime.toEpochMillis(attemptLessRetry.startedAt), 1_788_400_080_000);
+        assert.notProperty(attemptLessRetry, "attempt");
+        assert.notProperty(attemptLessRetry, "error");
+        assert.notProperty(attemptLessRetry, "lastToolName");
+        assert.notProperty(attemptLessRetry, "progress");
+        assert.notProperty(attemptLessRetry, "usage");
+        const attemptLessBaseline = DateTime.toEpochMillis(attemptLessRetry.updatedAt);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Fresh attempt-less progress arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastProgressAt: attemptLessBaseline + 2_000,
+                lastToolSummary: "Fresh attempt-less progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000016f",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Fresh attempt-less progress",
+        );
+        const beforeStaleAttemptLessTerminal = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A delayed attempt-less terminal snapshot arrived",
+            usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 80_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "web-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "error",
+                lastProgressAt: attemptLessBaseline + 1_000,
+                error: "Stale attempt-less failure",
+              },
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "server-surveyor",
+                phaseIndex: 1,
+                phaseTitle: "Survey",
+                state: "progress",
+                lastToolSummary: "Attempt-less timestamp marker processed",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000170",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.progress === "Attempt-less timestamp marker processed",
+        );
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeStaleAttemptLessTerminal,
+        );
+        assert.deepInclude(
+          subagentEvents()
+            .map((event) => event.subagent)
+            .findLast(
+              (subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2,
+            ),
+          { status: "running", progress: "Fresh attempt-less progress" },
+        );
+        const beforeSupersededAttemptFrames = subagentEvents().filter(
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        ).length;
+        for (const [state, marker, uuid] of [
+          [
+            "progress",
+            "Superseded active marker processed",
+            "00000000-0000-4000-8000-00000000016c",
+          ],
+          ["done", "Superseded terminal marker processed", "00000000-0000-4000-8000-00000000016d"],
+        ] as const) {
+          yield* Queue.offer(
+            harness.sdkMessages,
+            claudeSdkFrame({
+              type: "system",
+              subtype: "task_progress",
+              task_id: taskId,
+              tool_use_id: toolUseId,
+              description: "A delayed frame from the superseded numbered attempt arrived",
+              usage: { total_tokens: 5_600, tool_uses: 13, duration_ms: 80_000 },
+              workflow_progress: [
+                {
+                  type: "workflow_agent",
+                  index: 2,
+                  label: "web-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state,
+                  attempt: 5,
+                  lastToolSummary: "Superseded attempt frame",
+                },
+                {
+                  type: "workflow_agent",
+                  index: 1,
+                  label: "server-surveyor",
+                  phaseIndex: 1,
+                  phaseTitle: "Survey",
+                  state: "progress",
+                  lastToolSummary: marker,
+                },
+              ],
+              uuid,
+              session_id: WAKE_NATIVE_SESSION,
+            }),
+          );
+          yield* takeReceipt(
+            harness.subagentReceipts,
+            (event) => event.subagent.progress === marker,
+          );
+        }
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+          ).length,
+          beforeSupersededAttemptFrames,
+        );
+        const memberAfterSupersededAttemptFrames = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow_agent" && subagent.agentIndex === 2);
+        assert.equal(memberAfterSupersededAttemptFrames?.status, "running");
+        assert.notProperty(memberAfterSupersededAttemptFrames, "attempt");
+        const coordinatorAfterRegressedUsage = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepEqual(coordinatorAfterRegressedUsage?.usage, {
+          totalTokens: 5_600,
+          toolUses: 13,
+          durationMs: 80_000,
+        });
+
+        // Let the root settle first. Late workflow progress must continue to
+        // project live while no turn is attached; a later user turn must not
+        // interfere with the eventual terminal wake notification.
+        yield* Queue.offer(harness.sdkMessages, turnOneResult);
+        yield* Queue.take(harness.terminalReceipts);
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Synthesis is still running",
+            summary: "Progress-only idle update",
+            usage: { total_tokens: 5_650, tool_uses: 13, duration_ms: 85_000 },
+            last_tool_name: "Read",
+            workflow_progress: [],
+            uuid: "00000000-0000-4000-8000-00000000016b",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow" &&
+            event.subagent.progress === "Progress-only idle update",
+        );
+        const idleProgressOnlyCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.deepInclude(idleProgressOnlyCoordinator, {
+          progress: "Progress-only idle update",
+          lastToolName: "Read",
+          usage: { totalTokens: 5_650, toolUses: 13, durationMs: 85_000 },
+        });
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "A late synthesis agent started",
+            usage: { total_tokens: 5_700, tool_uses: 13, duration_ms: 90_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 3,
+                label: "synthesizer",
+                phaseIndex: 2,
+                phaseTitle: "Synthesize",
+                state: "progress",
+                startedAt: 1_788_400_090_000,
+                lastToolName: "Write",
+                lastToolSummary: "Combining survey results",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000159",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 3,
+        );
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-user-race"),
+            text: "What is the workflow status?",
+            attachments: [],
+            providerTurnOrdinal: 2,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Synthesis continued during an unrelated user turn",
+            usage: { total_tokens: 5_900, tool_uses: 14, duration_ms: 95_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 3,
+                label: "synthesizer",
+                phaseIndex: 2,
+                phaseTitle: "Synthesize",
+                state: "progress",
+                startedAt: 1_788_400_090_000,
+                lastToolName: "Write",
+                lastToolSummary: "Still combining survey results",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-00000000015d",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.progress === "Still combining survey results",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "completed",
+            output_file: "/tmp/workflow-sandbox-survey.output",
+            summary: "Survey complete",
+            uuid: "00000000-0000-4000-8000-000000000155",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "completed",
+            output_file: "/tmp/workflow-sandbox-survey.output",
+            summary: "Survey complete",
+            uuid: "00000000-0000-4000-8000-00000000015e",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 3 &&
+            event.subagent.status === "completed",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-00000000015b",
+            result: "The workflow is still finishing.",
+            subtype: "error_during_execution",
+            isError: true,
+            errors: ["The unrelated status turn failed."],
+          }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+        assert.equal(harness.terminalEvents()[1]?.status, "failed");
+        assert.equal(
+          subagentEvents().filter(
+            (event) => event.subagent.kind === "workflow" && event.subagent.status === "completed",
+          ).length,
+          1,
+        );
+        const terminalCoordinator = subagentEvents()
+          .map((event) => event.subagent)
+          .findLast((subagent) => subagent.kind === "workflow");
+        assert.equal(terminalCoordinator?.status, "completed");
+        assert.equal(terminalCoordinator?.outputFile, "/tmp/workflow-sandbox-survey.output");
+        const latestMembers = new Map<number, OrchestrationV2Subagent>();
+        for (const event of subagentEvents()) {
+          if (event.subagent.kind === "workflow_agent" && event.subagent.agentIndex !== undefined) {
+            latestMembers.set(event.subagent.agentIndex, event.subagent);
+          }
+        }
+        assert.equal(latestMembers.get(1)?.status, "completed");
+        assert.equal(latestMembers.get(2)?.status, "completed");
+        assert.equal(latestMembers.get(3)?.status, "completed");
+        assert.equal(latestMembers.get(3)?.title, "synthesizer");
+        assert.equal(latestMembers.get(3)?.progress, "Still combining survey results");
+        assert.isNotNull(latestMembers.get(1)?.completedAt);
+        assert.isNotNull(latestMembers.get(2)?.completedAt);
+        assert.isNotNull(latestMembers.get(3)?.completedAt);
+        assert.equal(latestMembers.get(1)?.runId, members[0]?.runId);
+        assert.equal(latestMembers.get(2)?.runId, members[1]?.runId);
+        assert.equal(latestMembers.get(3)?.runId, members[0]?.runId);
+        const ownerProviderTurnId = nodeEvents().find((event) => event.node.id === members[0]?.id)
+          ?.node.providerTurnId;
+        assert.isNotNull(ownerProviderTurnId);
+        assert.equal(
+          nodeEvents().findLast((event) => event.node.id === latestMembers.get(3)?.id)?.node
+            .providerTurnId,
+          ownerProviderTurnId,
+        );
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("interrupts unfinished workflow members when the coordinator fails", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-failed-coordinator";
+        const toolUseId = "toolu-workflow-failed-coordinator";
+        const subagentEvents = () =>
+          harness.events.filter(
+            (event): event is Extract<ProviderAdapterV2Event, { type: "subagent.updated" }> =>
+              event.type === "subagent.updated",
+          );
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-failure"),
+            text: "Run a workflow that fails.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run the failing workflow",
+            task_type: "local_workflow",
+            workflow_name: "failing-workflow",
+            uuid: "00000000-0000-4000-8000-000000000161",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "One agent failed while another was still running",
+            usage: { total_tokens: 800, tool_uses: 3, duration_ms: 10_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "failed-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "error",
+                error: "Agent failed explicitly",
+              },
+              {
+                type: "workflow_agent",
+                index: 2,
+                label: "running-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000162",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow_agent" && event.subagent.agentIndex === 2,
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_notification",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            status: "failed",
+            summary: "Workflow failed",
+            uuid: "00000000-0000-4000-8000-000000000163",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" &&
+            event.subagent.agentIndex === 2 &&
+            event.subagent.status === "interrupted",
+        );
+
+        const latestMembers = new Map<number, OrchestrationV2Subagent>();
+        for (const event of subagentEvents()) {
+          if (event.subagent.kind === "workflow_agent" && event.subagent.agentIndex !== undefined) {
+            latestMembers.set(event.subagent.agentIndex, event.subagent);
+          }
+        }
+        assert.equal(latestMembers.get(1)?.status, "failed");
+        assert.equal(latestMembers.get(1)?.error, "Agent failed explicitly");
+        assert.equal(latestMembers.get(2)?.status, "interrupted");
+
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000164",
+            result: "The workflow failed.",
+          }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("cleans up workflow state when the owning query is interrupted", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarnessWithOptions({
+          close: (sdkMessages) => Queue.shutdown(sdkMessages),
+        });
+        const idAllocator = yield* IdAllocatorV2;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-interrupted-query";
+        const toolUseId = "toolu-workflow-interrupted-query";
+        const attemptId = RunAttemptId.make("attempt-claude-workflow-interrupted-query");
+        const providerTurnId = idAllocator.derive.providerTurn({
+          driver: CLAUDE_PROVIDER,
+          nativeTurnId: `turn:${attemptId}`,
+        });
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId,
+            text: "Run a workflow and then stop.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run the interruptible workflow",
+            task_type: "local_workflow",
+            workflow_name: "interruptible-workflow",
+            uuid: "00000000-0000-4000-8000-000000000165",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Agent is still running",
+            usage: { total_tokens: 200, tool_uses: 1, duration_ms: 2_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "running-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000166",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
+        );
+
+        yield* harness.runtime.interruptTurn({
+          providerThread: harness.providerThread,
+          providerTurnId,
+        });
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "interrupted",
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
+        );
+        assert.equal((yield* Queue.take(harness.terminalReceipts)).status, "interrupted");
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
+      }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
+    ),
+  );
+
+  it.effect("cleans up a continuing workflow when its idle query stream exits", () =>
+    Effect.scoped(
+      Effect.gen(function* () {
+        const harness = yield* makeWakeHarness;
+        const now = yield* DateTime.now;
+        const taskId = "workflow-idle-query-exit";
+        const toolUseId = "toolu-workflow-idle-query-exit";
+
+        yield* harness.runtime.startTurn(
+          makeClaudeTestTurnInput({
+            threadId: harness.threadId,
+            providerThread: harness.providerThread,
+            now,
+            attemptId: RunAttemptId.make("attempt-claude-workflow-idle-query-exit"),
+            text: "Start a workflow that outlives this turn.",
+            attachments: [],
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_started",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Run beyond the root turn",
+            task_type: "local_workflow",
+            workflow_name: "idle-query-workflow",
+            uuid: "00000000-0000-4000-8000-000000000167",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          claudeSdkFrame({
+            type: "system",
+            subtype: "task_progress",
+            task_id: taskId,
+            tool_use_id: toolUseId,
+            description: "Still running after root settle",
+            usage: { total_tokens: 300, tool_uses: 2, duration_ms: 3_000 },
+            workflow_progress: [
+              {
+                type: "workflow_agent",
+                index: 1,
+                label: "late-agent",
+                phaseIndex: 1,
+                phaseTitle: "Run",
+                state: "progress",
+              },
+            ],
+            uuid: "00000000-0000-4000-8000-000000000168",
+            session_id: WAKE_NATIVE_SESSION,
+          }),
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "running",
+        );
+        yield* Queue.offer(
+          harness.sdkMessages,
+          makeResultFrame({
+            uuid: "00000000-0000-4000-8000-000000000169",
+            result: "The workflow is continuing.",
+          }),
+        );
+        yield* Queue.take(harness.terminalReceipts);
+
+        yield* Queue.shutdown(harness.sdkMessages);
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) => event.subagent.kind === "workflow" && event.subagent.status === "failed",
+        );
+        yield* takeReceipt(
+          harness.subagentReceipts,
+          (event) =>
+            event.subagent.kind === "workflow_agent" && event.subagent.status === "interrupted",
+        );
+        assert.isFalse(yield* harness.hasPendingBackgroundWork);
       }).pipe(Effect.provide(Layer.merge(idAllocatorLayer, NodeServices.layer))),
     ),
   );

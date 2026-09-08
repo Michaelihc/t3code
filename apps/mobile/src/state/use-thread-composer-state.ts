@@ -1,6 +1,10 @@
 import { useAtomValue } from "@effect/atom-react";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
 import {
+  deriveAgentPanelModel,
+  projectedSubagentsToRuntime,
+} from "@t3tools/client-runtime/state/subagentRuntime";
+import {
   deriveThreadActivityRun,
   deriveThreadRuntime,
   threadRuntimeHasInterruptibleRun,
@@ -132,6 +136,12 @@ export function useThreadComposerState() {
   );
   const selectedThreadAttempts = selectedThreadProjection?.projection.attempts;
   const selectedThreadNodes = selectedThreadProjection?.projection.nodes;
+  const selectedThreadWorkflowGroups = useMemo(() => {
+    const subagents = selectedThreadProjection?.projection.subagents;
+    if (!subagents || subagents.length === 0) return [];
+    const projected = projectedSubagentsToRuntime(subagents);
+    return deriveAgentPanelModel({ agents: [], v2Projection: projected }).workflows;
+  }, [selectedThreadProjection?.projection.subagents]);
   const selectedThreadFeed = useMemo(() => {
     const submissions = selectedThreadKey
       ? (feedbackSubmissionsByThreadKey[selectedThreadKey] ?? [])
@@ -501,6 +511,7 @@ export function useThreadComposerState() {
 
   return {
     selectedThreadFeed,
+    selectedThreadWorkflowGroups,
     selectedThreadActivityRun,
     selectedThreadQueueCount,
     activeWorkStartedAt,

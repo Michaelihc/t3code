@@ -173,6 +173,67 @@ describe("buildThreadActivityInspector", () => {
       ]),
     );
     expect(dynamicModel.structuredDetails).toContain('"type": "dynamic_tool"');
+
+    const scriptedDynamicTool: OrchestrationV2TurnItem = {
+      ...itemBase("scripted-dynamic"),
+      type: "dynamic_tool",
+      toolName: "custom",
+      input: { script: "echo visible" },
+    };
+    const scriptedDynamicModel = buildThreadActivityInspector(
+      activityFor(scriptedDynamicTool),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+    );
+    expect(scriptedDynamicModel.blocks).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ label: "Input", value: expect.stringContaining("echo visible") }),
+      ]),
+    );
+    expect(scriptedDynamicModel.structuredDetails).toContain("echo visible");
+  });
+
+  it("uses the workflow coordinator lifecycle for a workflow tool", () => {
+    const item: OrchestrationV2TurnItem = {
+      ...itemBase("workflow"),
+      type: "dynamic_tool",
+      toolName: "Workflow",
+      input: {
+        script:
+          "export const meta = { name: 'survey', description: 'Survey the repo', phases: [{ title: 'Inspect', detail: 'Read files' }] };",
+      },
+    };
+    const workflow = {
+      status: "running" as const,
+      startedAt: "2026-06-20T00:00:00.000Z",
+      completedAt: null,
+    };
+    const model = buildThreadActivityInspector(
+      activityFor(item),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+      workflow,
+      Date.parse("2026-06-20T00:01:41.000Z"),
+    );
+    const nextModel = buildThreadActivityInspector(
+      activityFor(item),
+      EMPTY_V2_ITEM_SUPPORT,
+      sourceThreadId,
+      workflow,
+      Date.parse("2026-06-20T00:01:42.000Z"),
+    );
+
+    expect(model.fields).toContainEqual({ label: "Status", value: "running" });
+    expect(model.fields).toContainEqual({ label: "Duration", value: "1m 41s" });
+    expect(model.fields).not.toContainEqual({ label: "Duration", value: "2.0s" });
+    expect(nextModel.fields).toContainEqual({ label: "Duration", value: "1m 42s" });
+    expect(model.blocks).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ value: expect.stringContaining("export const meta") }),
+      ]),
+    );
+    expect(model.structuredDetails).not.toContain("export const meta");
+    expect(model.structuredDetails).not.toContain('"script"');
   });
 
   it("enables rollback only for the matching ready checkpoint", () => {
