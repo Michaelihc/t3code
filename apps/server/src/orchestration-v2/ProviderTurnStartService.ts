@@ -26,9 +26,15 @@ import {
 } from "./ContextHandoffService.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
-import { ProviderAdapterEnsureThreadError } from "./ProviderAdapter.ts";
+import {
+  ProviderAdapterEnsureThreadError,
+  type ProviderAdapterForkThreadError,
+} from "./ProviderAdapter.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
-import { ProviderSessionManagerV2 } from "./ProviderSessionManager.ts";
+import {
+  ProviderSessionManagerV2,
+  type ProviderSessionOpenError,
+} from "./ProviderSessionManager.ts";
 import {
   canRouteRelatedSubagent,
   RunExecutionServiceV2,
@@ -213,23 +219,22 @@ export const layer: Layer.Layer<
       const existingSessionProjection = projection.providerSessions.find(
         (candidate) => candidate.id === providerSessionId,
       );
-      const session = yield* providerSessions.open({
-        threadId: projection.thread.id,
-        providerSessionId,
-        modelSelection: run.modelSelection,
-        runtimePolicy: resolvedRuntimePolicy,
-        ...(existingSessionProjection === undefined
-          ? {}
-          : { resumeFromSession: existingSessionProjection }),
-      });
-      const terminalizeTimedOutStart = Effect.fn(
-        "orchestrationV2.providerTurnStart.terminalizeTimedOutStart",
-      )(function* (cause: ProviderAdapterEnsureThreadError) {
+      const terminalizeFailedStart = Effect.fn(
+        "orchestrationV2.providerTurnStart.terminalizeFailedStart",
+      )(function* (
+        cause:
+          | ProviderAdapterEnsureThreadError
+          | ProviderAdapterForkThreadError
+          | ProviderSessionOpenError,
+      ) {
+        const timedOut = isProviderAdapterEnsureThreadError(cause) && cause.timedOut === true;
         const now = yield* DateTime.now;
         const failure = makeProviderFailure({
-          message: `${providerThread.driver} did not respond while starting this turn. The turn was stopped instead of waiting indefinitely.`,
-          code: "thread_start_timeout",
-          class: "transport_error",
+          message: timedOut
+            ? `${providerThread.driver} did not respond while starting this turn. The turn was stopped instead of waiting indefinitely.`
+            : `${providerThread.driver} could not start this turn. Try sending your message again.`,
+          code: timedOut ? "thread_start_timeout" : "thread_start_failed",
+          class: timedOut ? "transport_error" : "unknown",
           retryable: true,
           cause,
         });
@@ -268,7 +273,7 @@ export const layer: Layer.Layer<
             payload: {
               id: idAllocator.derive.turnItemFromProviderItem({
                 driver: providerThread.driver,
-                nativeItemId: `provider-thread-start-timeout:${run.id}`,
+                nativeItemId: `provider-thread-start-failure:${attempt.id}`,
               }),
               threadId: projection.thread.id,
               runId: run.id,
@@ -279,7 +284,7 @@ export const layer: Layer.Layer<
               parentItemId: null,
               ordinal: failureItemOrdinal,
               status: "failed",
-              title: "Provider start timed out",
+              title: timedOut ? "Provider start timed out" : "Provider start failed",
               startedAt: now,
               completedAt: now,
               updatedAt: now,
@@ -303,23 +308,29 @@ export const layer: Layer.Layer<
             },
           },
         ];
-        yield* eventSink.writeIfRunCurrent({
+        const failedWrite = yield* eventSink.writeIfRunCurrent({
           threadId: projection.thread.id,
           runId: run.id,
           activeAttemptId: attempt.id,
           expectedStatus: "starting",
           events,
         });
+        if (!failedWrite.committed) return;
+        yield* Effect.logWarning("Provider turn start failed", {
+          threadId: projection.thread.id,
+          runId: run.id,
+          cause,
+        });
         yield* providerSessions
           .release({
             providerSessionId,
             reason: "runtime_error",
-            detail: `Provider thread start timed out for run ${run.id}.`,
+            detail: `Provider thread start ${timedOut ? "timed out" : "failed"} for run ${run.id}.`,
           })
           .pipe(
             Effect.catchCause((releaseCause) =>
               Effect.logWarning(
-                "orchestration-v2.provider-turn-start.timeout-session-release-failed",
+                "orchestration-v2.provider-turn-start.failure-session-release-failed",
                 {
                   threadId: projection.thread.id,
                   runId: run.id,
@@ -330,6 +341,25 @@ export const layer: Layer.Layer<
             ),
           );
       });
+      const sessionResult = yield* Effect.result(
+        providerSessions.open({
+          threadId: projection.thread.id,
+          providerSessionId,
+          modelSelection: run.modelSelection,
+          runtimePolicy: resolvedRuntimePolicy,
+          ...(existingSessionProjection === undefined
+            ? {}
+            : { resumeFromSession: existingSessionProjection }),
+        }),
+      );
+      if (sessionResult._tag === "Failure") {
+        if (sessionResult.failure._tag !== "ProviderSessionOpenError") {
+          return yield* sessionResult.failure;
+        }
+        yield* terminalizeFailedStart(sessionResult.failure);
+        return;
+      }
+      const session = sessionResult.success;
       let effectiveHandoffs = handoffs;
       const loadedProviderThreadResult = yield* Effect.gen(function* () {
         if (nativeForkTransfer !== undefined) {
@@ -456,13 +486,14 @@ export const layer: Layer.Layer<
         return replacement;
       }).pipe(
         Effect.map((providerThread) => ({ type: "loaded" as const, providerThread })),
-        Effect.catch((cause) =>
-          isProviderAdapterEnsureThreadError(cause) && cause.timedOut === true
-            ? terminalizeTimedOutStart(cause).pipe(Effect.as({ type: "timed_out" as const }))
-            : Effect.fail(cause),
-        ),
+        Effect.catchTags({
+          ProviderAdapterEnsureThreadError: (cause) =>
+            terminalizeFailedStart(cause).pipe(Effect.as({ type: "failed" as const })),
+          ProviderAdapterForkThreadError: (cause) =>
+            terminalizeFailedStart(cause).pipe(Effect.as({ type: "failed" as const })),
+        }),
       );
-      if (loadedProviderThreadResult.type === "timed_out") {
+      if (loadedProviderThreadResult.type === "failed") {
         return;
       }
       const loadedProviderThread = loadedProviderThreadResult.providerThread;

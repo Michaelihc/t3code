@@ -28,6 +28,13 @@ Log in with Codex normally:
 codex login
 ```
 
+## A turn fails to start
+
+If Codex fails while opening a session, creating a thread, or forking a conversation, T3 Code
+marks the turn as failed and shows a provider error. You can send another message in the same
+conversation without restarting T3 Code. If the failure repeats, check the Codex executable path
+and account status in provider settings.
+
 ## Send feedback to OpenAI
 
 In an existing Codex thread, send `/feedback` or `/feedback` followed by a description of the
