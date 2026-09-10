@@ -1863,6 +1863,23 @@ describe("sortSidebarV2ProjectGroups", () => {
 });
 
 describe("resolveThreadLastVisitedAt", () => {
+  it("clears repeated unread cycles on every client despite stale local watermarks", () => {
+    const completedAt = "2026-07-30T10:00:00.000Z";
+    const unreadAt = "2026-07-30T09:59:59.999Z";
+    const thread = makeThread({ latestRun: makeLatestRun({ completedAt }) });
+    const clients = [unreadAt, "2026-07-30T11:00:00.000Z", undefined];
+    for (const serverLastVisitedAt of [unreadAt, completedAt, unreadAt, completedAt]) {
+      for (const localLastVisitedAt of clients) {
+        expect(
+          hasUnseenCompletion({
+            ...thread,
+            lastVisitedAt: resolveThreadLastVisitedAt(serverLastVisitedAt, localLastVisitedAt),
+          }),
+        ).toBe(serverLastVisitedAt === unreadAt);
+      }
+    }
+  });
+
   it("uses the local watermark when the server does not track visits", () => {
     expect(resolveThreadLastVisitedAt(undefined, "2026-07-30T10:00:00.000Z")).toBe(
       "2026-07-30T10:00:00.000Z",

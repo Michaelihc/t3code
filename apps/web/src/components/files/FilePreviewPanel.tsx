@@ -1,4 +1,5 @@
 import { Spinner } from "~/components/ui/spinner";
+import { RefreshImageButton } from "~/components/media/RefreshImageButton";
 import type {
   ChatFileAttachment,
   EditorId,
@@ -179,15 +180,21 @@ function WorkspaceImagePreview(props: {
   if (assetUrl._tag === "Failure" || (imageUrl !== null && failedUrl === imageUrl)) {
     return (
       <MediaActions source={actionsSource}>
-        <div className="flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
+        <div className="relative flex min-h-0 flex-1 items-center justify-center px-6 text-center text-xs leading-relaxed text-destructive">
           Unable to load workspace image.
+          <div className="absolute right-2 top-2">
+            <RefreshImageButton asset={{ environmentId: props.environmentId, resource }} />
+          </div>
         </div>
       </MediaActions>
     );
   }
 
   return assetUrl._tag === "Success" && imageUrl !== null ? (
-    <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+    <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-auto p-4">
+      <div className="absolute right-2 top-2 z-10">
+        <RefreshImageButton asset={{ environmentId: props.environmentId, resource }} />
+      </div>
       <MediaActions source={actionsSource}>
         <img
           className="max-h-full max-w-full object-contain"

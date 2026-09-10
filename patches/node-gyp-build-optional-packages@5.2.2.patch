@@ -1,0 +1,17 @@
+diff --git a/bin.js b/bin.js
+index 9227ea4..9dece48 100755
+--- a/bin.js
++++ b/bin.js
+@@ -30,8 +30,11 @@ function build () {
+       'rebuild'
+     ]
+   } catch (_) {}
+ 
+-  proc.spawn(args[0], args.slice(1), { stdio: 'inherit', shell: win32, windowsHide: true }).on('exit', function (code) {
++  // Executables accept an argv array directly on Windows. Sending them through
++  // cmd.exe breaks node-gyp paths that contain spaces (for example OneDrive).
++  var shell = win32 && /\.cmd$/i.test(args[0])
++  proc.spawn(args[0], args.slice(1), { stdio: 'inherit', shell: shell, windowsHide: true }).on('exit', function (code) {
+     if (code || !process.argv[3]) process.exit(code)
+     exec(process.argv[3]).on('exit', function (code) {
+       process.exit(code)

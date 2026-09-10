@@ -802,27 +802,45 @@ const countTerminalTurnsAfterBoundary = (
   ).length;
 };
 
-const resolveCodexForkRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveForkRollbackTurnCount")(
-  function* (input: ProviderAdapterV2ForkThreadInput) {
-    if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
-      return 0;
-    }
+const resolveCodexForkLastTurnId = Effect.fn("CodexAdapterV2.resolveForkLastTurnId")(function* (
+  input: ProviderAdapterV2ForkThreadInput,
+) {
+  if (input.providerTurnId === undefined || input.sourceProviderTurns === undefined) {
+    return undefined;
+  }
 
-    const rollbackTurnCount = countTerminalTurnsAfterBoundary(
-      providerTurnsForThread(input.sourceProviderTurns, input.sourceProviderThread),
-      input.providerTurnId,
-    );
-    if (rollbackTurnCount === null) {
-      return yield* new ProviderAdapterForkThreadError({
-        driver: CODEX_PROVIDER,
-        providerThreadId: input.sourceProviderThread.id,
-        cause: `Cannot fork Codex thread from provider turn ${input.providerTurnId}: source turn was not found in provider thread ${input.sourceProviderThread.id}.`,
-      });
-    }
+  const sourceTurns = providerTurnsForThread(input.sourceProviderTurns, input.sourceProviderThread);
+  const boundaryTurn = sourceTurns.find((turn) => turn.id === input.providerTurnId);
+  if (boundaryTurn === undefined) {
+    return yield* new ProviderAdapterForkThreadError({
+      driver: CODEX_PROVIDER,
+      providerThreadId: input.sourceProviderThread.id,
+      cause: `Cannot fork Codex thread from provider turn ${input.providerTurnId}: source turn was not found in provider thread ${input.sourceProviderThread.id}.`,
+    });
+  }
 
-    return rollbackTurnCount;
-  },
-);
+  const hasLaterTerminalTurns = sourceTurns.some(
+    (turn) => turn.ordinal > boundaryTurn.ordinal && isTerminalProviderTurn(turn),
+  );
+  if (!hasLaterTerminalTurns) {
+    return undefined;
+  }
+
+  const nativeTurnRef = boundaryTurn.nativeTurnRef;
+  if (
+    nativeTurnRef !== null &&
+    nativeTurnRef.driver === CODEX_PROVIDER &&
+    nativeTurnRef.nativeId !== null
+  ) {
+    return nativeTurnRef.nativeId;
+  }
+
+  return yield* new ProviderAdapterForkThreadError({
+    driver: CODEX_PROVIDER,
+    providerThreadId: input.sourceProviderThread.id,
+    cause: `Cannot fork Codex thread from prior provider turn ${input.providerTurnId}: no native Codex turn id was recorded for that turn.`,
+  });
+});
 
 export const resolveCodexRollbackTurnCount = Effect.fn("CodexAdapterV2.resolveRollbackTurnCount")(
   function* (input: ProviderAdapterV2RollbackThreadInput) {
@@ -5567,10 +5585,12 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
           forkThread: (threadInput) =>
             Effect.gen(function* () {
               const threadId = yield* getNativeThreadId(threadInput.sourceProviderThread);
+              const lastTurnId = yield* resolveCodexForkLastTurnId(threadInput);
               const response = yield* ensureInitialized.pipe(
                 Effect.andThen(
                   client.request("thread/fork", {
                     threadId,
+                    ...(lastTurnId === undefined ? {} : { lastTurnId }),
                     ...codexThreadRuntimeParams({
                       threadId: threadInput.targetThreadId,
                       ...(threadInput.modelSelection === undefined
@@ -5591,33 +5611,13 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
                     }),
                 ),
               );
-              const rollbackTurnCount = yield* resolveCodexForkRollbackTurnCount(threadInput);
-              const forkedThread =
-                rollbackTurnCount === 0
-                  ? response.thread
-                  : (yield* ensureInitialized.pipe(
-                      Effect.andThen(
-                        client.request("thread/rollback", {
-                          threadId: response.thread.id,
-                          numTurns: rollbackTurnCount,
-                        }),
-                      ),
-                      Effect.mapError(
-                        (cause) =>
-                          new ProviderAdapterForkThreadError({
-                            driver: CODEX_PROVIDER,
-                            providerThreadId: threadInput.sourceProviderThread.id,
-                            cause: normalizeCodexCause(cause),
-                          }),
-                      ),
-                    )).thread;
               return providerThreadFromCodexThread({
                 appThreadId: threadInput.targetThreadId,
                 idAllocator,
                 ownerNodeId: threadInput.ownerNodeId ?? null,
                 providerSessionId: input.providerSessionId,
                 providerInstanceId: adapterOptions.instanceId,
-                thread: forkedThread,
+                thread: response.thread,
                 forkedFrom: {
                   providerThreadId: threadInput.sourceProviderThread.id,
                   ...(threadInput.providerTurnId === undefined

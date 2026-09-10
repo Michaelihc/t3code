@@ -29,6 +29,7 @@ const windowsHost = HostProcessPlatform.defaultValue() === "win32";
 interface MockSpawnResult {
   readonly exitCode?: number;
   readonly stdout?: string;
+  readonly stderr?: string;
   /** Never deliver an exit code, like a child wedged on a broken desktop session. */
   readonly stall?: boolean;
 }
@@ -50,7 +51,10 @@ function makeMockDetachedHandle(input: MockSpawnResult & { readonly onUnref?: ()
       input.stdout === undefined
         ? Stream.empty
         : Stream.make(new TextEncoder().encode(input.stdout)),
-    stderr: Stream.empty,
+    stderr:
+      input.stderr === undefined
+        ? Stream.empty
+        : Stream.make(new TextEncoder().encode(input.stderr)),
     all: Stream.empty,
     getInputFd: () => Sink.drain,
     getOutputFd: () => Stream.empty,
@@ -63,20 +67,23 @@ const testLayer = (input: {
   readonly resolveExecutable?: (command: string) => string | undefined;
   readonly onSpawn?: (command: ChildProcess.StandardCommand) => void;
   readonly onUnref?: () => void;
-  readonly spawnResult?: (command: ChildProcess.StandardCommand) => MockSpawnResult | undefined;
+  readonly spawnResult?: (
+    command: ChildProcess.StandardCommand,
+  ) => MockSpawnResult | Effect.Effect<MockSpawnResult> | undefined;
 }) => {
   const spawnerLayer = Layer.succeed(
     ChildProcessSpawner.ChildProcessSpawner,
     ChildProcessSpawner.make((command) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         assert.equal(ChildProcess.isStandardCommand(command), true);
         if (!ChildProcess.isStandardCommand(command)) {
           throw new Error("Expected a standard command");
         }
         input.onSpawn?.(command);
+        const result = input.spawnResult?.(command);
         return makeMockDetachedHandle({
           ...(input.onUnref === undefined ? {} : { onUnref: input.onUnref }),
-          ...input.spawnResult?.(command),
+          ...(Effect.isEffect(result) ? yield* result : result),
         });
       }),
     ),
@@ -234,6 +241,10 @@ it.effect("reveals a file in File Explorer through PowerShell on Windows", () =>
     assert.ok(spawned);
     assert.equal(spawned.command, powerShellPath);
     assert.deepEqual(spawned.args.slice(0, -1), [
+      "-WindowStyle",
+      "Hidden",
+      "-OutputFormat",
+      "Text",
       "-NoProfile",
       "-NonInteractive",
       "-ExecutionPolicy",
@@ -246,7 +257,7 @@ it.effect("reveals a file in File Explorer through PowerShell on Windows", () =>
     // PowerShell 5.1's Start-Process passes the argument string verbatim.
     assert.equal(
       decodedCommand,
-      "$ProgressPreference = 'SilentlyContinue'; Start-Process 'explorer.exe' -ArgumentList ('/select,\"' + 'C:\\workspace with spaces\\media\\author''s clip.mp4' + '\"')",
+      "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Start-Process 'explorer.exe' -ArgumentList ('/select,\"' + 'C:\\workspace with spaces\\media\\author''s clip.mp4' + '\"')",
     );
     assert.equal(spawned.options.shell, false);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -307,6 +318,72 @@ it.skipIf(process.platform !== "win32")(
       NodeFS.rmSync(tempDir, { recursive: true, force: true });
     }
   },
+);
+
+it.effect.skipIf(!windowsHost)(
+  "executes the real Windows reveal helper and reports its launch error",
+  () =>
+    Effect.gen(function* () {
+      const fileSystem = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const binDir = yield* fileSystem.makeTempDirectoryScoped({ prefix: "t3-reveal-error-" });
+      yield* fileSystem.writeFileString(path.join(binDir, "explorer.CMD"), "@echo off\r\n");
+
+      const error = yield* Effect.gen(function* () {
+        const launcher = yield* ExternalLauncher.ExternalLauncher;
+        return yield* launcher.launchEditor({
+          editor: "file-manager",
+          cwd: "C:/workspace with spaces/author's image.png",
+          reveal: true,
+        });
+      }).pipe(
+        Effect.provide(
+          testLayer({
+            platform: "win32",
+            env: {
+              PATH: binDir,
+              SYSTEMROOT: process.env.SYSTEMROOT ?? "C:\\Windows",
+            },
+            spawnResult: (command) => {
+              const source = Buffer.from(command.args.at(-1) ?? "", "base64").toString("utf16le");
+              // Exercise PowerShell's real startup with the launcher's flags,
+              // without opening a GUI. A detached Windows PowerShell can exit
+              // zero without ever invoking this command.
+              const probe = `function Start-Process { throw 'reveal-helper-executed' }; ${source}`;
+              return Effect.promise(
+                () =>
+                  new Promise<MockSpawnResult>((resolve, reject) => {
+                    const child = NodeChildProcess.spawn(
+                      command.command,
+                      [
+                        ...command.args.slice(0, -1),
+                        Buffer.from(probe, "utf16le").toString("base64"),
+                      ],
+                      {
+                        detached: command.options.detached ?? false,
+                        windowsHide: true,
+                        stdio: ["ignore", "ignore", "pipe"],
+                      },
+                    );
+                    let stderr = "";
+                    child.stderr.setEncoding("utf8");
+                    child.stderr.on("data", (chunk: string) => {
+                      stderr += chunk;
+                    });
+                    child.once("error", reject);
+                    child.once("close", (code) => resolve({ exitCode: code ?? -1, stderr }));
+                  }),
+              );
+            },
+          }),
+        ),
+        Effect.flip,
+      );
+      assert.equal(error._tag, "ExternalLauncherEditorSpawnError");
+      if (error._tag === "ExternalLauncherEditorSpawnError") {
+        assert.include(String(error.cause), "reveal-helper-executed");
+      }
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );
 
 it.effect("does not advertise reveal on Windows when PowerShell is missing", () =>
@@ -392,7 +469,7 @@ it.effect.skipIf(windowsHost)(
       const decodedCommand = Buffer.from(encodedCommand, "base64").toString("utf16le");
       assert.equal(
         decodedCommand,
-        "$ProgressPreference = 'SilentlyContinue'; Start-Process 'explorer.exe' -ArgumentList ('/select,\"' + '\\\\wsl.localhost\\Ubuntu-24.04\\home\\t3\\workspace\\media\\clip.mp4' + '\"')",
+        "$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Start-Process 'explorer.exe' -ArgumentList ('/select,\"' + '\\\\wsl.localhost\\Ubuntu-24.04\\home\\t3\\workspace\\media\\clip.mp4' + '\"')",
       );
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
 );

@@ -676,18 +676,26 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
   const selectedThreadUpdatedAt = props.selectedThread.updatedAt;
   const selectedThreadLastVisitedAt = props.selectedThread.lastVisitedAt;
   useEffect(() => {
+    lastDispatchedVisitRef.current = null;
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Selection and visibility define a fresh visit.
+  }, [selectedThreadKey, showContent]);
+
+  useEffect(() => {
     // Records the server-side visited watermark while the thread is on
     // screen (mirror of web ChatView), so the "Done" marker clears on every
     // device. Field absent → the server predates visited tracking.
-    if (selectedThreadLastVisitedAt === undefined) return;
+    if (!showContent || selectedThreadLastVisitedAt === undefined) return;
     const threadUpdatedAtMs = Date.parse(selectedThreadUpdatedAt);
     if (Number.isNaN(threadUpdatedAtMs)) return;
     const lastVisitedAtMs = selectedThreadLastVisitedAt
       ? Date.parse(selectedThreadLastVisitedAt)
       : NaN;
-    if (!Number.isNaN(lastVisitedAtMs) && lastVisitedAtMs >= threadUpdatedAtMs) return;
-    // Dedupe per watermark — the effect re-runs before the command echo lands.
     const dispatchKey = `${selectedThreadKey}:${selectedThreadUpdatedAt}`;
+    if (!Number.isNaN(lastVisitedAtMs) && lastVisitedAtMs >= threadUpdatedAtMs) {
+      lastDispatchedVisitRef.current = dispatchKey;
+      return;
+    }
+    // Dedupe per visible visit, including a thread that was already read on entry.
     if (lastDispatchedVisitRef.current === dispatchKey) return;
     lastDispatchedVisitRef.current = dispatchKey;
     void visitThread({
@@ -700,6 +708,7 @@ export const ThreadDetailScreen = memo(function ThreadDetailScreen(props: Thread
     selectedThreadKey,
     selectedThreadLastVisitedAt,
     selectedThreadUpdatedAt,
+    showContent,
     visitThread,
   ]);
 

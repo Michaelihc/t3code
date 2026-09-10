@@ -101,6 +101,7 @@ patchedDependencies:
   expo-audio@57.0.4: fa9a3e0442ed395d4071bb406e08c3a471c9a84700bdfa0b9ad7ff144c96041a
   expo-notifications@57.0.15: f89252c2c08dc7b3acb8415f319ebbe15fff8c9f88a64ebe1830cd5ac5c9ac40
   expo-sharing@57.0.17: 8d2e3b10eb3f52036a9a086800180ec6cebf3b75bccc5b1775117a7244d4ac45
+  node-gyp-build-optional-packages@5.2.2: c911630deb32d3fa70cbe1a3279ac1ba145e85de40fa7304f8697a815bc6ba88
   react-native-gesture-handler@2.32.0: 96573c000f7fe56b5abfa13e2e5f0d065907e674cb8e2300155226d7c9874398
   react-native-keyboard-controller@1.21.13: 6e4339347bc5bb3c9ea67d85ff5c814058b211c5750f247aba59d07869a2e787
   react-native-nitro-modules@0.35.9: 825622aae63a8fb5b904f3c77908a0e216261d727ea171709f2c0b6088422675
@@ -766,7 +767,7 @@ importers:
         version: link:../../packages/shared
       alchemy:
         specifier: 2.0.0-beta.76
-        version: 2.0.0-beta.76(b3825b36417e56a486ccb5f22a7f3d7e)
+        version: 2.0.0-beta.76(197b68e0d20fdf20cf352009eca17c9f)
       drizzle-orm:
         specifier: 1.0.0-rc.5-ab785fc
         version: 1.0.0-rc.5-ab785fc(8ab70e2706da13c78d64d8a92fef1884)
@@ -835,6 +836,9 @@ importers:
       micromark-util-character:
         specifier: ^2.1.1
         version: 2.1.1
+      micromark-util-decode-string:
+        specifier: ^2.0.1
+        version: 2.0.1
       remark-parse:
         specifier: ^11.0.0
         version: 11.0.0
@@ -16562,7 +16566,7 @@ snapshots:
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
-  alchemy@2.0.0-beta.76(b3825b36417e56a486ccb5f22a7f3d7e):
+  alchemy@2.0.0-beta.76(197b68e0d20fdf20cf352009eca17c9f):
     dependencies:
       '@alchemy.run/cloudflare-runtime': 2.0.0-beta.76(@distilled.cloud/cloudflare@1.0.0-rc.8(effect@4.0.0-rc.112(patch_hash=8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2)))(@effect/platform-bun@4.0.0-rc.112(bufferutil@4.1.0)(effect@4.0.0-rc.112(patch_hash=8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2))(utf-8-validate@6.0.6))(@effect/platform-node@4.0.0-rc.112(bufferutil@4.1.0)(effect@4.0.0-rc.112(patch_hash=8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2))(redis@6.2.1)(utf-8-validate@6.0.6))(@types/node@24.12.4)(@voidzero-dev/vite-plus-core@0.3.0(@types/node@24.12.4)(esbuild@0.28.1)(jiti@2.7.0)(terser@5.48.0)(typescript@7.0.2)(unrun@0.2.39)(yaml@2.9.0))(effect@4.0.0-rc.112(patch_hash=8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2))(rolldown@1.2.5)(typescript@7.0.2)
       '@alchemy.run/floci': 2.0.0-beta.76(effect@4.0.0-rc.112(patch_hash=8bef799f35729cf3465eb428196f617b434a7c9f658d56acb2874d74b21b98b2))
@@ -20279,7 +20283,7 @@ snapshots:
 
   msgpackr-extract@3.0.4:
     dependencies:
-      node-gyp-build-optional-packages: 5.2.2
+      node-gyp-build-optional-packages: 5.2.2(patch_hash=c911630deb32d3fa70cbe1a3279ac1ba145e85de40fa7304f8697a815bc6ba88)
     optionalDependencies:
       '@msgpackr-extract/msgpackr-extract-darwin-arm64': 3.0.4
       '@msgpackr-extract/msgpackr-extract-darwin-x64': 3.0.4
@@ -20363,7 +20367,7 @@ snapshots:
 
   node-forge@1.4.0: {}
 
-  node-gyp-build-optional-packages@5.2.2:
+  node-gyp-build-optional-packages@5.2.2(patch_hash=c911630deb32d3fa70cbe1a3279ac1ba145e85de40fa7304f8697a815bc6ba88):
     dependencies:
       detect-libc: 2.1.2
 
