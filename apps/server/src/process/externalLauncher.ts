@@ -52,6 +52,7 @@ interface EditorLaunch {
   readonly target: string;
   readonly command: string;
   readonly args: ReadonlyArray<string>;
+  readonly waitForExit?: boolean;
 }
 
 interface ProcessLaunch {
@@ -589,7 +590,7 @@ export function buildFileExplorerRevealPowerShellSource(
   explorerCommand: string,
   target: string,
 ): string {
-  return `$ProgressPreference = 'SilentlyContinue'; Start-Process ${escapePowerShellStringLiteral(explorerCommand)} -ArgumentList ('/select,"' + ${escapePowerShellStringLiteral(target)} + '"')`;
+  return `$ProgressPreference = 'SilentlyContinue'; $ErrorActionPreference = 'Stop'; Start-Process ${escapePowerShellStringLiteral(explorerCommand)} -ArgumentList ('/select,"' + ${escapePowerShellStringLiteral(target)} + '"')`;
 }
 
 function fileExplorerRevealLaunch(
@@ -601,7 +602,15 @@ function fileExplorerRevealLaunch(
     editor: "file-manager",
     target,
     command: powershellCommand,
+    // Windows PowerShell may exit zero without evaluating -EncodedCommand
+    // when spawned with DETACHED_PROCESS. Retain the short-lived helper;
+    // Start-Process gives Explorer its independent lifetime.
+    waitForExit: true,
     args: [
+      "-WindowStyle",
+      "Hidden",
+      "-OutputFormat",
+      "Text",
       ...POWERSHELL_ARGUMENTS_PREFIX,
       encodeUtf16LeBase64(buildFileExplorerRevealPowerShellSource("explorer.exe", explorerTarget)),
     ],
@@ -729,6 +738,40 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
   }
 
   const spawnCommand = yield* resolveSpawnCommand(launch.command, launch.args, { env });
+  const onError = (cause: unknown) =>
+    new ExternalLauncherEditorSpawnError({
+      editor: launch.editor,
+      target: launch.target,
+      command: spawnCommand.command,
+      args: spawnCommand.args,
+      cause,
+    });
+  if (launch.waitForExit) {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    yield* Effect.gen(function* () {
+      const handle = yield* spawner
+        .spawn(
+          ChildProcess.make(spawnCommand.command, spawnCommand.args, {
+            detached: false,
+            shell: spawnCommand.shell,
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "pipe",
+          }),
+        )
+        .pipe(Effect.mapError(onError));
+      const [exitCode, stderr] = yield* Effect.all(
+        [handle.exitCode, handle.stderr.pipe(Stream.decodeText(), Stream.mkString)],
+        { concurrency: "unbounded" },
+      ).pipe(Effect.mapError(onError));
+      if (exitCode !== 0) {
+        return yield* onError(
+          new Error(stderr.trim() || `Reveal helper exited with code ${exitCode}`),
+        );
+      }
+    }).pipe(Effect.scoped);
+    return;
+  }
   yield* launchAndUnref(
     {
       command: spawnCommand.command,
@@ -741,14 +784,7 @@ const launchEditorProcess = Effect.fn("externalLauncher.launchEditorProcess")(fu
         stderr: "ignore",
       },
     },
-    (cause) =>
-      new ExternalLauncherEditorSpawnError({
-        editor: launch.editor,
-        target: launch.target,
-        command: spawnCommand.command,
-        args: spawnCommand.args,
-        cause,
-      }),
+    onError,
   );
 });
 
