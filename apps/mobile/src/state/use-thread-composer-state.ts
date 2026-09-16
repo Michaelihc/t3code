@@ -1,3 +1,8 @@
+import { useNavigation } from "@react-navigation/native";
+import { resolveForkCommandRun } from "@t3tools/client-runtime/state/thread-workflows";
+import { scopeThreadRef } from "@t3tools/client-runtime/environment";
+import { environmentThreadShells } from "./threads";
+import { waitForThreadShellReady } from "../features/threads/threadForkNavigation";
 import type { ComposerTextPaste } from "../native/T3ComposerEditor.types";
 import { useAtomValue } from "@effect/atom-react";
 import { threadRuntimeIsActive } from "@t3tools/client-runtime/state/shell";
@@ -19,7 +24,7 @@ import {
   type ModelSelection,
   type ProviderInteractionMode,
   type RuntimeMode,
-  type ThreadId,
+  ThreadId,
 } from "@t3tools/contracts";
 import { safeErrorLogAttributes } from "@t3tools/client-runtime/errors";
 import { clampFileAttachmentUploadBytes } from "@t3tools/client-runtime/state/attachments";
@@ -172,6 +177,9 @@ export function useThreadDraftForThread(input: {
 }
 
 export function useThreadComposerState() {
+  const navigation = useNavigation();
+  const forkFromRun = useAtomCommand(threadEnvironment.forkFromRun, "fork thread");
+  const forkInFlight = useRef(false);
   const {
     selectedThread: selectedThreadShell,
     selectedThreadCreation,
@@ -561,6 +569,46 @@ export function useThreadComposerState() {
         }) !== null
       )
         return null;
+      if (text === "/fork" && attachments.length === 0) {
+        if (forkInFlight.current) return null;
+        const run = selectedThreadProjection
+          ? resolveForkCommandRun(selectedThreadProjection.projection)
+          : null;
+        if (run === null) {
+          Alert.alert("Cannot fork yet", "Start a turn before forking this thread.");
+          return null;
+        }
+        forkInFlight.current = true;
+        try {
+          const targetThreadId = ThreadId.make(uuidv4());
+          const result = await forkFromRun({
+            environmentId: thread.environmentId,
+            input: {
+              sourceThreadId: thread.id,
+              targetThreadId,
+              runId: run.id,
+              title: `${thread.title} fork`,
+              creationSource: "mobile",
+            },
+          });
+          if (result._tag !== "Success") return null;
+          clearComposerDraftContent(threadKey);
+          const atom = environmentThreadShells.threadShellAtom(
+            scopeThreadRef(thread.environmentId, targetThreadId),
+          );
+          if (await waitForThreadShellReady({ read: () => appAtomRegistry.get(atom) !== null })) {
+            navigation.navigate("Thread", {
+              environmentId: thread.environmentId,
+              threadId: targetThreadId,
+            });
+          } else {
+            Alert.alert("Fork created", "Open it from the thread list after reconnecting.");
+          }
+        } finally {
+          forkInFlight.current = false;
+        }
+        return null;
+      }
       if (text.length === 0 && attachments.length === 0) {
         return null;
       }
@@ -703,6 +751,9 @@ export function useThreadComposerState() {
       selectedThreadCreation,
       selectedThreadShell,
       uploadThreadFeedback,
+      selectedThreadProjection,
+      forkFromRun,
+      navigation,
     ],
   );
 

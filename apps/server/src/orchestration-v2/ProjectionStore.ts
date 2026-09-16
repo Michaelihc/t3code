@@ -1078,10 +1078,16 @@ function buildVisibleTurnItems(input: {
     return localVisibleTurnItems(input.projection);
   }
 
-  const inherited = visibleTurnItemsThroughRun({
-    sourceProjection: input.sourceProjection,
-    sourceRunId: forkedFrom.runId,
-  });
+  const snapshot = input.projection.contextTransfers.find(
+    (transfer) => transfer.type === "fork" && transfer.forkSnapshot !== undefined,
+  )?.forkSnapshot;
+  const inherited =
+    snapshot === undefined
+      ? visibleTurnItemsThroughRun({
+          sourceProjection: input.sourceProjection,
+          sourceRunId: forkedFrom.runId,
+        })
+      : inheritedVisibleTurnItemsFromLocalItems(snapshot);
   const markerItem = makeForkMarkerTurnItem({
     targetProjection: input.projection,
     sourceThreadId: forkedFrom.threadId,

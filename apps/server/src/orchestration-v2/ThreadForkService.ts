@@ -1,3 +1,4 @@
+import { captureActiveForkSnapshot } from "./ContextHandoffService.ts";
 import {
   ContextTransferId,
   OrchestrationV2Actor,
@@ -55,7 +56,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
   ThreadForkServiceV2.of({
     plan: (input) =>
       Effect.gen(function* () {
-        if (input.sourceRun.status !== "completed") {
+        if (!["completed", "running", "waiting"].includes(input.sourceRun.status)) {
           return yield* new ThreadForkPlanError({
             sourceThreadId: input.sourceProjection.thread.id,
             targetThreadId: input.targetThreadId,
@@ -89,12 +90,30 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           lastVisitedAt: null,
           deletedAt: null,
         };
+        const runOrdinals = new Map(
+          input.sourceProjection.runs.map((run) => [run.id, run.ordinal]),
+        );
         const transfer: OrchestrationV2ContextTransfer = {
           id: input.transferId,
           type: "fork",
           sourceThreadId: input.sourceProjection.thread.id,
           targetThreadId: input.targetThreadId,
           sourcePoint: input.canonicalSourcePoint,
+          ...(input.sourceRun.status === "completed"
+            ? {}
+            : {
+                // Freeze visible history now; a lazy native fork could capture later output.
+                forkSnapshot: captureActiveForkSnapshot(
+                  input.sourceProjection.visibleTurnItems
+                    .filter((row) => row.visibility !== "synthetic")
+                    .map((row) => row.item)
+                    .filter(
+                      (item) =>
+                        item.runId === null ||
+                        (runOrdinals.get(item.runId) ?? 0) <= input.sourceRun.ordinal,
+                    ),
+                ),
+              }),
           basePoint: null,
           sourceProviderInstanceId: input.sourceRun.providerInstanceId,
           targetProviderInstanceId: null,
@@ -103,6 +122,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           resolution: null,
           createdBy: input.createdBy,
           error:
+            input.sourceRun.status !== "completed" ||
             input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
               ? null
               : "Source provider thread does not expose a strong native thread ref.",

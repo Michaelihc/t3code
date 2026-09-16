@@ -42,3 +42,12 @@ attachments reserve 4,096 each for their references. Existing context is estimat
 activity when usage telemetry is unavailable. Known smaller windows still constrain the handoff.
 These are fallback estimates, not exact token counts. Image resolution, custom models, and hidden
 native context can differ, so the provider may still reject an input.
+
+## Fork during a turn
+
+Send `/fork` to open an independent conversation while the current turn keeps working. The fork
+stays idle until you send instructions. Its context includes a frozen snapshot of recent user and
+assistant messages, with a reminder not to continue the source's work without explicit instructions.
+Active-turn snapshots keep at most 200 messages and 128,000 characters; earlier history and tool
+results can be omitted. Copy any essential older instructions or tool output into your first message.
+Forking a completed turn continues to use the provider's native fork when available.

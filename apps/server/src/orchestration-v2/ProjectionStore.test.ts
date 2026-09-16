@@ -1,6 +1,7 @@
 import { assert, it } from "@effect/vitest";
 import {
   EventId,
+  ContextTransferId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
@@ -2446,6 +2447,44 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       assert.equal(targetShell.itemCount, 0);
       assert.equal(targetShell.visibleItemCount, 4);
       assert.equal(targetProjection.visibleTurnItems.length, 4);
+
+      yield* projectionStore.apply({
+        id: EventId.make("event:active-fork-snapshot"),
+        type: "context-transfer.created",
+        threadId: targetThreadId,
+        occurredAt: now,
+        payload: {
+          id: ContextTransferId.make("transfer:active-fork-snapshot"),
+          type: "fork",
+          sourceThreadId,
+          targetThreadId,
+          sourcePoint: { threadId: sourceThreadId, runId: sourceRunId },
+          forkSnapshot: targetProjection.visibleTurnItems
+            .filter((row) => row.visibility !== "synthetic")
+            .map((row) => row.item),
+          basePoint: null,
+          sourceProviderInstanceId: providerInstanceId,
+          targetProviderInstanceId: null,
+          targetRunId: null,
+          status: "pending",
+          resolution: null,
+          createdBy: "user",
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          consumedAt: null,
+        },
+      });
+      yield* applyAssistantItem("later-source-output", sourceRunId, 4);
+      const frozenFork = yield* projectionStore.getThreadProjection(targetThreadId);
+      assert.lengthOf(frozenFork.runs, 0);
+      assert.lengthOf(frozenFork.providerSessions, 0);
+      assert.lengthOf(frozenFork.visibleTurnItems, 4);
+      assert.isFalse(
+        frozenFork.visibleTurnItems.some(
+          (row) => row.item.type === "assistant_message" && row.item.text === "later-source-output",
+        ),
+      );
     }),
   );
 

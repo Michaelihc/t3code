@@ -1,3 +1,4 @@
+import { activeForkSnapshotPrompt } from "./ContextHandoffService.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
@@ -2886,11 +2887,11 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         cause: `No stable source run was found for fork source ${command.sourcePoint.type}.`,
       });
     }
-    if (sourceRun.status !== "completed") {
+    if (!["completed", "running", "waiting"].includes(sourceRun.status)) {
       return yield* new OrchestratorDispatchError({
         commandId: command.commandId,
         commandType: command.type,
-        cause: `Fork source run ${sourceRun.id} is ${sourceRun.status}; only completed runs are supported.`,
+        cause: `Fork source run ${sourceRun.id} is ${sourceRun.status}; only running, waiting, or completed runs are supported.`,
       });
     }
     const sourceProviderThread = providerThreadForRun(sourceProjection, sourceRun);
@@ -4756,7 +4757,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             )?.providerTurnId ??
             undefined);
       if (pendingForkTransfer !== undefined) {
-        if (sourceRun === null || sourceProviderThread === undefined) {
+        if (
+          sourceRun === null ||
+          (sourceProviderThread === undefined && pendingForkTransfer.forkSnapshot === undefined)
+        ) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -4832,7 +4836,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 capabilities,
                 sameProvider:
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
-                hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
+                hasStrongNativeSource:
+                  pendingForkTransfer.forkSnapshot === undefined &&
+                  sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 fromSpecificTurn: sourceRun !== null,
               }),
             );
@@ -4893,15 +4899,16 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const portableForkItems =
         !requiresPortableFork || sourceProjection === null || sourceRun === null
           ? []
-          : sourceProjection.turnItems.filter((item) =>
+          : (pendingForkTransfer?.forkSnapshot ??
+            sourceProjection.turnItems.filter((item) =>
               isTurnItemAtOrBeforeRun({
                 historyOrigin: sourceProjection.thread.historyOrigin,
                 itemRunId: item.runId,
                 runOrdinalById: sourceRunOrdinalById,
                 sourceRunOrdinal: sourceRun.ordinal,
               }),
-            );
-      const portableForkHandoff =
+            ));
+      const preparedPortableForkHandoff =
         !requiresPortableFork ||
         pendingForkTransfer === undefined ||
         sourceProjection === null ||
@@ -4933,6 +4940,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
+      const portableForkHandoff =
+        preparedPortableForkHandoff === null
+          ? null
+          : pendingForkTransfer?.forkSnapshot === undefined
+            ? preparedPortableForkHandoff
+            : {
+                ...preparedPortableForkHandoff,
+                summaryText: activeForkSnapshotPrompt(pendingForkTransfer.forkSnapshot),
+              };
       const requiresFullProviderSwitchContext =
         isProviderSwitch && pendingMergeBackTransfer !== undefined;
       const targetLastCompletedRun =

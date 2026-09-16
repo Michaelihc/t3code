@@ -180,3 +180,15 @@ export function canDetachThreadProviderSession(projection: Projection): boolean 
   const session = resolveThreadProviderSession(projection);
   return session !== null && session.status !== "stopped" && session.status !== "error";
 }
+
+/** /fork chooses the newest started or completed turn, never a queued follow-up. */
+export function resolveForkCommandRun(projection: Pick<Projection, "runs">): Run | null {
+  return projection.runs.reduce<Run | null>(
+    (latest, run) =>
+      (run.status === "running" || run.status === "waiting" || run.status === "completed") &&
+      (latest === null || run.ordinal > latest.ordinal)
+        ? run
+        : latest,
+    null,
+  );
+}

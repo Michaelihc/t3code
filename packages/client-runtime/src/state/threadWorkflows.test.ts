@@ -5,6 +5,7 @@ import {
   canForkProjectedAssistantItem,
   deriveThreadQueueWorkflowState,
   resolveLatestMergeBackRun,
+  resolveForkCommandRun,
 } from "./threadWorkflows.ts";
 
 const capabilities = (input?: {
@@ -384,4 +385,16 @@ describe("thread workflows", () => {
       expect(resolveLatestMergeBackRun(projection)).toBeNull();
     },
   );
+});
+
+it("fork command selects the active run instead of a queued follow-up", () => {
+  const completed = { id: "completed", ordinal: 1, status: "completed" };
+  const active = { id: "active", ordinal: 2, status: "running" };
+  expect(
+    resolveForkCommandRun({
+      runs: [{ id: "queued", ordinal: 3, status: "queued" }, active, completed],
+    } as never),
+  ).toBe(active);
+  expect(resolveForkCommandRun({ runs: [completed] } as never)).toBe(completed);
+  expect(resolveForkCommandRun({ runs: [] })).toBeNull();
 });

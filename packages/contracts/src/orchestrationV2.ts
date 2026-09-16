@@ -155,33 +155,6 @@ export const OrchestrationV2ContextTransferResolution = Schema.Union([
 export type OrchestrationV2ContextTransferResolution =
   typeof OrchestrationV2ContextTransferResolution.Type;
 
-export const OrchestrationV2ContextTransfer = Schema.Struct({
-  id: ContextTransferId,
-  type: OrchestrationV2ContextTransferType,
-  sourceThreadId: ThreadId,
-  targetThreadId: ThreadId,
-  sourcePoint: OrchestrationV2ContextSourcePoint,
-  basePoint: Schema.NullOr(OrchestrationV2ContextSourcePoint),
-  sourceProviderInstanceId: Schema.NullOr(ProviderInstanceId),
-  targetProviderInstanceId: Schema.NullOr(ProviderInstanceId),
-  targetRunId: Schema.NullOr(RunId),
-  status: Schema.Literals([
-    "pending",
-    "resolved_native",
-    "resolved_portable",
-    "failed",
-    "consumed",
-    "superseded",
-  ]),
-  resolution: Schema.NullOr(OrchestrationV2ContextTransferResolution),
-  createdBy: OrchestrationV2Actor,
-  error: Schema.NullOr(Schema.String),
-  createdAt: Schema.DateTimeUtc,
-  updatedAt: Schema.DateTimeUtc,
-  consumedAt: Schema.NullOr(Schema.DateTimeUtc),
-});
-export type OrchestrationV2ContextTransfer = typeof OrchestrationV2ContextTransfer.Type;
-
 export const OrchestrationV2SessionCapabilities = Schema.Struct({
   supportsMultipleProviderThreadsPerSession: Schema.Boolean,
   supportsModelSwitchInSession: Schema.Boolean,
@@ -1240,6 +1213,34 @@ export const OrchestrationV2TurnItem = Schema.Union([
 ]);
 export type OrchestrationV2TurnItem = typeof OrchestrationV2TurnItem.Type;
 
+export const OrchestrationV2ContextTransfer = Schema.Struct({
+  id: ContextTransferId,
+  type: OrchestrationV2ContextTransferType,
+  sourceThreadId: ThreadId,
+  targetThreadId: ThreadId,
+  sourcePoint: OrchestrationV2ContextSourcePoint,
+  forkSnapshot: Schema.optional(Schema.Array(OrchestrationV2TurnItem)),
+  basePoint: Schema.NullOr(OrchestrationV2ContextSourcePoint),
+  sourceProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  targetProviderInstanceId: Schema.NullOr(ProviderInstanceId),
+  targetRunId: Schema.NullOr(RunId),
+  status: Schema.Literals([
+    "pending",
+    "resolved_native",
+    "resolved_portable",
+    "failed",
+    "consumed",
+    "superseded",
+  ]),
+  resolution: Schema.NullOr(OrchestrationV2ContextTransferResolution),
+  createdBy: OrchestrationV2Actor,
+  error: Schema.NullOr(Schema.String),
+  createdAt: Schema.DateTimeUtc,
+  updatedAt: Schema.DateTimeUtc,
+  consumedAt: Schema.NullOr(Schema.DateTimeUtc),
+});
+export type OrchestrationV2ContextTransfer = typeof OrchestrationV2ContextTransfer.Type;
+
 export const OrchestrationV2ProjectedTurnItem = Schema.Struct({
   position: NonNegativeInt,
   visibility: Schema.Literals(["local", "inherited", "synthetic"]),
@@ -1697,16 +1698,6 @@ export const OrchestrationV2ContextHandoffJson = OrchestrationV2ContextHandoff.m
 );
 export type OrchestrationV2ContextHandoffJson = typeof OrchestrationV2ContextHandoffJson.Type;
 
-export const OrchestrationV2ContextTransferJson = OrchestrationV2ContextTransfer.mapFields(
-  (fields) => ({
-    ...fields,
-    createdAt: Schema.DateTimeUtcFromString,
-    updatedAt: Schema.DateTimeUtcFromString,
-    consumedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
-  }),
-);
-export type OrchestrationV2ContextTransferJson = typeof OrchestrationV2ContextTransferJson.Type;
-
 export const OrchestrationV2ProviderTurnJson = OrchestrationV2ProviderTurn.mapFields((fields) => ({
   ...fields,
   startedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
@@ -1947,6 +1938,17 @@ export const OrchestrationV2TurnItemJson = Schema.Union([
   }),
 ]);
 export type OrchestrationV2TurnItemJson = typeof OrchestrationV2TurnItemJson.Type;
+
+export const OrchestrationV2ContextTransferJson = OrchestrationV2ContextTransfer.mapFields(
+  (fields) => ({
+    ...fields,
+    forkSnapshot: Schema.optional(Schema.Array(OrchestrationV2TurnItemJson)),
+    createdAt: Schema.DateTimeUtcFromString,
+    updatedAt: Schema.DateTimeUtcFromString,
+    consumedAt: Schema.NullOr(Schema.DateTimeUtcFromString),
+  }),
+);
+export type OrchestrationV2ContextTransferJson = typeof OrchestrationV2ContextTransferJson.Type;
 
 export const OrchestrationV2ProjectedTurnItemJson = OrchestrationV2ProjectedTurnItem.mapFields(
   (fields) => ({

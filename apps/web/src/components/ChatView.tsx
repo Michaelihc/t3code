@@ -1,3 +1,4 @@
+import { resolveForkCommandRun } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
@@ -7730,6 +7731,11 @@ export default function ChatView(props: ChatViewProps) {
         );
         return;
       }
+      if (promptRef.current.trim() === "/fork") {
+        promptRef.current = "";
+        setComposerDraftPrompt(composerDraftTarget, "");
+        composerRef.current?.resetCursorState();
+      }
       await navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(targetThreadRef),
@@ -7739,6 +7745,7 @@ export default function ChatView(props: ChatViewProps) {
       activeEnvironmentUnavailable,
       activeThread,
       environmentId,
+      composerDraftTarget,
       forkThreadFromRun,
       navigate,
       setThreadError,
@@ -7889,6 +7896,27 @@ export default function ChatView(props: ChatViewProps) {
         }),
         id: `chat-send-environment-unavailable:${toastSlot}`,
       });
+      return;
+    }
+    const forkSendContext = composerRef.current?.getSendContext();
+    if (
+      !directAnnotation &&
+      editingQueuedRun === null &&
+      promptRef.current.trim() === "/fork" &&
+      forkSendContext?.images.length === 0 &&
+      forkSendContext.files.length === 0
+    ) {
+      const run = serverProjection ? resolveForkCommandRun(serverProjection) : null;
+      if (run === null) {
+        setThreadError(activeThread.id, "Start a turn before forking this thread.");
+        return;
+      }
+      sendInFlightRef.current = true;
+      try {
+        await onForkFromRun({ sourceThreadId: activeThread.id, runId: run.id });
+      } finally {
+        sendInFlightRef.current = false;
+      }
       return;
     }
     if (activePendingProgress) {
