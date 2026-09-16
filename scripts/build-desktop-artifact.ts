@@ -81,6 +81,7 @@ const StageWorkspaceConfig = Schema.Struct({
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
+  sideEffectsCache: Schema.optional(Schema.Boolean),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
 
@@ -2957,6 +2958,8 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     // The tree gets packed into server.asar, which cannot carry pnpm's
     // symlink/junction layout, so install a physical, hoisted node_modules.
     nodeLinker: "hoisted" as const,
+    // pnpm's host-keyed build cache can contain ARM addons in an x64 stage.
+    sideEffectsCache: false,
   };
   const sidecarWorkspaceConfigString = yield* encodeStageWorkspaceConfig(sidecarWorkspaceConfig);
   yield* fs.writeFileString(
@@ -2973,6 +2976,8 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: serverStageDir,
       shell: installCommand.shell,
+      // Native install scripts must compile for the payload, not the build host.
+      env: { ...process.env, npm_config_arch: input.arch },
     }),
     { label: "vp install --prod (server sidecar)", verbose: input.verbose },
   );
