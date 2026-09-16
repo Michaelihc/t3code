@@ -17,3 +17,12 @@ You can also paste the exact detail again after the new provider starts.
 This 240-character rule is different from migration of older threads. A migrated thread gives its
 first fresh provider session the newest transcript suffix within a separate 32,000-character budget.
 See [Threads from older T3 Code versions](./thread-migration.md) for that migration path.
+
+## Fork during a turn
+
+Send `/fork` to open an independent conversation while the current turn keeps working. The fork
+stays idle until you send instructions. Its context includes a frozen snapshot of recent user and
+assistant messages, with a reminder not to continue the source's work without explicit instructions.
+Active-turn snapshots keep at most 200 messages and 128,000 characters; earlier history and tool
+results can be omitted. Copy any essential older instructions or tool output into your first message.
+Forking a completed turn continues to use the provider's native fork when available.

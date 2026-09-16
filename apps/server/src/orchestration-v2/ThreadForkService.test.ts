@@ -11,11 +11,22 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
+  TurnItemId,
+  type OrchestrationV2TurnItem,
+  OrchestrationV2ContextTransferJson,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import { layer, ThreadForkServiceV2 } from "./ThreadForkService.ts";
+
+const encodeTransfer = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2ContextTransferJson),
+);
+const decodeTransfer = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2ContextTransferJson),
+);
 
 const sourceThreadId = ThreadId.make("thread:fork-snoozed-source");
 const targetThreadId = ThreadId.make("thread:fork-awake-target");
@@ -83,66 +94,104 @@ function makeCompletedSourceRun(): OrchestrationV2Run {
   };
 }
 
-it.effect("keeps a fork awake when its source thread is snoozed", () =>
-  Effect.gen(function* () {
-    const sourceThread = makeSourceThread();
-    const sourceRun = makeCompletedSourceRun();
-    const sourceProjection: OrchestrationV2ThreadProjection = {
-      thread: sourceThread,
-      runs: [sourceRun],
-      attempts: [],
-      nodes: [],
-      subagents: [],
-      providerSessions: [],
-      providerThreads: [],
-      providerTurns: [],
-      runtimeRequests: [],
-      messages: [],
-      plans: [],
-      turnItems: [],
-      checkpointScopes: [],
-      checkpoints: [],
-      contextHandoffs: [],
-      contextTransfers: [],
-      visibleTurnItems: [],
-      updatedAt: snoozedAt,
-    };
-    const service = yield* ThreadForkServiceV2;
-    const result = yield* service.plan({
-      sourceProjection,
-      sourceRun,
-      sourceProviderThread: undefined,
-      canonicalSourcePoint: {
+for (const status of ["completed", "running", "waiting"] as const) {
+  it.effect(`creates an idle fork from a ${status} source and captures active history`, () =>
+    Effect.gen(function* () {
+      const sourceThread = makeSourceThread();
+      const sourceRun = { ...makeCompletedSourceRun(), status };
+      const item: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("item:partial-response"),
         threadId: sourceThreadId,
         runId: sourceRunId,
-      },
-      transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
-      targetThreadId,
-      title: "Awake fork",
-      createdBy: "user",
-      creationSource: "mobile",
-      createdAt: forkCreatedAt,
-    });
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: null,
+        startedAt: sourceCreatedAt,
+        completedAt: null,
+        updatedAt: forkCreatedAt,
+        type: "assistant_message",
+        messageId: MessageId.make("message:partial-response"),
+        text: "Work completed so far",
+        streaming: true,
+      };
+      const sourceProjection: OrchestrationV2ThreadProjection = {
+        thread: sourceThread,
+        runs: [sourceRun],
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        providerSessions: [],
+        providerThreads: [],
+        providerTurns: [],
+        runtimeRequests: [],
+        messages: [],
+        plans: [],
+        turnItems: [],
+        checkpointScopes: [],
+        checkpoints: [],
+        contextHandoffs: [],
+        contextTransfers: [],
+        visibleTurnItems: [
+          { position: 0, visibility: "local", sourceThreadId, sourceItemId: item.id, item },
+        ],
+        updatedAt: snoozedAt,
+      };
+      const service = yield* ThreadForkServiceV2;
+      const result = yield* service.plan({
+        sourceProjection,
+        sourceRun,
+        sourceProviderThread: undefined,
+        canonicalSourcePoint: {
+          threadId: sourceThreadId,
+          runId: sourceRunId,
+        },
+        transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
+        targetThreadId,
+        title: "Awake fork",
+        createdBy: "user",
+        creationSource: "mobile",
+        createdAt: forkCreatedAt,
+      });
 
-    assert.isNull(result.targetThread.snoozedUntil);
-    assert.isNull(result.targetThread.snoozedAt);
-    assert.equal(result.targetThread.projectId, sourceThread.projectId);
-    assert.equal(result.targetThread.providerInstanceId, sourceThread.providerInstanceId);
-    assert.deepEqual(result.targetThread.modelSelection, sourceThread.modelSelection);
-    assert.equal(result.targetThread.runtimeMode, sourceThread.runtimeMode);
-    assert.equal(result.targetThread.interactionMode, sourceThread.interactionMode);
-    assert.equal(result.targetThread.branch, sourceThread.branch);
-    assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
-    assert.isNull(result.targetThread.activeProviderThreadId);
-    assert.deepEqual(result.targetThread.lineage, {
-      parentThreadId: sourceThreadId,
-      relationshipToParent: "fork",
-      rootThreadId: sourceThreadId,
-    });
-    assert.deepEqual(result.targetThread.forkedFrom, {
-      type: "run",
-      threadId: sourceThreadId,
-      runId: sourceRunId,
-    });
-  }).pipe(Effect.provide(layer)),
-);
+      assert.equal(sourceRun.status, status);
+      assert.equal(result.transfer.status, "pending");
+      assert.isNull(result.transfer.targetRunId);
+      if (status === "completed") {
+        assert.isUndefined(result.transfer.forkSnapshot);
+      } else {
+        assert.deepEqual(result.transfer.forkSnapshot, [
+          { ...item, streaming: false, status: "completed" },
+        ]);
+        // A later source update must not alter the persisted fork boundary.
+        const encoded = yield* encodeTransfer(result.transfer);
+        const restored = yield* decodeTransfer(encoded);
+        assert.deepEqual(restored.forkSnapshot, result.transfer.forkSnapshot);
+      }
+      assert.isNull(result.targetThread.snoozedUntil);
+      assert.isNull(result.targetThread.snoozedAt);
+      assert.equal(result.targetThread.projectId, sourceThread.projectId);
+      assert.equal(result.targetThread.providerInstanceId, sourceThread.providerInstanceId);
+      assert.deepEqual(result.targetThread.modelSelection, sourceThread.modelSelection);
+      assert.equal(result.targetThread.runtimeMode, sourceThread.runtimeMode);
+      assert.equal(result.targetThread.interactionMode, sourceThread.interactionMode);
+      assert.equal(result.targetThread.branch, sourceThread.branch);
+      assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
+      assert.isNull(result.targetThread.activeProviderThreadId);
+      assert.deepEqual(result.targetThread.lineage, {
+        parentThreadId: sourceThreadId,
+        relationshipToParent: "fork",
+        rootThreadId: sourceThreadId,
+      });
+      assert.deepEqual(result.targetThread.forkedFrom, {
+        type: "run",
+        threadId: sourceThreadId,
+        runId: sourceRunId,
+      });
+    }).pipe(Effect.provide(layer)),
+  );
+}
