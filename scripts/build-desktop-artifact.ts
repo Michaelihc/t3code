@@ -1552,9 +1552,8 @@ export function createStagePatchedDependencies(
   );
 }
 
-// effect -> msgpackr -> msgpackr-extract uses this helper to compile when a
-// platform prebuild is unavailable. It remains transitive in both Windows
-// release stages, so carry its path-safe node-gyp patch explicitly.
+// msgpackr-extract uses this helper when a platform prebuild is unavailable.
+// Carry the path-safe patch in stages containing the server's runtime closure.
 const TRANSITIVE_STAGE_PATCH_DEPENDENCIES = ["node-gyp-build-optional-packages"] as const;
 
 function getPatchedDependencyPackageName(patchKey: string): string {
@@ -3690,7 +3689,7 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
     stageDependencies,
-    TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
+    options.platform === "win" ? [] : TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
   );
   const windowsServerAsarPath =
     options.platform === "win"
