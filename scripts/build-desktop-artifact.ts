@@ -2125,6 +2125,16 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
       probeEnv.ELECTRON_RUN_AS_NODE = "1";
     }
 
+    // msgpackr silently falls back to JS when its addon has the wrong architecture.
+    // Require the addon itself before the version probe so that failure is visible.
+    const msgpackrExtractPath = path.join(probeApp, "node_modules/msgpackr-extract");
+    const nativePreloadArgs: string[] = [];
+    if (yield* fs.exists(msgpackrExtractPath)) {
+      const preloadPath = path.join(probeRoot, "check-native.cjs");
+      yield* fs.writeFileString(preloadPath, `require(${JSON.stringify(msgpackrExtractPath)});\n`);
+      nativePreloadArgs.push("--require", preloadPath);
+    }
+
     yield* runCommand(
       ChildProcess.make(
         input.probeExecutablePath ?? process.execPath,
@@ -2132,7 +2142,7 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
         // CommonJS resolution still falls back to $HOME/.node_modules,
         // $HOME/.node_libraries and the install prefix, so a globally installed
         // copy of a missing dependency would quietly satisfy this check.
-        ["--no-global-search-paths", entryPoint, "--version"],
+        ["--no-global-search-paths", ...nativePreloadArgs, entryPoint, "--version"],
         {
           cwd: probeApp,
           stdout: "pipe",

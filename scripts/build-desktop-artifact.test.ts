@@ -175,6 +175,7 @@ const WINDOWS_PAYLOAD_FIXTURE_VERSION = "1.2.3";
 const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(function* (input: {
   readonly copyUnpackedNatives: boolean;
   readonly serverEntrySource?: string;
+  readonly nativeLoaderSource?: string;
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
 }) {
   const fs = yield* FileSystem.FileSystem;
@@ -189,6 +190,11 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
   yield* fs.writeFileString(serverEntryPath, input.serverEntrySource ?? "console.log('server');\n");
   yield* fs.writeFileString(nativePath, "native-binary");
+  if (input.nativeLoaderSource !== undefined) {
+    const loaderPath = path.join(sourceDir, "node_modules/msgpackr-extract/index.js");
+    yield* fs.makeDirectory(path.dirname(loaderPath), { recursive: true });
+    yield* fs.writeFileString(loaderPath, input.nativeLoaderSource);
+  }
 
   const generatedAsarPath = path.join(tempDir, WINDOWS_SERVER_ASAR_RESOURCE);
   yield* packWindowsServerAsar({ sourceDir, asarPath: generatedAsarPath, arch: "x64" });
@@ -1672,6 +1678,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isAbove(error.fileCount ?? 0, 2);
       }),
     ),
+  );
+
+  it.effect(
+    "rejects a sidecar native loader failure even when the server can print its version",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeWindowsPayloadFixture({
+            copyUnpackedNatives: true,
+            nativeLoaderSource: 'throw new Error("wrong-native-architecture");\n',
+          });
+          const error = yield* validateWindowsPackagedPayload({
+            stageDistDir: fixture.stageDistDir,
+            appExecutableName: fixture.appExecutableName,
+            targetArch: "x64",
+            appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          }).pipe(Effect.flip);
+          assert.instanceOf(error, BundleNotSelfContainedError);
+          assert.include(error.output, "wrong-native-architecture");
+        }),
+      ).pipe(Effect.provideService(HostProcessPlatform, "linux")),
   );
 
   it.effect("rejects a sidecar whose extracted server bundle cannot resolve", () =>
