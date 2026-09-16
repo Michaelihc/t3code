@@ -11,6 +11,9 @@ const seedPreview = Effect.fn("seedPreview")(function* (firstV2Id: number) {
   yield* runMigrations();
   yield* sql`ALTER TABLE projection_threads DROP COLUMN branch_pull_request_json`;
   yield* sql`ALTER TABLE projection_threads DROP COLUMN active_order_key`;
+  yield* sql`ALTER TABLE projection_threads DROP COLUMN title_state_json`;
+  yield* sql`ALTER TABLE projection_thread_messages DROP COLUMN context_json`;
+  yield* sql`DROP TABLE projection_thread_pull_requests`;
   yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${firstV2Id}`;
   const previewNames = [
     "OrchestrationV2",
@@ -72,16 +75,48 @@ for (const firstV2Id of [41, 44]) {
           migrationManifest,
         );
         // Preparing the same columns used during startup reproduces the original failure.
-        yield* sql`SELECT branch_pull_request_json, active_order_key FROM projection_threads`;
+        yield* sql`SELECT branch_pull_request_json, active_order_key, title_state_json FROM projection_threads`;
+        yield* sql`SELECT context_json FROM projection_thread_messages`;
+        yield* sql`SELECT * FROM projection_thread_pull_requests`;
         assert.deepStrictEqual(yield* runMigrations(), []);
 
         const next = yield* Migrator.make({})({
           loader: Migrator.fromRecord({
-            "51_FutureReleasedMigration": sql`CREATE TABLE future_migration_proof (id TEXT)`,
+            "54_FutureReleasedMigration": sql`CREATE TABLE future_migration_proof (id TEXT)`,
           }),
         });
-        assert.deepStrictEqual(next, [[51, "FutureReleasedMigration"]]);
+        assert.deepStrictEqual(next, [[54, "FutureReleasedMigration"]]);
       }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+  );
+}
+
+for (const oldV2Id of [50, 51, 52]) {
+  it.effect(`upgrades consolidated V2 migration ${oldV2Id} without replaying events`, () =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* runMigrations();
+      yield* sql`DROP TABLE projection_thread_pull_requests`;
+      yield* sql`ALTER TABLE projection_thread_messages DROP COLUMN context_json`;
+      yield* sql`ALTER TABLE projection_threads DROP COLUMN title_state_json`;
+      yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 50`;
+      yield* sql`INSERT INTO effect_sql_migrations (migration_id, name) VALUES (${oldV2Id}, 'OrchestrationV2')`;
+      // Previous reconciliation already archived the original preview ledger.
+      yield* sql`CREATE TABLE effect_sql_migrations_ov2_preview (id TEXT)`;
+      yield* sql`INSERT INTO orchestration_v2_events
+        (event_id, thread_id, event_type, occurred_at, payload_json)
+        VALUES ('preserved', 'thread', 'thread.created', '2026-09-01T00:00:00.000Z', '{}')`;
+      const events = yield* sql`SELECT * FROM orchestration_v2_events`;
+      yield* runMigrations();
+      assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_events`, events);
+      yield* sql`SELECT title_state_json FROM projection_threads`;
+      yield* sql`SELECT context_json FROM projection_thread_messages`;
+      yield* sql`SELECT * FROM projection_thread_pull_requests`;
+      assert.deepStrictEqual(yield* runMigrations(), []);
+      assert.deepStrictEqual(
+        yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 53`,
+        [{ name: "OrchestrationV2" }],
+      );
+    }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
   );
 }
 
