@@ -169,7 +169,7 @@ export interface RunMigrationsOptions {
 export const runMigrations = Effect.fn("runMigrations")(function* ({
   toMigrationInclusive,
 }: RunMigrationsOptions = {}) {
-  if (toMigrationInclusive === undefined || toMigrationInclusive >= 50) {
+  if (toMigrationInclusive === undefined || toMigrationInclusive >= 53) {
     yield* reconcilePreviewMigrations(migrationManifest);
   }
   const executedMigrations = yield* run({ loader: makeMigrationLoader(toMigrationInclusive) });
