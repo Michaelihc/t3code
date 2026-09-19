@@ -1,4 +1,3 @@
-import { activeForkSnapshotPrompt } from "./ContextHandoffService.ts";
 import { threadPullRequestsOf } from "@t3tools/shared/threadPullRequests";
 import {
   normalizeThreadPullRequestKey,
@@ -4908,7 +4907,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 sourceRunOrdinal: sourceRun.ordinal,
               }),
             ));
-      const preparedPortableForkHandoff =
+      const portableForkHandoff =
         !requiresPortableFork ||
         pendingForkTransfer === undefined ||
         sourceProjection === null ||
@@ -4927,6 +4926,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, portableForkItems),
                 strategy: "full_thread_summary",
                 items: portableForkItems,
+                activeFork: pendingForkTransfer.forkSnapshot !== undefined,
                 runs: sourceProjection.runs,
                 createdAt: now,
               })
@@ -4940,15 +4940,6 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                     }),
                 ),
               );
-      const portableForkHandoff =
-        preparedPortableForkHandoff === null
-          ? null
-          : pendingForkTransfer?.forkSnapshot === undefined
-            ? preparedPortableForkHandoff
-            : {
-                ...preparedPortableForkHandoff,
-                summaryText: activeForkSnapshotPrompt(pendingForkTransfer.forkSnapshot),
-              };
       const requiresFullProviderSwitchContext =
         isProviderSwitch && pendingMergeBackTransfer !== undefined;
       const targetLastCompletedRun =

@@ -12,10 +12,18 @@ type SlashSearchItem = Extract<
   { type: "slash-command" | "provider-slash-command" | "skill" }
 >;
 
+export const FORK_SLASH_COMMAND = {
+  id: "slash:fork",
+  type: "slash-command",
+  command: "fork",
+  label: "/fork",
+  description: "Fork this conversation and wait for your instructions",
+} as const satisfies SlashSearchItem;
+
 /**
  * A provider expands a slash command only when it opens the whole message;
  * anywhere else it reaches the agent as literal text, so it is not offered
- * there. Built-ins apply locally on selection and skills insert a `$` mention
+ * there. Fork also needs a standalone message. Other built-ins apply locally on selection and skills insert a `$` mention
  * the server dispatches from any position, so both stay available.
  */
 export function slashCommandItemsForPromptPosition(
@@ -23,9 +31,15 @@ export function slashCommandItemsForPromptPosition(
   isAtPromptStart: boolean,
 ): SlashSearchItem[] {
   if (isAtPromptStart) {
-    return [...items];
+    return items.filter(
+      (item) => item.type !== "provider-slash-command" || item.command.name !== "fork",
+    );
   }
-  return items.filter((item) => item.type !== "provider-slash-command");
+  return items.filter(
+    (item) =>
+      item.type !== "provider-slash-command" &&
+      !(item.type === "slash-command" && item.command === "fork"),
+  );
 }
 
 function scoreSlashCommandItem(item: SlashSearchItem, query: string): number | null {

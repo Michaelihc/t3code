@@ -198,20 +198,30 @@ it.layer(TestLayer)("active fork snapshots", (it) => {
           }),
         );
         const service = yield* ContextHandoffServiceV2;
-        const handoff = yield* service.prepareLegacyImport({
+        const handoff = yield* service.prepareProviderHandoff({
           threadId: ThreadId.make("fork"),
           targetRunId: RunId.make("explicit-followup"),
           toProviderThreadId: ProviderThreadId.make("fork-provider"),
           toProviderInstanceId: ProviderInstanceId.make("codex"),
+          transferId: null,
+          fromProviderThreadIds: [],
+          fromProviderInstanceId: ProviderInstanceId.make("codex"),
+          coveredRunOrdinals: { from: 1, to: 1 },
+          strategy: "full_thread_summary",
+          activeFork: true,
           items: snapshot,
           createdAt: DateTime.makeUnsafe("2026-09-16T00:00:00.000Z"),
         });
         const providerMessage = providerMessageWithContextHandoff({
-          handoff: { ...handoff, summaryText: activeForkSnapshotPrompt(snapshot) },
+          handoff,
           userText: "Now investigate the failing test only.",
         });
         assert.include(
           providerMessage,
+          "You are a fork. Do not continue work unless explicitly instructed.",
+        );
+        assert.include(
+          handoff.history!.coverage,
           "You are a fork. Do not continue work unless explicitly instructed.",
         );
         assert.include(providerMessage, "Implement the original task");
