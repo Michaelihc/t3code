@@ -7,6 +7,7 @@ import ProjectionThreadsActiveOrderKey from "./Migrations/049_ProjectionThreadsA
 import ProjectionThreadPullRequests from "./Migrations/050_ProjectionThreadPullRequests.ts";
 import ProjectionThreadMessageContext from "./Migrations/051_ProjectionThreadMessageContext.ts";
 import ProjectionThreadTitleState from "./Migrations/052_ProjectionThreadTitleState.ts";
+import PullRequestFilesViewed from "./Migrations/053_PullRequestFilesViewed.ts";
 
 export const reconcilePreviewMigrations = Effect.fn("reconcilePreviewMigrations")(function* (
   manifest: ReadonlyArray<readonly [number, string]>,
@@ -49,6 +50,7 @@ export const reconcilePreviewMigrations = Effect.fn("reconcilePreviewMigrations"
       if (!columns.some(({ name }) => name === "title_state_json")) {
         yield* ProjectionThreadTitleState;
       }
+      yield* PullRequestFilesViewed;
       const archive = consolidated[0]
         ? `effect_sql_migrations_ov2_preview_${consolidated[0].migration_id}`
         : "effect_sql_migrations_ov2_preview";
@@ -58,7 +60,7 @@ export const reconcilePreviewMigrations = Effect.fn("reconcilePreviewMigrations"
       yield* Migrator.make({})({
         loader: Migrator.fromRecord(
           Object.fromEntries(
-            manifest.filter(([id]) => id <= 53).map(([id, name]) => [`${id}_${name}`, Effect.void]),
+            manifest.filter(([id]) => id <= 54).map(([id, name]) => [`${id}_${name}`, Effect.void]),
           ),
         ),
       });

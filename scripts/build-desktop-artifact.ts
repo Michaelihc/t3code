@@ -1543,19 +1543,13 @@ export function createStageWorkspaceConfig(input: {
 export function createStagePatchedDependencies(
   patchedDependencies: Record<string, string>,
   dependencies: Record<string, unknown>,
-  transitiveDependencies: readonly string[] = [],
 ): Record<string, string> {
-  const includedPackageNames = new Set([...Object.keys(dependencies), ...transitiveDependencies]);
   return Object.fromEntries(
     Object.entries(patchedDependencies).filter(([patchKey]) =>
-      includedPackageNames.has(getPatchedDependencyPackageName(patchKey)),
+      Object.hasOwn(dependencies, getPatchedDependencyPackageName(patchKey)),
     ),
   );
 }
-
-// msgpackr-extract uses this helper when a platform prebuild is unavailable.
-// Carry the path-safe patch in stages containing the server's runtime closure.
-const TRANSITIVE_STAGE_PATCH_DEPENDENCIES = ["node-gyp-build-optional-packages"] as const;
 
 function getPatchedDependencyPackageName(patchKey: string): string {
   const versionSeparator = patchKey.lastIndexOf("@");
@@ -2118,7 +2112,7 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
     // by the WSL preflight probe at runtime, while ffi-rs, @ff-labs/fff-node
     // and the bun adapters are covered by the shared runtime-external closure
     // and emitted-bundle checks.
-    const probeEnv = { ...process.env, NODE_PATH: "" };
+    const probeEnv: NodeJS.ProcessEnv = { ...process.env, NODE_PATH: "" };
     if (input.probeExecutablePath !== undefined) {
       delete probeEnv.ELECTRON_NO_ASAR;
       delete probeEnv.NODE_OPTIONS;
@@ -2131,7 +2125,8 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
     const nativePreloadArgs: string[] = [];
     if (yield* fs.exists(msgpackrExtractPath)) {
       const preloadPath = path.join(probeRoot, "check-native.cjs");
-      yield* fs.writeFileString(preloadPath, `require(${JSON.stringify(msgpackrExtractPath)});\n`);
+      const nativeModuleLiteral = yield* encodeJsonString(msgpackrExtractPath);
+      yield* fs.writeFileString(preloadPath, `require(${nativeModuleLiteral});\n`);
       nativePreloadArgs.push("--require", preloadPath);
     }
 
@@ -2962,7 +2957,6 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
   const sidecarPatchedDependencies = createStagePatchedDependencies(
     input.patchedDependencies,
     sidecarDependencies,
-    TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
   );
   const sidecarPackageJson = {
     name: "t3code-server",
@@ -3385,7 +3379,7 @@ export const validateWindowsPackagedPayload = Effect.fn(
   yield* verifyPackagedBundleIsSelfContained({
     asarPath,
     verbose: input.verbose ?? false,
-    probeExecutablePath,
+    ...(probeExecutablePath === undefined ? {} : { probeExecutablePath }),
   });
 
   yield* Effect.log(
@@ -3704,7 +3698,6 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
   const stagePatchedDependencies = createStagePatchedDependencies(
     workspacePatchedDependencies,
     stageDependencies,
-    options.platform === "win" ? [] : TRANSITIVE_STAGE_PATCH_DEPENDENCIES,
   );
   const windowsServerAsarPath =
     options.platform === "win"

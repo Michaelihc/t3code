@@ -14,6 +14,7 @@ const seedPreview = Effect.fn("seedPreview")(function* (firstV2Id: number) {
   yield* sql`ALTER TABLE projection_threads DROP COLUMN title_state_json`;
   yield* sql`ALTER TABLE projection_thread_messages DROP COLUMN context_json`;
   yield* sql`DROP TABLE projection_thread_pull_requests`;
+  yield* sql`DROP TABLE pull_request_files_viewed`;
   yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= ${firstV2Id}`;
   const previewNames = [
     "OrchestrationV2",
@@ -78,15 +79,16 @@ for (const firstV2Id of [41, 44]) {
         yield* sql`SELECT branch_pull_request_json, active_order_key, title_state_json FROM projection_threads`;
         yield* sql`SELECT context_json FROM projection_thread_messages`;
         yield* sql`SELECT * FROM projection_thread_pull_requests`;
+        yield* sql`SELECT * FROM pull_request_files_viewed`;
         assert.deepStrictEqual(yield* runMigrations(), []);
 
         const next = yield* Migrator.make({})({
           loader: Migrator.fromRecord({
-            "54_FutureReleasedMigration": sql`CREATE TABLE future_migration_proof (id TEXT)`,
+            "55_FutureReleasedMigration": sql`CREATE TABLE future_migration_proof (id TEXT)`,
           }),
         });
-        assert.deepStrictEqual(next, [[54, "FutureReleasedMigration"]]);
-      }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+        assert.deepStrictEqual(next, [[55, "FutureReleasedMigration"]]);
+      }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 }
 
@@ -96,6 +98,7 @@ for (const oldV2Id of [50, 51, 52]) {
       const sql = yield* SqlClient.SqlClient;
       yield* runMigrations();
       yield* sql`DROP TABLE projection_thread_pull_requests`;
+      yield* sql`DROP TABLE pull_request_files_viewed`;
       yield* sql`ALTER TABLE projection_thread_messages DROP COLUMN context_json`;
       yield* sql`ALTER TABLE projection_threads DROP COLUMN title_state_json`;
       yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id >= 50`;
@@ -111,14 +114,34 @@ for (const oldV2Id of [50, 51, 52]) {
       yield* sql`SELECT title_state_json FROM projection_threads`;
       yield* sql`SELECT context_json FROM projection_thread_messages`;
       yield* sql`SELECT * FROM projection_thread_pull_requests`;
+      yield* sql`SELECT * FROM pull_request_files_viewed`;
       assert.deepStrictEqual(yield* runMigrations(), []);
       assert.deepStrictEqual(
-        yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 53`,
+        yield* sql`SELECT name FROM effect_sql_migrations WHERE migration_id = 54`,
         [{ name: "OrchestrationV2" }],
       );
-    }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+    }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
   );
 }
+
+it.effect("upgrades the previous fork's V2 migration 53 through the upstream bridge", () =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    yield* runMigrations();
+    yield* sql`DROP TABLE pull_request_files_viewed`;
+    yield* sql`DELETE FROM effect_sql_migrations WHERE migration_id = 53`;
+    yield* sql`UPDATE effect_sql_migrations SET migration_id = 53 WHERE migration_id = 54`;
+    yield* sql`INSERT INTO orchestration_v2_events
+      (event_id, thread_id, event_type, occurred_at, payload_json)
+      VALUES ('preserved', 'thread', 'thread.created', '2026-09-01T00:00:00.000Z', '{}')`;
+    const events = yield* sql`SELECT * FROM orchestration_v2_events`;
+
+    assert.deepStrictEqual(yield* runMigrations(), [[53, "PullRequestFilesViewed"]]);
+    assert.deepStrictEqual(yield* sql`SELECT * FROM orchestration_v2_events`, events);
+    yield* sql`SELECT * FROM pull_request_files_viewed`;
+    assert.deepStrictEqual(yield* runMigrations(), []);
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
+);
 
 it.effect("rolls back added columns if the original ledger cannot be archived", () =>
   Effect.gen(function* () {
@@ -136,5 +159,5 @@ it.effect("rolls back added columns if the original ledger cannot be archived", 
     const columns = yield* sql<{ readonly name: string }>`PRAGMA table_info(projection_threads)`;
     assert.ok(!columns.some(({ name }) => name === "branch_pull_request_json"));
     assert.ok(!columns.some(({ name }) => name === "active_order_key"));
-  }).pipe(Effect.provide(NodeSqliteClient.layerMemory())),
+  }).pipe(Effect.provide(NodeSqliteClient.layer({ filename: ":memory:" }))),
 );
