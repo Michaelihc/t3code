@@ -2538,10 +2538,7 @@ function AssistantTurnUsage({
     <Tooltip>
       <TooltipTrigger
         render={
-          <span
-            tabIndex={0}
-            className="basis-full text-muted-foreground text-[11px] tabular-nums"
-          />
+          <span tabIndex={0} className="basis-full text-foreground/70 text-xs tabular-nums" />
         }
       >
         {usage.label}
