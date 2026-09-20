@@ -218,6 +218,23 @@ export function applyOrchestrationV2ProjectionEvent(
         ...base,
         providerTurns: upsertEntity(base.providerTurns, {
           ...event.payload,
+          ...((event.payload.turnTokenUsage ??
+            base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnTokenUsage) ===
+          undefined
+            ? {}
+            : {
+                turnTokenUsage:
+                  event.payload.turnTokenUsage ??
+                  base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnTokenUsage,
+              }),
+          ...((event.payload.turnCost ??
+            base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnCost) === undefined
+            ? {}
+            : {
+                turnCost:
+                  event.payload.turnCost ??
+                  base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnCost,
+              }),
           ...((event.payload.tokenUsage ??
             base.providerTurns.find((turn) => turn.id === event.payload.id)?.tokenUsage) ===
           undefined

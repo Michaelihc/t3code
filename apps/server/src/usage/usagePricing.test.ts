@@ -6,6 +6,7 @@ import {
   lookupRate,
   parseRateTable,
   priceUsage,
+  priceTurnUsage,
 } from "./usagePricing.ts";
 
 const rate = (input: number, cacheRead?: number) => ({
@@ -15,6 +16,31 @@ const rate = (input: number, cacheRead?: number) => ({
 });
 
 describe("usage pricing", () => {
+  it("prices a complete turn without counting cached input or reasoning twice", () => {
+    const table = parseRateTable({ model: rate(0.000001, 0.0000001) });
+    const usage = {
+      usageScope: "main_agent",
+      usageStatus: "complete",
+      hasSubagents: true,
+      inputTokens: 1000,
+      cachedInputTokens: 600,
+      cacheCreationTokens: 100,
+      outputTokens: 100,
+      reasoningTokens: 80,
+    } as const;
+    expect(priceTurnUsage(table, "model", usage)?.costUsd).toBeCloseTo(0.00096);
+    expect(priceTurnUsage(table, "unknown", usage)).toBeNull();
+    expect(priceTurnUsage(table, "model", { ...usage, usageStatus: "partial" })).toBeNull();
+    expect(
+      priceTurnUsage(table, "model", {
+        ...usage,
+        inputTokens: 0,
+        outputTokens: 0,
+        cachedInputTokens: 0,
+        cacheCreationTokens: 0,
+      })?.costUsd,
+    ).toBe(0);
+  });
   const totals = {
     uncachedInputTokens: 1_000_000,
     cachedInputTokens: 1_000_000,

@@ -738,6 +738,12 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  turnCost: Schema.optional(
+    Schema.Struct({
+      amountUsd: Schema.Number,
+      source: Schema.Literals(["providerReported", "modelPriced"]),
+    }),
+  ),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 

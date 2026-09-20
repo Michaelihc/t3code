@@ -1,4 +1,5 @@
 import { ThreadContextDivider } from "./thread-context-divider";
+import { presentTurnUsage } from "@t3tools/client-runtime/state/item-support";
 import { ThreadHandoffRow } from "./thread-handoff-row";
 import {
   WorktreeWorkingHeader,
@@ -301,6 +302,27 @@ async function waitForThreadShell(
   return waitForThreadShellReady({
     read: () => appAtomRegistry.get(atom) !== null,
   });
+}
+
+function AssistantTurnUsage(props: {
+  readonly environmentId: EnvironmentId;
+  readonly projectedItem: OrchestrationV2ProjectedTurnItem;
+}) {
+  const support = useV2ItemSupport({
+    environmentId: props.environmentId,
+    sourceThreadId: props.projectedItem.sourceThreadId,
+    sourceItemId: props.projectedItem.sourceItemId,
+  });
+  const usage = presentTurnUsage(support.providerTurn);
+  if (!usage) return null;
+  return (
+    <Text
+      className="mt-1 font-t3 text-xs tabular-nums text-foreground-secondary"
+      accessibilityHint={usage.detail}
+    >
+      {usage.label}
+    </Text>
+  );
 }
 
 function AssistantForkButton(props: {
@@ -1825,25 +1847,33 @@ function renderFeedEntry(
           );
         })}
         {showAssistantMeta ? (
-          <View className="mt-1 flex-row items-center gap-1">
+          <View>
+            <View className="mt-1 flex-row items-center gap-1">
+              {message.projectedItem ? (
+                <AssistantForkButton
+                  environmentId={props.environmentId}
+                  iconColor={iconSubtleColor}
+                  projectedItem={message.projectedItem}
+                  sourceTitle={props.threadTitle}
+                />
+              ) : null}
+              <CopyTextButton
+                accessibilityLabel="Copy message"
+                text={renderedText}
+                tintColor={iconSubtleColor}
+                buttonSize={28}
+                iconSize={13}
+              />
+              <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
+                {timestampLabel}
+              </Text>
+            </View>
             {message.projectedItem ? (
-              <AssistantForkButton
+              <AssistantTurnUsage
                 environmentId={props.environmentId}
-                iconColor={iconSubtleColor}
                 projectedItem={message.projectedItem}
-                sourceTitle={props.threadTitle}
               />
             ) : null}
-            <CopyTextButton
-              accessibilityLabel="Copy message"
-              text={renderedText}
-              tintColor={iconSubtleColor}
-              buttonSize={28}
-              iconSize={13}
-            />
-            <Text className="font-t3-medium text-xs tabular-nums text-foreground-secondary">
-              {timestampLabel}
-            </Text>
           </View>
         ) : null}
       </Animated.View>

@@ -22,6 +22,13 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+Completed responses also show recorded input and output tokens, estimated cost, and the last
+reported context-window snapshot when available. Turn totals include repeated model requests;
+context usage shows how much fits in the model's current window. Cache and reasoning counts are
+already included in the totals. Child-agent usage is excluded. Missing usage or prices are not
+treated as zero. Cost estimates are saved for newly completed turns using the rates available
+at completion; changing prices on the Usage page does not rewrite these saved turn estimates.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,

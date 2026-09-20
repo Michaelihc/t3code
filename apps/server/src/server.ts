@@ -425,6 +425,7 @@ const CloudManagedEndpointRuntimeLive = Layer.mergeAll(
 
 const OrchestrationV2RuntimeLayerLive = OrchestrationV2ProductionLayerLive.pipe(
   Layer.provide(ProviderEventIngestor.analyticsLive),
+  Layer.provide(ProviderEventIngestor.pricingLive.pipe(Layer.provide(UsageLayerLive))),
   Layer.provide(CheckpointStoreLayerLive),
   Layer.provide(GitWorkflowLayerLive),
   Layer.provide(ResourceCleanupService.live),

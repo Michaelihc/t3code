@@ -39,6 +39,7 @@ import { ProjectionStoreV2, layer as projectionStoreLayer } from "./ProjectionSt
 import {
   ProviderEventIngestorV2,
   ProviderTurnAnalytics,
+  ProviderTurnPricing,
   layer as providerEventIngestorLayer,
 } from "./ProviderEventIngestor.ts";
 import { makeProviderFailure } from "./ProviderFailure.ts";
@@ -138,6 +139,14 @@ it.effect("records accepted billed turn usage once without billing the context w
         recorded.push(properties);
       }),
   });
+  const pricing = Layer.succeed(ProviderTurnPricing, {
+    price: (turn, model) =>
+      Effect.sync(() => {
+        assert.strictEqual(model, modelSelection.model);
+        assert.strictEqual(turn.turnTokenUsage?.inputTokens, 40);
+        return { ...turn, turnCost: { amountUsd: 0.123, source: "modelPriced" as const } };
+      }),
+  });
   return Effect.gen(function* () {
     const now = yield* DateTime.now;
     const eventSink = yield* EventSinkV2;
@@ -192,6 +201,12 @@ it.effect("records accepted billed turn usage once without billing the context w
     };
     yield* ingestor.ingestNormalized(input);
     yield* ingestor.ingestNormalized(input);
+    const projections = yield* ProjectionStoreV2;
+    const projection = yield* projections.getThreadProjection(threadEvent.threadId);
+    assert.deepEqual(projection.providerTurns[0]?.turnCost, {
+      amountUsd: 0.123,
+      source: "modelPriced",
+    });
     const ignored = yield* ingestor.ingestNormalized({
       ...input,
       event: {
@@ -227,7 +242,7 @@ it.effect("records accepted billed turn usage once without billing the context w
       interactionMode: "default",
       durationMs: 120,
     });
-  }).pipe(Effect.provide(TestLayer.pipe(Layer.provide(analytics))));
+  }).pipe(Effect.provide(TestLayer.pipe(Layer.provide(analytics), Layer.provide(pricing))));
 });
 
 layer("ProviderEventIngestorV2", (it) => {

@@ -48,7 +48,7 @@ export function ContextWindowMeter(props: {
           <Button
             size="icon-sm"
             variant="ghost-muted"
-            className="size-7 rounded-full hover:text-muted-foreground data-pressed:text-muted-foreground"
+            className="h-7 w-auto gap-1.5 rounded-full px-1.5 hover:text-muted-foreground data-pressed:text-muted-foreground"
             aria-label={
               usage.maxTokens !== null && usedPercentage
                 ? `Context window ${usedPercentage} used`
@@ -82,6 +82,9 @@ export function ContextWindowMeter(props: {
                   className="transition-[stroke-dashoffset,stroke] duration-500 ease-out motion-reduce:transition-none"
                 />
               </svg>
+            </span>
+            <span className="text-[11px] tabular-nums">
+              {usedPercentage ?? `${formatContextWindowTokens(usage.usedTokens)} tokens`}
             </span>
           </Button>
         }

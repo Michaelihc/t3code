@@ -26,6 +26,7 @@ import * as Schema from "effect/Schema";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import { AnalyticsService } from "../telemetry/AnalyticsService.ts";
+import { UsageService } from "../usage/UsageService.ts";
 import { EventSinkV2 } from "./EventSink.ts";
 import { ProjectionStoreV2 } from "./ProjectionStore.ts";
 import { IdAllocatorV2 } from "./IdAllocator.ts";
@@ -76,6 +77,38 @@ export class ProviderTurnAnalytics extends Context.Reference<{
 }>("t3/orchestration-v2/ProviderTurnAnalytics", {
   defaultValue: () => ({ record: () => Effect.void }),
 }) {}
+
+export class ProviderTurnPricing extends Context.Reference<{
+  readonly price: (
+    turn: OrchestrationV2ProviderTurn,
+    model: string | undefined,
+  ) => Effect.Effect<OrchestrationV2ProviderTurn>;
+}>("t3/orchestration-v2/ProviderTurnPricing", {
+  defaultValue: () => ({ price: (turn) => Effect.succeed(turn) }),
+}) {}
+
+export const pricingLive = Layer.effect(
+  ProviderTurnPricing,
+  Effect.gen(function* () {
+    const usage = yield* UsageService;
+    yield* usage.refreshRates.pipe(Effect.forkScoped);
+    return {
+      price: Effect.fn("ProviderTurnPricing.price")(function* (
+        turn: OrchestrationV2ProviderTurn,
+        model: string | undefined,
+      ) {
+        if (turn.turnCost || !turn.turnTokenUsage || !model) return turn;
+        const cost = yield* usage.priceTurn(model, turn.turnTokenUsage);
+        return cost === null || cost.costSource === "unpriced"
+          ? turn
+          : {
+              ...turn,
+              turnCost: { amountUsd: cost.costUsd, source: cost.costSource },
+            };
+      }),
+    };
+  }),
+);
 
 export const analyticsLive = Layer.effect(
   ProviderTurnAnalytics,
@@ -257,6 +290,7 @@ export const layer: Layer.Layer<
     const projections = yield* ProjectionStoreV2;
     const idAllocator = yield* IdAllocatorV2;
     const analytics = yield* ProviderTurnAnalytics;
+    const pricing = yield* ProviderTurnPricing;
     const completedTurnAnalytics = new Set<string>();
 
     const makeDomainEvent = (
@@ -378,7 +412,10 @@ export const layer: Layer.Layer<
               yield* makeDomainEvent(input, {
                 type: "provider-turn.updated",
                 ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                payload: input.event.providerTurn,
+                payload: yield* pricing.price(
+                  input.event.providerTurn,
+                  input.analyticsContext?.modelSelection.model,
+                ),
                 nodeId: input.event.providerTurn.nodeId,
               }),
             ];
