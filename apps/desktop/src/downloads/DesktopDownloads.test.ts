@@ -98,6 +98,25 @@ function fixture(failFirstStart = false, deferDownload = false) {
 }
 
 describe("retained native downloads", () => {
+  it.effect("a cancelled preparation cannot consume a new transfer of the same URL", () => {
+    const { layer, items, receive } = fixture(false, true);
+    return Effect.gen(function* () {
+      const downloads = yield* DesktopDownloads.DesktopDownloads;
+      const url = "https://files.example/report";
+      yield* downloads.start({ id: "cancelled", url, name: "report.bin" }, 7);
+      yield* downloads.cancel("cancelled", 7);
+      yield* downloads.start({ id: "active", url, name: "report.bin" }, 7);
+      const activeCancel = vi.spyOn(items[1]!, "cancel");
+      receive(items[1]!);
+      expect(activeCancel).not.toHaveBeenCalled();
+      expect(yield* downloads.list(7)).toContainEqual(
+        expect.objectContaining({ id: "active", status: "progressing" }),
+      );
+      const lateCancel = vi.spyOn(items[0]!, "cancel");
+      receive(items[0]!);
+      expect(lateCancel).toHaveBeenCalledOnce();
+    }).pipe(Effect.provide(layer));
+  });
   it.effect(
     "cancelled preparations release active slots and still cancel late native items",
     () => {

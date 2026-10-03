@@ -131,7 +131,7 @@ export const layer = Layer.effect(
             (value) =>
               value.owner === owner &&
               value.item === null &&
-              value.state.status !== "failed" &&
+              value.state.status === "preparing" &&
               value.input.url === url,
           );
           if (!entry) {
@@ -142,10 +142,6 @@ export const layer = Layer.effect(
           }
           claimed.add(item);
           entry.item = item;
-          if (entry.state.status === "cancelled") {
-            item.cancel();
-            return;
-          }
           item.setSaveDialogOptions({ defaultPath: entry.state.name });
           entry.cleanup = trackDownloadTransfer({
             item,
