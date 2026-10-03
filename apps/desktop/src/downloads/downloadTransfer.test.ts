@@ -5,6 +5,11 @@ import { trackDownloadTransfer } from "./downloadTransfer.ts";
 class Transfer extends NodeEvents.EventEmitter {
   received = 0;
   total = 100;
+  resumable = false;
+  canResume() {
+    return this.resumable;
+  }
+  resume = vi.fn();
   getReceivedBytes() {
     return this.received;
   }
@@ -104,6 +109,44 @@ describe("native file downloads", () => {
     expect(cancel).toHaveBeenCalledOnce();
     expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed" }), null);
     expect(item.listenerCount("updated")).toBe(0);
+    expect(item.listenerCount("done")).toBe(0);
+  });
+  it("preserves received bytes and completion tracking through a native resume", () => {
+    const { item, publish } = setup();
+    item.received = 45;
+    item.resumable = true;
+    const cancel = vi.spyOn(item, "cancel");
+    item.emit("updated", undefined, "interrupted");
+    expect(item.resume).toHaveBeenCalledOnce();
+    expect(cancel).not.toHaveBeenCalled();
+    expect(publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "progressing", receivedBytes: 45 }),
+      null,
+    );
+    item.received = 100;
+    item.emit("done", undefined, "completed");
+    expect(publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "completed", receivedBytes: 100 }),
+      "C:/Downloads/report.zip",
+    );
+  });
+  it("offers Retry if native recovery is interrupted again", () => {
+    const { item, publish } = setup();
+    item.resumable = true;
+    item.emit("updated", undefined, "interrupted");
+    item.emit("updated", undefined, "interrupted");
+    expect(item.resume).toHaveBeenCalledOnce();
+    expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed" }), null);
+    expect(item.listenerCount("updated")).toBe(0);
+  });
+  it("offers Retry if native resume throws", () => {
+    const { item, publish } = setup();
+    item.resumable = true;
+    item.resume.mockImplementation(() => {
+      throw new Error("Native resume failed");
+    });
+    item.emit("updated", undefined, "interrupted");
+    expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed" }), null);
     expect(item.listenerCount("done")).toBe(0);
   });
   it("detaches listeners when its owner is disposed", () => {

@@ -33,6 +33,10 @@ class Item extends NodeEvents.EventEmitter {
   getSavePath() {
     return "C:/Downloads/report.bin";
   }
+  canResume() {
+    return false;
+  }
+  resume() {}
   cancel() {
     this.emit("done", undefined, "cancelled");
   }

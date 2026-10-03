@@ -7,6 +7,8 @@ export interface DownloadTransfer {
   getReceivedBytes(): number;
   getTotalBytes(): number;
   getSavePath(): string;
+  canResume(): boolean;
+  resume(): void;
   cancel(): void;
 }
 
@@ -18,6 +20,7 @@ export function trackDownloadTransfer(input: {
   now: () => number;
 }) {
   let lastPublishedAt = -Infinity;
+  let attemptedResume = false;
   const snapshot = (status: DesktopFileDownloadState["status"], message: string | null) => ({
     ...input.initial,
     status,
@@ -27,6 +30,16 @@ export function trackDownloadTransfer(input: {
   });
   const updated = (_event: unknown, nativeState: string) => {
     if (nativeState === "interrupted") {
+      if (!attemptedResume && input.item.canResume()) {
+        attemptedResume = true;
+        input.publish(snapshot("progressing", "Reconnecting download…"), null);
+        try {
+          input.item.resume();
+          return;
+        } catch {
+          // Failed native recovery falls back to a fresh, signed Retry.
+        }
+      }
       dispose();
       input.publish(
         snapshot("failed", "The transfer was interrupted. Try downloading again."),
