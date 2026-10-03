@@ -80,6 +80,8 @@ const buildCmd = Command.make(
       const repoRoot = yield* RepoRoot;
       const serverDir = path.join(repoRoot, "apps/server");
 
+      // Old hashed chunks must not enter the next packaged server sidecar.
+      yield* fs.remove(path.join(serverDir, "dist"), { recursive: true, force: true });
       yield* Effect.log("[cli] Running tsdown...");
       yield* runCommand(
         ChildProcess.make(process.execPath, ["--run", "build:bundle"], {

@@ -162,3 +162,82 @@ it.layer(TestLayer)("ContextHandoffService legacy import", (it) => {
     }),
   );
 });
+
+it.layer(TestLayer)("active fork snapshots", (it) => {
+  it.effect(
+    "sends frozen context and the idle instruction only with the user's explicit message",
+    () =>
+      Effect.gen(function* () {
+        const items = [
+          importedItem({
+            role: "user",
+            id: "goal",
+            text: "Implement the original task",
+            ordinal: 1,
+          }),
+          importedItem({
+            role: "assistant",
+            id: "partial",
+            text: "Progress before fork",
+            ordinal: 2,
+          }),
+        ];
+        const snapshot = ContextHandoffService.captureActiveForkSnapshot(items);
+        items.push(
+          importedItem({
+            role: "assistant",
+            id: "later",
+            text: "Source output after fork",
+            ordinal: 3,
+          }),
+        );
+        const service = yield* ContextHandoffService.ContextHandoffServiceV2;
+        const handoff = yield* service.prepareProviderHandoff({
+          threadId: ThreadId.make("fork"),
+          targetRunId: RunId.make("explicit-followup"),
+          toProviderThreadId: ProviderThreadId.make("fork-provider"),
+          toProviderInstanceId: ProviderInstanceId.make("codex"),
+          transferId: null,
+          fromProviderThreadIds: [],
+          fromProviderInstanceId: ProviderInstanceId.make("codex"),
+          coveredRunOrdinals: { from: 1, to: 1 },
+          strategy: "full_thread_summary",
+          activeFork: true,
+          items: snapshot,
+          createdAt: DateTime.makeUnsafe("2026-09-16T00:00:00.000Z"),
+        });
+        const providerMessage = ContextHandoffService.providerMessageWithContextHandoff({
+          handoff,
+          userText: "Now investigate the failing test only.",
+        });
+        assert.include(
+          providerMessage,
+          "You are a fork. Do not continue work unless explicitly instructed.",
+        );
+        assert.include(
+          handoff.history!.coverage,
+          "You are a fork. Do not continue work unless explicitly instructed.",
+        );
+        assert.include(providerMessage, "Implement the original task");
+        assert.include(providerMessage, "Progress before fork");
+        assert.notInclude(providerMessage, "Source output after fork");
+        assert.include(providerMessage, "Now investigate the failing test only.");
+      }),
+  );
+});
+
+it("bounds active snapshots and discloses omitted history", () => {
+  const snapshot = ContextHandoffService.captureActiveForkSnapshot([
+    importedItem({
+      role: "assistant",
+      id: "long",
+      text: "x".repeat(140_000) + "recent context",
+      ordinal: 1,
+    }),
+  ]);
+  const prompt = ContextHandoffService.activeForkSnapshotPrompt(snapshot);
+  assert.isBelow(prompt.length, 129_000);
+  assert.include(prompt, "Earlier text omitted from fork snapshot");
+  assert.include(prompt, "recent context");
+  assert.include(prompt, "tool results may be omitted");
+});

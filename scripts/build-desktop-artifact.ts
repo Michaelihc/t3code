@@ -81,6 +81,7 @@ const StageWorkspaceConfig = Schema.Struct({
   patchedDependencies: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   overrides: Schema.optional(Schema.Record(Schema.String, Schema.String)),
   nodeLinker: Schema.optional(Schema.Literals(["hoisted"])),
+  sideEffectsCache: Schema.optional(Schema.Boolean),
 });
 type StageWorkspaceConfig = typeof StageWorkspaceConfig.Type;
 
@@ -1034,7 +1035,10 @@ export function resolveWindowsServerAsarIgnoreGlobs(arch: typeof BuildArch.Type)
   ];
 }
 
-export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 80;
+// Electron's x64 runtime currently carries a few more platform files than arm64
+// (83 versus 74 in the 0.0.37 payload). Keep a small ceiling above both so this
+// guard still catches accidentally packaged dependency trees.
+export const WINDOWS_PACKAGED_PAYLOAD_FILE_LIMIT = 90;
 export const WINDOWS_SERVER_RESOURCE_SOURCE_DIR = "apps/desktop/prod-resources/windows-server";
 export const WINDOWS_SERVER_EXTRA_RESOURCES = [
   {
@@ -2057,7 +2061,11 @@ export const copyDirectoryPreservingSymlinks = Effect.fn("copyDirectoryPreservin
 );
 
 const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSelfContained")(
-  function* (input: { readonly asarPath: string; readonly verbose: boolean }) {
+  function* (input: {
+    readonly asarPath: string;
+    readonly verbose: boolean;
+    readonly probeExecutablePath?: string;
+  }) {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
 
@@ -2105,14 +2113,32 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
     // by the WSL preflight probe at runtime, while ffi-rs, @ff-labs/fff-node
     // and the bun adapters are covered by the shared runtime-external closure
     // and emitted-bundle checks.
+    const probeEnv: NodeJS.ProcessEnv = { ...process.env, NODE_PATH: "" };
+    if (input.probeExecutablePath !== undefined) {
+      delete probeEnv.ELECTRON_NO_ASAR;
+      delete probeEnv.NODE_OPTIONS;
+      probeEnv.ELECTRON_RUN_AS_NODE = "1";
+    }
+
+    // msgpackr silently falls back to JS when its addon has the wrong architecture.
+    // Require the addon itself before the version probe so that failure is visible.
+    const msgpackrExtractPath = path.join(probeApp, "node_modules/msgpackr-extract");
+    const nativePreloadArgs: string[] = [];
+    if (yield* fs.exists(msgpackrExtractPath)) {
+      const preloadPath = path.join(probeRoot, "check-native.cjs");
+      const nativeModuleLiteral = yield* encodeJsonString(msgpackrExtractPath);
+      yield* fs.writeFileString(preloadPath, `require(${nativeModuleLiteral});\n`);
+      nativePreloadArgs.push("--require", preloadPath);
+    }
+
     yield* runCommand(
       ChildProcess.make(
-        process.execPath,
+        input.probeExecutablePath ?? process.execPath,
         // --no-global-search-paths because clearing NODE_PATH is not enough:
         // CommonJS resolution still falls back to $HOME/.node_modules,
         // $HOME/.node_libraries and the install prefix, so a globally installed
         // copy of a missing dependency would quietly satisfy this check.
-        ["--no-global-search-paths", entryPoint, "--version"],
+        ["--no-global-search-paths", ...nativePreloadArgs, entryPoint, "--version"],
         {
           cwd: probeApp,
           stdout: "pipe",
@@ -2120,7 +2146,7 @@ const verifyPackagedBundleIsSelfContained = Effect.fn("verifyPackagedBundleIsSel
           // NODE_PATH would let a createRequire call inside the bundle resolve
           // a missing external from outside the packaged tree, which is the
           // whole thing this is trying to rule out.
-          env: { ...process.env, NODE_PATH: "" },
+          env: probeEnv,
         },
       ),
       {
@@ -2980,6 +3006,8 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     // The tree gets packed into server.asar, which cannot carry pnpm's
     // symlink/junction layout, so install a physical, hoisted node_modules.
     nodeLinker: "hoisted" as const,
+    // pnpm's host-keyed build cache can contain ARM addons in an x64 stage.
+    sideEffectsCache: false,
   };
   const sidecarWorkspaceConfigString = yield* encodeStageWorkspaceConfig(sidecarWorkspaceConfig);
   yield* fs.writeFileString(
@@ -2996,6 +3024,8 @@ export const stageWindowsServerSidecar = Effect.fn("stageWindowsServerSidecar")(
     ChildProcess.make(installCommand.command, installCommand.args, {
       cwd: serverStageDir,
       shell: installCommand.shell,
+      // Native install scripts must compile for the payload, not the build host.
+      env: { ...process.env, npm_config_arch: input.arch },
     }),
     { label: "vp install --prod (server sidecar)", verbose: input.verbose },
   );
@@ -3365,9 +3395,19 @@ export const validateWindowsPackagedPayload = Effect.fn(
     verbose: input.verbose ?? false,
   });
 
+  const hostPlatform = yield* HostProcessPlatform;
+  const hostArchitecture = yield* HostProcessArchitecture;
+  // Windows on ARM can execute x64 Electron binaries. Probe with the packaged
+  // runtime so architecture-selected optional natives (notably ffi-rs) resolve
+  // for the payload being validated instead of for the build host.
+  const probeExecutablePath =
+    hostPlatform === "win32" && hostArchitecture === "arm64" && input.targetArch === "x64"
+      ? path.join(packagedAppDir, input.appExecutableName)
+      : undefined;
   yield* verifyPackagedBundleIsSelfContained({
     asarPath,
     verbose: input.verbose ?? false,
+    ...(probeExecutablePath === undefined ? {} : { probeExecutablePath }),
   });
 
   yield* Effect.log(

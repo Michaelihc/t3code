@@ -176,7 +176,9 @@ describe("incoming native shares", () => {
     });
 
     expect(result.attachments).toEqual([]);
-    expect(result.warnings).toEqual(["'huge.zip' exceeds the 50 MB attachment limit."]);
+    expect(result.warnings).toEqual([
+      `'huge.zip' exceeds the ${PROVIDER_SEND_TURN_MAX_FILE_BYTES} bytes attachment limit.`,
+    ]);
     expect(persistFile).not.toHaveBeenCalled();
     expect(removeOwnedFile).toHaveBeenCalledWith(file.value);
   });

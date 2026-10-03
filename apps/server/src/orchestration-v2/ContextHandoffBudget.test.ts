@@ -413,6 +413,35 @@ describe("handoff budget", () => {
 });
 
 describe("handoff delivery", () => {
+  it.effect.each([true, false])(
+    "preserves the active fork instruction in native or inline context (%s)",
+    (native) =>
+      Effect.gen(function* () {
+        const instruction = "You are a fork. Do not continue work unless explicitly instructed.";
+        const result = yield* deliverContextHandoffs({
+          handoffs: [
+            {
+              ...handoff,
+              history: {
+                ...handoff.history!,
+                coverage: instruction + "\n" + handoff.history!.coverage,
+              },
+            },
+          ],
+          providerThread,
+          budget: 16_000,
+          alreadyDeliveredItemIds: new Set(),
+          inject: (value) => {
+            assert.include(value.context, instruction);
+            return Effect.succeed(native);
+          },
+          persist: () => Effect.void,
+        });
+        if (!native) assert.include(result.context, instruction);
+        yield* result.delivered;
+      }),
+  );
+
   it.effect.each([
     { native: true, label: "injected" },
     { native: false, label: "inline" },

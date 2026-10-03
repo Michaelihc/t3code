@@ -79,6 +79,7 @@ export interface ContextHandoffServiceV2Shape {
     readonly toProviderInstanceId: ProviderInstanceId;
     readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
     readonly runs?: ReadonlyArray<OrchestrationV2Run>;
+    readonly activeFork?: boolean;
     readonly strategy: Extract<
       OrchestrationV2ContextHandoff["strategy"],
       "delta_since_target_last_seen" | "full_thread_summary"
@@ -139,6 +140,43 @@ function makeForkDeltaSummary(input: {
     "Fork delta:",
     ...(itemLines.length === 0 ? ["- No user-visible delta items."] : itemLines),
   ].join("\n");
+}
+
+/** Keep active forks bounded on disk and over the wire without taking a live provider fork. */
+export function captureActiveForkSnapshot(items: ReadonlyArray<OrchestrationV2TurnItem>) {
+  let remaining = 128_000;
+  const selected: Array<OrchestrationV2TurnItem> = [];
+  for (const item of items.toReversed()) {
+    if (remaining <= 0 || selected.length >= 200) break;
+    if (item.type !== "user_message" && item.type !== "assistant_message") continue;
+    const omitted = "[Earlier text omitted from fork snapshot]\n";
+    if (remaining <= omitted.length) break;
+    const text =
+      item.text.length > remaining
+        ? `${omitted}${item.text.slice(-(remaining - omitted.length))}`
+        : item.text;
+    remaining -= text.length;
+    selected.unshift(
+      item.type === "assistant_message"
+        ? { ...item, text, streaming: false, status: "completed" }
+        : { ...item, text },
+    );
+  }
+  return selected;
+}
+
+export function activeForkSnapshotPrompt(items: ReadonlyArray<OrchestrationV2TurnItem>): string {
+  return [
+    "You are a fork. Do not continue work unless explicitly instructed.",
+    "This is a snapshot of recent user and assistant messages taken while the source turn was active. Earlier history and tool results may be omitted. Ask for missing context when needed.",
+    ...items.flatMap((item) =>
+      item.type === "user_message"
+        ? [`User: ${item.text}`]
+        : item.type === "assistant_message"
+          ? [`Assistant: ${item.text}`]
+          : [],
+    ),
+  ].join("\n\n");
 }
 
 function makeLegacyImportSummary(items: ReadonlyArray<OrchestrationV2TurnItem>): string {
@@ -419,6 +457,7 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
       readonly toProviderInstanceId: ProviderInstanceId;
       readonly coveredRunOrdinals: OrchestrationV2ContextHandoff["coveredRunOrdinals"];
       readonly runs?: ReadonlyArray<OrchestrationV2Run>;
+      readonly activeFork?: boolean;
       readonly strategy: Extract<
         OrchestrationV2ContextHandoff["strategy"],
         "delta_since_target_last_seen" | "full_thread_summary"
@@ -445,7 +484,10 @@ const makeContextHandoffService = Effect.fn("orchestrationV2.ContextHandoffServi
           ),
         );
       const runStatuses = new Map(input.runs?.map((run) => [run.id, run.status]));
-      const coverage = handoffCoverage(input);
+      const coverage = [
+        ...(input.activeFork ? [activeForkSnapshotPrompt([])] : []),
+        handoffCoverage(input),
+      ].join("\n");
       const selected = selectHistory({
         messages: input.items.flatMap((item) => {
           const message = historicalMessage(item);

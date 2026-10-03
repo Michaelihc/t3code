@@ -1,3 +1,4 @@
+import { captureActiveForkSnapshot } from "./ContextHandoffService.ts";
 import {
   ContextTransferId,
   OrchestrationV2Actor,
@@ -31,14 +32,15 @@ export class ThreadForkPlanError extends Schema.TaggedError<ThreadForkPlanError>
 ) {}
 
 /**
- * Fork copies a provider-finished conversation. Usage-limited and other
+ * Fork copies a provider-finished conversation or snapshots an active turn. Usage-limited and other
  * failed, interrupted, or cancelled turns still have a native thread (or a
  * portable transcript) even though the run did not complete successfully.
  * `waiting` is provider-finished with checkpoint capture still pending.
- * In-progress and rolled-back runs are not forkable.
+ * Runs that have not started and rolled-back runs are not forkable.
  */
 export function isForkableSourceRunStatus(status: OrchestrationV2Run["status"]): boolean {
   return (
+    status === "running" ||
     status === "completed" ||
     status === "waiting" ||
     status === "failed" ||
@@ -50,12 +52,15 @@ export function isForkableSourceRunStatus(status: OrchestrationV2Run["status"]):
 export function forkableSourceRunStatusError(
   run: Pick<OrchestrationV2Run, "id" | "status">,
 ): string {
-  return `Fork source run ${run.id} is ${run.status}; in-progress and rolled-back runs cannot be forked.`;
+  return `Fork source run ${run.id} is ${run.status}; runs that have not started and rolled-back runs cannot be forked.`;
 }
 
 export interface ThreadForkServiceV2Shape {
   readonly plan: (input: {
-    readonly sourceProjection: Pick<OrchestrationV2ThreadProjection, "thread">;
+    readonly sourceProjection: Pick<
+      OrchestrationV2ThreadProjection,
+      "thread" | "runs" | "visibleTurnItems"
+    >;
     readonly sourceRun: OrchestrationV2Run;
     readonly sourceProviderThread: OrchestrationV2ProviderThread | undefined;
     readonly canonicalSourcePoint: OrchestrationV2ContextSourcePoint;
@@ -112,12 +117,30 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           lastVisitedAt: null,
           deletedAt: null,
         };
+        const runOrdinals = new Map(
+          input.sourceProjection.runs.map((run) => [run.id, run.ordinal]),
+        );
         const transfer: OrchestrationV2ContextTransfer = {
           id: input.transferId,
           type: "fork",
           sourceThreadId: input.sourceProjection.thread.id,
           targetThreadId: input.targetThreadId,
           sourcePoint: input.canonicalSourcePoint,
+          ...(input.sourceRun.status !== "running"
+            ? {}
+            : {
+                // Freeze visible history now; a lazy native fork could capture later output.
+                forkSnapshot: captureActiveForkSnapshot(
+                  input.sourceProjection.visibleTurnItems
+                    .filter((row) => row.visibility !== "synthetic")
+                    .map((row) => row.item)
+                    .filter(
+                      (item) =>
+                        item.runId === null ||
+                        (runOrdinals.get(item.runId) ?? 0) <= input.sourceRun.ordinal,
+                    ),
+                ),
+              }),
           basePoint: null,
           sourceProviderInstanceId: input.sourceRun.providerInstanceId,
           targetProviderInstanceId: null,
@@ -126,6 +149,7 @@ export const layer: Layer.Layer<ThreadForkServiceV2> = Layer.succeed(
           resolution: null,
           createdBy: input.createdBy,
           error:
+            input.sourceRun.status === "running" ||
             input.sourceProviderThread?.nativeThreadRef?.strength === "strong"
               ? null
               : "Source provider thread does not expose a strong native thread ref.",

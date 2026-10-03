@@ -11,11 +11,22 @@ import {
   ProviderThreadId,
   RunId,
   ThreadId,
+  TurnItemId,
+  type OrchestrationV2TurnItem,
+  OrchestrationV2ContextTransferJson,
 } from "@t3tools/contracts";
 import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 
 import * as ThreadForkService from "./ThreadForkService.ts";
+
+const encodeTransfer = Schema.encodeEffect(
+  Schema.fromJsonString(OrchestrationV2ContextTransferJson),
+);
+const decodeTransfer = Schema.decodeUnknownEffect(
+  Schema.fromJsonString(OrchestrationV2ContextTransferJson),
+);
 
 const sourceThreadId = ThreadId.make("thread:fork-snoozed-source");
 const targetThreadId = ThreadId.make("thread:fork-awake-target");
@@ -132,7 +143,7 @@ it("treats usage-limited and other provider-finished runs as forkable", () => {
   assert.isTrue(ThreadForkService.isForkableSourceRunStatus("failed"));
   assert.isTrue(ThreadForkService.isForkableSourceRunStatus("interrupted"));
   assert.isTrue(ThreadForkService.isForkableSourceRunStatus("cancelled"));
-  assert.isFalse(ThreadForkService.isForkableSourceRunStatus("running"));
+  assert.isTrue(ThreadForkService.isForkableSourceRunStatus("running"));
   assert.isFalse(ThreadForkService.isForkableSourceRunStatus("starting"));
   assert.isFalse(ThreadForkService.isForkableSourceRunStatus("queued"));
   assert.isFalse(ThreadForkService.isForkableSourceRunStatus("preparing"));
@@ -179,9 +190,9 @@ it.effect("forks from a usage-limited failed run", () =>
   }),
 );
 
-it.effect("rejects in-progress and rolled-back fork sources", () =>
+it.effect("rejects unstarted and rolled-back fork sources", () =>
   Effect.gen(function* () {
-    for (const status of ["running", "rolled_back"] as const) {
+    for (const status of ["starting", "rolled_back"] as const) {
       const sourceRun = makeSourceRun(status);
       const error = yield* planFork(sourceRun).pipe(Effect.flip);
       assert.equal(error._tag, "ThreadForkPlanError");
@@ -190,4 +201,105 @@ it.effect("rejects in-progress and rolled-back fork sources", () =>
       assert.equal(error.cause, ThreadForkService.forkableSourceRunStatusError(sourceRun));
     }
   }),
+);
+it.effect.each(["completed", "running", "waiting"] as const)(
+  "creates an idle fork from a %s source and captures active history",
+  (status) =>
+    Effect.gen(function* () {
+      const sourceThread = makeSourceThread();
+      const sourceRun = { ...makeSourceRun("completed"), status };
+      const item: OrchestrationV2TurnItem = {
+        id: TurnItemId.make("item:partial-response"),
+        threadId: sourceThreadId,
+        runId: sourceRunId,
+        nodeId: null,
+        providerThreadId: null,
+        providerTurnId: null,
+        nativeItemRef: null,
+        parentItemId: null,
+        ordinal: 1,
+        status: "running",
+        title: null,
+        startedAt: sourceCreatedAt,
+        completedAt: null,
+        updatedAt: forkCreatedAt,
+        type: "assistant_message",
+        messageId: MessageId.make("message:partial-response"),
+        text: "Work completed so far",
+        streaming: true,
+      };
+      const sourceProjection: OrchestrationV2ThreadProjection = {
+        thread: sourceThread,
+        runs: [sourceRun],
+        attempts: [],
+        nodes: [],
+        subagents: [],
+        providerSessions: [],
+        providerThreads: [],
+        providerTurns: [],
+        runtimeRequests: [],
+        messages: [],
+        plans: [],
+        turnItems: [],
+        checkpointScopes: [],
+        checkpoints: [],
+        contextHandoffs: [],
+        contextTransfers: [],
+        visibleTurnItems: [
+          { position: 0, visibility: "local", sourceThreadId, sourceItemId: item.id, item },
+        ],
+        updatedAt: snoozedAt,
+      };
+      const service = yield* ThreadForkService.ThreadForkServiceV2;
+      const result = yield* service.plan({
+        sourceProjection,
+        sourceRun,
+        sourceProviderThread: undefined,
+        canonicalSourcePoint: {
+          threadId: sourceThreadId,
+          runId: sourceRunId,
+        },
+        transferId: ContextTransferId.make("context-transfer:fork-snoozed-source"),
+        targetThreadId,
+        title: "Awake fork",
+        createdBy: "user",
+        creationSource: "mobile",
+        createdAt: forkCreatedAt,
+      });
+
+      assert.equal(sourceRun.status, status);
+      assert.equal(result.transfer.status, "pending");
+      assert.isNull(result.transfer.targetRunId);
+      if (status !== "running") {
+        assert.isUndefined(result.transfer.forkSnapshot);
+      } else {
+        assert.deepEqual(result.transfer.forkSnapshot, [
+          { ...item, streaming: false, status: "completed" },
+        ]);
+        // A later source update must not alter the persisted fork boundary.
+        const encoded = yield* encodeTransfer(result.transfer);
+        const restored = yield* decodeTransfer(encoded);
+        assert.deepEqual(restored.forkSnapshot, result.transfer.forkSnapshot);
+      }
+      assert.isNull(result.targetThread.snoozedUntil);
+      assert.isNull(result.targetThread.snoozedAt);
+      assert.equal(result.targetThread.projectId, sourceThread.projectId);
+      assert.equal(result.targetThread.providerInstanceId, sourceThread.providerInstanceId);
+      assert.deepEqual(result.targetThread.modelSelection, sourceThread.modelSelection);
+      assert.equal(result.targetThread.runtimeMode, sourceThread.runtimeMode);
+      assert.equal(result.targetThread.interactionMode, sourceThread.interactionMode);
+      assert.equal(result.targetThread.branch, sourceThread.branch);
+      assert.equal(result.targetThread.worktreePath, sourceThread.worktreePath);
+      assert.isNull(result.targetThread.activeProviderThreadId);
+      assert.deepEqual(result.targetThread.lineage, {
+        parentThreadId: sourceThreadId,
+        relationshipToParent: "fork",
+        rootThreadId: sourceThreadId,
+      });
+      assert.deepEqual(result.targetThread.forkedFrom, {
+        type: "run",
+        threadId: sourceThreadId,
+        runId: sourceRunId,
+      });
+    }).pipe(Effect.provide(ThreadForkService.layer)),
 );

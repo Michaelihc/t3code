@@ -1,7 +1,6 @@
 import {
   ANTIGRAVITY_DEFAULT_MODEL,
   type AntigravityAuthMethod,
-  PROVIDER_SEND_TURN_MAX_FILE_BYTES,
   PROVIDER_SEND_TURN_MAX_IMAGE_BYTES,
   type ProviderSendTurnInput,
   type RuntimeMode,
@@ -245,8 +244,8 @@ const TEXT_FILE_EXTENSIONS = new Set([
   ".ini",
   ".conf",
 ]);
-const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
-const MAX_TOTAL_ATTACHMENT_BYTES = PROVIDER_SEND_TURN_MAX_FILE_BYTES;
+export const ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES = 1024 * 1024;
+export const ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
 /**
  * Sends supported uploads as native ACP content. Other files, and native
@@ -323,16 +322,16 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
       : audio
         ? ANTIGRAVITY_MAX_AUDIO_ATTACHMENT_BYTES
         : pdf
-          ? MAX_TOTAL_ATTACHMENT_BYTES
+          ? ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES
           : ANTIGRAVITY_MAX_TEXT_ATTACHMENT_BYTES;
     if (
       attachment.type === "file" &&
-      (size > limit || totalBytes + size > MAX_TOTAL_ATTACHMENT_BYTES)
+      (size > limit || totalBytes + size > ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES)
     ) {
       continue;
     }
     totalBytes += size;
-    if (size > limit || totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+    if (size > limit || totalBytes > ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES) {
       return yield* EffectAcpErrors.AcpRequestError.invalidParams(
         `Image '${attachment.name}' is too large. Antigravity accepts images up to 10 MiB and 50 MiB of native attachments per message.`,
       );
@@ -357,7 +356,7 @@ export const buildAntigravityPrompt = Effect.fn("buildAntigravityPrompt")(functi
       ),
     );
     totalBytes += bytes.length - size;
-    if (bytes.length > limit || totalBytes > MAX_TOTAL_ATTACHMENT_BYTES) {
+    if (bytes.length > limit || totalBytes > ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES) {
       return yield* EffectAcpErrors.AcpRequestError.invalidParams(
         `Attachment '${attachment.name}' changed while being read and is too large.`,
       );

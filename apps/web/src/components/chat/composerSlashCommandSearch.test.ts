@@ -3,6 +3,7 @@ import { ProviderDriverKind } from "@t3tools/contracts";
 
 import type { ComposerCommandItem } from "./ComposerCommandMenu";
 import {
+  FORK_SLASH_COMMAND,
   searchSlashCommandItems,
   slashCommandItemsForPromptPosition,
 } from "./composerSlashCommandSearch";
@@ -220,4 +221,24 @@ describe("searchSlashCommandItems", () => {
       "skill:claudeAgent:unslop",
     ]);
   });
+});
+
+it("offers the app fork command once at the start, without a provider duplicate", () => {
+  const items = [
+    FORK_SLASH_COMMAND,
+    {
+      id: "provider:fork",
+      type: "provider-slash-command",
+      provider: ProviderDriverKind.make("codex"),
+      command: { name: "fork", description: "Native provider fork" },
+      label: "/fork",
+      description: "Native provider fork",
+    },
+  ] satisfies Array<
+    Extract<ComposerCommandItem, { type: "slash-command" | "provider-slash-command" }>
+  >;
+  expect(searchSlashCommandItems(slashCommandItemsForPromptPosition(items, true), "fork")).toEqual([
+    FORK_SLASH_COMMAND,
+  ]);
+  expect(slashCommandItemsForPromptPosition(items, false)).toEqual([]);
 });

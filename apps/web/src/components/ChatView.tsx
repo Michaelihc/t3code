@@ -1,5 +1,6 @@
 import { ChatCanvas } from "./chat/ChatCanvas";
 import { usageLimitRecoveryBannerItem } from "./chat/UsageLimitRecoveryBanner";
+import { resolveForkCommandRun } from "@t3tools/client-runtime/state/thread-workflows";
 import {
   resolveBackgroundDraftWorkspaceOptions,
   resolveDraftHeroState,
@@ -287,6 +288,7 @@ import {
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
+import { downloadUrl } from "~/lib/download";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { decodeProjectScriptKeybindingRule } from "~/lib/projectScriptKeybindings";
@@ -2773,6 +2775,11 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   useEffect(() => {
+    lastDispatchedVisitRef.current = null;
+    lastVisitDispatchAtRef.current = 0;
+  }, [routeThreadKey]);
+
+  useEffect(() => {
     if (!serverThread?.id) return;
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
@@ -2781,7 +2788,14 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadLocalLastVisitedAt,
     );
     const lastVisitedAt = effectiveLastVisitedAt ? Date.parse(effectiveLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) return;
+    const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) {
+      // Opening an already-read thread also counts as seeing this watermark.
+      // A subsequent mark-unread must survive until we leave and reopen it.
+      lastDispatchedVisitRef.current = dispatchKey;
+      return;
+    }
+    if (lastDispatchedVisitRef.current === dispatchKey) return;
 
     if (serverThread.lastVisitedAt !== undefined) {
       // Server-tracked visited state: record the watermark server-side so it
@@ -2790,8 +2804,6 @@ export default function ChatView(props: ChatViewProps) {
       // dedupe also keeps a mark-unread on the open thread sticky: the rewind
       // leaves updatedAt untouched, so the already-dispatched key skips a
       // fresh visit until new activity lands or the thread is reopened.
-      const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
-      if (lastDispatchedVisitRef.current === dispatchKey) return;
       const dispatch = () => {
         lastDispatchedVisitRef.current = dispatchKey;
         lastVisitDispatchAtRef.current = Date.now();
@@ -2820,6 +2832,7 @@ export default function ChatView(props: ChatViewProps) {
       return () => clearTimeout(timer);
     }
 
+    lastDispatchedVisitRef.current = dispatchKey;
     markThreadVisited(
       scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
       serverThread.updatedAt,
@@ -3566,10 +3579,7 @@ export default function ChatView(props: ChatViewProps) {
           httpBaseUrl: connection.httpBaseUrl,
           createAssetUrl: createAttachmentAssetUrl,
         });
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = attachment.name;
-        anchor.click();
+        await downloadUrl(url, attachment.name);
       } catch (error) {
         toastManager.add({
           type: "error",
@@ -7885,6 +7895,11 @@ export default function ChatView(props: ChatViewProps) {
         );
         return;
       }
+      if (promptRef.current.trim() === "/fork") {
+        promptRef.current = "";
+        setComposerDraftPrompt(composerDraftTarget, "");
+        composerRef.current?.resetCursorState();
+      }
       await navigate({
         to: "/$environmentId/$threadId",
         params: buildThreadRouteParams(targetThreadRef),
@@ -7894,6 +7909,7 @@ export default function ChatView(props: ChatViewProps) {
       activeEnvironmentUnavailable,
       activeThread,
       environmentId,
+      composerDraftTarget,
       forkThreadFromRun,
       navigate,
       setThreadError,
@@ -8121,6 +8137,27 @@ export default function ChatView(props: ChatViewProps) {
         }),
         id: `chat-send-environment-unavailable:${toastSlot}`,
       });
+      return;
+    }
+    const forkSendContext = composerRef.current?.getSendContext();
+    if (
+      !directAnnotation &&
+      editingQueuedRun === null &&
+      promptRef.current.trim() === "/fork" &&
+      forkSendContext?.images.length === 0 &&
+      forkSendContext.files.length === 0
+    ) {
+      const run = serverProjection ? resolveForkCommandRun(serverProjection) : null;
+      if (run === null) {
+        setThreadError(activeThread.id, "Start a turn before forking this thread.");
+        return;
+      }
+      sendInFlightRef.current = true;
+      try {
+        await onForkFromRun({ sourceThreadId: activeThread.id, runId: run.id });
+      } finally {
+        sendInFlightRef.current = false;
+      }
       return;
     }
     if (activePendingProgress) {

@@ -7,6 +7,7 @@ import {
   deriveThreadQueueWorkflowState,
   resolveLatestMergeBackRun,
   threadSupportsProviderHandoff,
+  resolveForkCommandRun,
 } from "./threadWorkflows.ts";
 
 const capabilities = (input?: {
@@ -422,3 +423,18 @@ describe("thread workflows", () => {
     },
   );
 });
+
+it.each(["running", "waiting", "failed", "interrupted", "cancelled"] as const)(
+  "fork command selects the latest %s run instead of a queued follow-up",
+  (status) => {
+    const completed = { id: "completed", ordinal: 1, status: "completed" };
+    const active = { id: "active", ordinal: 2, status };
+    expect(
+      resolveForkCommandRun({
+        runs: [{ id: "queued", ordinal: 3, status: "queued" }, active, completed],
+      } as never),
+    ).toBe(active);
+    expect(resolveForkCommandRun({ runs: [completed] } as never)).toBe(completed);
+    expect(resolveForkCommandRun({ runs: [] })).toBeNull();
+  },
+);

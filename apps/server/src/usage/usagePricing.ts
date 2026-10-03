@@ -7,7 +7,7 @@
  *
  * @module usagePricing
  */
-import type { UsageCostSource, UsageModelPriceOverride } from "@t3tools/contracts";
+import type { UsageCostSource, UsageModelPriceOverride, TurnTokenUsage } from "@t3tools/contracts";
 
 import type { UsageRecord } from "./usageTranscripts.ts";
 
@@ -192,6 +192,34 @@ export type PricedRecord = Pick<
 export interface PricedUsage {
   readonly costUsd: number;
   readonly costSource: UsageCostSource;
+}
+
+export function priceTurnUsage(
+  table: RateTable,
+  model: string,
+  usage: TurnTokenUsage,
+  overrides?: RateTable,
+): PricedUsage | null {
+  if (usage.usageStatus !== "complete") return null;
+  const cached = Math.min(usage.inputTokens, usage.cachedInputTokens ?? 0);
+  const created = Math.min(usage.inputTokens - cached, usage.cacheCreationTokens ?? 0);
+  const priced = priceUsage(
+    table,
+    {
+      model,
+      fast: false,
+      reportedCostUsd: null,
+      totals: {
+        uncachedInputTokens: usage.inputTokens - cached - created,
+        cachedInputTokens: cached,
+        cacheCreationTokens: created,
+        outputTokens: usage.outputTokens,
+        reasoningTokens: usage.reasoningTokens ?? 0,
+      },
+    },
+    overrides,
+  );
+  return priced.costSource === "unpriced" ? null : priced;
 }
 
 /**

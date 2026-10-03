@@ -23,12 +23,15 @@ import * as DateTime from "effect/DateTime";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
+import { preserveTurnAccounting, summarizeTurnCost } from "@t3tools/shared/turnCost";
 
 import { getModelSelectionStringOptionValue } from "@t3tools/shared/model";
 import * as AnalyticsService from "../telemetry/AnalyticsService.ts";
 import * as EventSink from "./EventSink.ts";
 import * as ProjectionStore from "./ProjectionStore.ts";
 import * as IdAllocator from "./IdAllocator.ts";
+import * as UsageService from "../usage/UsageService.ts";
 import { ProviderAdapterV2Event } from "./ProviderAdapter.ts";
 import { makeProviderFailureTurnItem } from "./ProviderFailure.ts";
 
@@ -76,6 +79,38 @@ export class ProviderTurnAnalytics extends Context.Reference<{
 }>("t3/orchestration-v2/ProviderTurnAnalytics", {
   defaultValue: () => ({ record: () => Effect.void }),
 }) {}
+
+export class ProviderTurnPricing extends Context.Reference<{
+  readonly price: (
+    turn: OrchestrationV2ProviderTurn,
+    model: string | undefined,
+  ) => Effect.Effect<OrchestrationV2ProviderTurn>;
+}>("t3/orchestration-v2/ProviderTurnPricing", {
+  defaultValue: () => ({ price: (turn) => Effect.succeed(turn) }),
+}) {}
+
+export const pricingLive = Layer.effect(
+  ProviderTurnPricing,
+  Effect.gen(function* () {
+    const usage = yield* UsageService.UsageService;
+    yield* usage.refreshRates.pipe(Effect.forkScoped);
+    return {
+      price: Effect.fn("ProviderTurnPricing.price")(function* (
+        turn: OrchestrationV2ProviderTurn,
+        model: string | undefined,
+      ) {
+        if (turn.turnCost || !turn.turnTokenUsage || !model) return turn;
+        const cost = yield* usage.priceTurn(model, turn.turnTokenUsage);
+        return cost === null || cost.costSource === "unpriced"
+          ? turn
+          : {
+              ...turn,
+              turnCost: { amountUsd: cost.costUsd, source: cost.costSource },
+            };
+      }),
+    };
+  }),
+);
 
 export const analyticsLive = Layer.effect(
   ProviderTurnAnalytics,
@@ -257,6 +292,8 @@ export const layer: Layer.Layer<
     const projections = yield* ProjectionStore.ProjectionStoreV2;
     const idAllocator = yield* IdAllocator.IdAllocatorV2;
     const analytics = yield* ProviderTurnAnalytics;
+    const pricing = yield* ProviderTurnPricing;
+    const accountingPermit = yield* Semaphore.make(1);
     const completedTurnAnalytics = new Set<string>();
 
     const makeDomainEvent = (
@@ -364,7 +401,45 @@ export const layer: Layer.Layer<
                 payload: input.event.providerThread,
               }),
             ];
-          case "provider_turn.updated":
+          case "provider_turn.updated": {
+            let turn = input.event.providerTurn;
+            let model = input.analyticsContext?.modelSelection.model;
+            if (turn.turnTokenUsage !== undefined || turn.costParent !== undefined) {
+              const threadId = input.event.threadId ?? input.threadId;
+              const thread = yield* projections.getThread(threadId);
+              const parentId =
+                thread.lineage.relationshipToParent === "subagent"
+                  ? thread.lineage.parentThreadId
+                  : null;
+              if (parentId || turn.costParent) {
+                const projection = yield* projections.getThreadProjection(threadId);
+                turn = preserveTurnAccounting(
+                  projection.providerTurns.find((entry) => entry.id === turn.id),
+                  turn,
+                );
+                if (!turn.costParent && parentId && thread.forkedFrom?.type === "node") {
+                  const parent = yield* projections.getThreadProjection(parentId);
+                  const spawnNodeId = thread.forkedFrom.nodeId;
+                  const spawn = parent.nodes.find((node) => node.id === spawnNodeId);
+                  const attempt = projection.attempts.find(
+                    (entry) => entry.id === turn.runAttemptId,
+                  );
+                  const run = projection.runs.find((entry) => entry.id === attempt?.runId);
+                  // A later, independently prompted child run belongs to itself.
+                  if (spawn?.providerTurnId && (turn.runAttemptId === null || run?.ordinal === 1)) {
+                    turn = {
+                      ...turn,
+                      costParent: { threadId: parentId, turnId: spawn.providerTurnId },
+                    };
+                  }
+                }
+              }
+              // Native children share their parent's ingestion context, not its model.
+              model =
+                turn.costModel ??
+                (threadId !== input.threadId ? thread.modelSelection.model : model);
+              if (model) turn = { ...turn, costModel: model };
+            }
             return [
               ...(["completed", "interrupted", "failed", "cancelled"].includes(
                 input.event.providerTurn.status,
@@ -378,10 +453,11 @@ export const layer: Layer.Layer<
               yield* makeDomainEvent(input, {
                 type: "provider-turn.updated",
                 ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                payload: input.event.providerTurn,
+                payload: yield* pricing.price(turn, model),
                 nodeId: input.event.providerTurn.nodeId,
               }),
             ];
+          }
           case "node.updated":
             return [
               yield* makeDomainEvent(input, {
@@ -498,6 +574,113 @@ export const layer: Layer.Layer<
         ),
       );
 
+    const rollUpCosts = Effect.fn("ProviderEventIngestor.rollUpCosts")(function* (
+      input: ProviderEventIngestInput,
+      storedEvents: ReadonlyArray<OrchestrationV2StoredEvent>,
+    ) {
+      if (storedEvents.length === 0) return;
+      const event = input.event;
+      if (event.type !== "provider_turn.updated" && event.type !== "subagent.updated") return;
+      const accepted = storedEvents.find(
+        (stored) => stored.event.type === "provider-turn.updated",
+      )?.event;
+      if (
+        event.type === "provider_turn.updated" &&
+        accepted?.type === "provider-turn.updated" &&
+        !accepted.payload.costParent &&
+        !accepted.payload.turnTokenUsage?.hasSubagents
+      )
+        return;
+      // Context-window notifications are frequent and carry no billed usage.
+      if (
+        event.type === "provider_turn.updated" &&
+        !event.providerTurn.turnTokenUsage &&
+        !event.providerTurn.costParent
+      )
+        return;
+      let threadId =
+        event.type === "subagent.updated"
+          ? event.subagent.threadId
+          : (event.threadId ?? input.threadId);
+      let projection = yield* projections.getThreadProjection(threadId);
+      let turnId =
+        event.type === "provider_turn.updated"
+          ? event.providerTurn.id
+          : projection.nodes.find((node) => node.id === event.subagent.id)?.providerTurnId;
+      const seen = new Set<string>();
+      while (turnId && !seen.has(turnId)) {
+        seen.add(turnId);
+        let turn = projection.providerTurns.find((candidate) => candidate.id === turnId);
+        if (!turn) return;
+        const count = projection.subagents.filter((agent) =>
+          projection.nodes.some((node) => node.id === agent.id && node.providerTurnId === turnId),
+        ).length;
+        if (count > (turn.subagentCount ?? 0)) {
+          turn = { ...turn, subagentCount: count };
+          yield* eventSink.write({
+            events: [
+              yield* makeDomainEvent(input, {
+                type: "provider-turn.updated",
+                threadId,
+                payload: turn,
+                nodeId: turn.nodeId,
+                runId: null,
+              }),
+            ],
+          });
+        }
+        if (!turn.costParent) return;
+        const parentRef = turn.costParent;
+        if (seen.has(parentRef.turnId)) return;
+        const parentProjection = yield* projections.getThreadProjection(parentRef.threadId);
+        const parent = parentProjection.providerTurns.find(
+          (candidate) => candidate.id === parentRef.turnId,
+        );
+        if (!parent) return;
+        const total = summarizeTurnCost(turn);
+        const entry = {
+          turnId: turn.id,
+          providerThreadId: turn.providerThreadId,
+          model: turn.costModel ?? "Unknown model",
+          amountUsd: total.amountUsd,
+          estimated: total.estimated,
+          complete: total.complete,
+        };
+        const previous = parent.subagentCosts ?? [];
+        const oldEntry = previous.find((candidate) => candidate.turnId === turn.id);
+        if (
+          oldEntry?.amountUsd === entry.amountUsd &&
+          oldEntry.complete === entry.complete &&
+          oldEntry.estimated === entry.estimated &&
+          oldEntry.model === entry.model
+        )
+          return;
+        const updated = {
+          ...parent,
+          subagentCosts: [...previous.filter((candidate) => candidate.turnId !== turn.id), entry],
+        };
+        yield* eventSink.write({
+          events: [
+            yield* makeDomainEvent(input, {
+              type: "provider-turn.updated",
+              threadId: parentRef.threadId,
+              payload: updated,
+              nodeId: parent.nodeId,
+              runId: null,
+            }),
+          ],
+        });
+        threadId = parentRef.threadId;
+        turnId = parentRef.turnId;
+        projection = {
+          ...parentProjection,
+          providerTurns: parentProjection.providerTurns.map((candidate) =>
+            candidate.id === updated.id ? updated : candidate,
+          ),
+        };
+      }
+    });
+
     return ProviderEventIngestorV2.of({
       normalize,
       ingestNormalized: (input) =>
@@ -543,6 +726,18 @@ export const layer: Layer.Layer<
             .pipe(Effect.mapError(mapWriteError));
           return result.storedEvents;
         }).pipe(
+          Effect.tap((events) =>
+            rollUpCosts(input, events).pipe(
+              Effect.mapError(
+                (cause) =>
+                  new ProviderEventPublishError({
+                    providerSessionId: input.providerSessionId,
+                    eventCount: events.length,
+                    cause,
+                  }),
+              ),
+            ),
+          ),
           Effect.tap((storedEvents) =>
             Effect.gen(function* () {
               if (storedEvents.length === 0 || input.event.type !== "provider_turn.updated") return;
@@ -572,6 +767,10 @@ export const layer: Layer.Layer<
               );
             }),
           ),
+          (effect) =>
+            input.event.type === "provider_turn.updated" || input.event.type === "subagent.updated"
+              ? accountingPermit.withPermit(effect)
+              : effect,
         ),
     });
   }),

@@ -1,3 +1,5 @@
+import { downloadUrl } from "~/lib/download";
+
 /** Resolves web references without inheriting the desktop renderer's custom app scheme. */
 export function resolveProtocolRelativeMediaUrl(src: string): string {
   if (!src.startsWith("//")) return src;
@@ -6,7 +8,7 @@ export function resolveProtocolRelativeMediaUrl(src: string): string {
   return `${protocol}${src}`;
 }
 
-/** Reads media only for an explicit save/copy action; remote hosts must allow browser CORS. */
+/** Reads media for copying; remote hosts must allow browser CORS. */
 async function readMediaBlob(src: string): Promise<Blob> {
   let response: Response;
   try {
@@ -25,17 +27,9 @@ async function readMediaBlob(src: string): Promise<Blob> {
   return blob;
 }
 
-/** Downloads the original bytes with their original filename, without changing playback URLs. */
+/** Sends the original URL to the browser without changing the active playback URL. */
 export async function downloadMedia(src: string, name: string): Promise<void> {
-  const url = URL.createObjectURL(await readMediaBlob(src));
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }
+  await downloadUrl(resolveProtocolRelativeMediaUrl(src), name);
 }
 
 /** Converts browser-decodable images, including SVG, into the clipboard's portable PNG format. */

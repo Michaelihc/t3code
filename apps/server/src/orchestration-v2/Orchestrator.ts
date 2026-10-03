@@ -3197,7 +3197,15 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
     );
     const { targetThread, transfer } = yield* threadForkService
       .plan({
-        sourceProjection,
+        sourceProjection: {
+          ...sourceProjection,
+          visibleTurnItems:
+            sourceRun.status === "running"
+              ? (yield* projectionStore
+                  .getThreadSnapshotWindow(command.sourceThreadId, { rowLimit: 200 })
+                  .pipe(mapDispatchError(command))).projection.visibleTurnItems
+              : [],
+        },
         sourceRun,
         sourceProviderThread,
         canonicalSourcePoint: contextSourcePointForRun(sourceProjection, sourceRun),
@@ -5195,7 +5203,10 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
             )?.providerTurnId ??
             undefined);
       if (pendingForkTransfer !== undefined) {
-        if (sourceRun === null || sourceProviderThread === undefined) {
+        if (
+          sourceRun === null ||
+          (sourceProviderThread === undefined && pendingForkTransfer.forkSnapshot === undefined)
+        ) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,
             commandType: command.type,
@@ -5271,7 +5282,9 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 capabilities,
                 sameProvider:
                   pendingForkTransfer.sourceProviderInstanceId === modelSelection.instanceId,
-                hasStrongNativeSource: sourceProviderThread?.nativeThreadRef?.strength === "strong",
+                hasStrongNativeSource:
+                  pendingForkTransfer.forkSnapshot === undefined &&
+                  sourceProviderThread?.nativeThreadRef?.strength === "strong",
                 sourceRunStatus: sourceRun.status,
                 fromSpecificTurn: sourceRun !== null,
               }),
@@ -5330,12 +5343,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
       const portableForkItems =
         !requiresPortableFork || sourceProjection === null || sourceRun === null
           ? []
-          : yield* readHandoffItems(sourceProjection.thread.id, [
+          : (pendingForkTransfer?.forkSnapshot ??
+            (yield* readHandoffItems(sourceProjection.thread.id, [
               ...sourceProjection.runs
                 .filter((run) => run.ordinal <= sourceRun.ordinal)
                 .map((run) => run.id),
               ...(sourceProjection.thread.historyOrigin === "v1_import" ? [null] : []),
-            ]);
+            ])));
       const portableForkHandoff =
         !requiresPortableFork ||
         pendingForkTransfer === undefined ||
@@ -5355,6 +5369,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
                 coveredRunOrdinals: visibleDeltaRunOrdinals(sourceProjection, portableForkItems),
                 strategy: "full_thread_summary",
                 items: portableForkItems,
+                activeFork: pendingForkTransfer.forkSnapshot !== undefined,
                 runs: sourceProjection.runs,
                 createdAt: now,
               })

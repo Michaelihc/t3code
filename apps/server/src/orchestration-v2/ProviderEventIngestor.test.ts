@@ -1,6 +1,9 @@
 import { assert, it } from "@effect/vitest";
 import {
   MessageId,
+  ThreadId,
+  ProviderTurnId,
+  type OrchestrationV2ProviderTurn,
   type ModelSelection,
   NodeId,
   type OrchestrationV2AppThread,
@@ -134,6 +137,14 @@ it.effect("records accepted billed turn usage once without billing the context w
         recorded.push(properties);
       }),
   });
+  const pricing = Layer.succeed(ProviderEventIngestor.ProviderTurnPricing, {
+    price: (turn, model) =>
+      Effect.sync(() => {
+        assert.strictEqual(model, modelSelection.model);
+        assert.strictEqual(turn.turnTokenUsage?.inputTokens, 40);
+        return { ...turn, turnCost: { amountUsd: 0.123, source: "modelPriced" as const } };
+      }),
+  });
   return Effect.gen(function* () {
     const now = yield* DateTime.now;
     const eventSink = yield* EventSink.EventSinkV2;
@@ -188,6 +199,12 @@ it.effect("records accepted billed turn usage once without billing the context w
     };
     yield* ingestor.ingestNormalized(input);
     yield* ingestor.ingestNormalized(input);
+    const projections = yield* ProjectionStore.ProjectionStoreV2;
+    const projection = yield* projections.getThreadProjection(threadEvent.threadId);
+    assert.deepEqual(projection.providerTurns[0]?.turnCost, {
+      amountUsd: 0.123,
+      source: "modelPriced",
+    });
     const ignored = yield* ingestor.ingestNormalized({
       ...input,
       event: {
@@ -223,7 +240,7 @@ it.effect("records accepted billed turn usage once without billing the context w
       interactionMode: "default",
       durationMs: 120,
     });
-  }).pipe(Effect.provide(TestLayer.pipe(Layer.provide(analytics))));
+  }).pipe(Effect.provide(TestLayer.pipe(Layer.provide(analytics), Layer.provide(pricing))));
 });
 
 layer("ProviderEventIngestorV2", (it) => {
@@ -1235,3 +1252,108 @@ layer("ProviderEventIngestorV2", (it) => {
     }),
   );
 });
+
+it.effect(
+  "rolls late, nested child costs into the originating turn once, using each child's model",
+  () => {
+    const pricing = Layer.succeed(ProviderEventIngestor.ProviderTurnPricing, {
+      price: (turn: OrchestrationV2ProviderTurn, model: string | undefined) =>
+        Effect.succeed({
+          ...turn,
+          turnCost: {
+            amountUsd: model === "child-model" ? 0.2 : 0.1,
+            source: "modelPriced" as const,
+          },
+        }),
+    });
+    return Effect.gen(function* () {
+      const now = yield* DateTime.now;
+      const sink = yield* EventSink.EventSinkV2;
+      const ingestor = yield* ProviderEventIngestor.ProviderEventIngestorV2;
+      const ids = yield* IdAllocator.IdAllocatorV2;
+      const projections = yield* ProjectionStore.ProjectionStoreV2;
+      const root = yield* threadCreatedEvent(now);
+      const childId = ThreadId.make("cost-child");
+      const grandchildId = ThreadId.make("cost-grandchild");
+      if (root.type !== "thread.created") throw new Error("Expected thread fixture");
+      yield* sink.write({ events: [root] });
+      for (const id of [childId, grandchildId]) {
+        yield* sink.write({
+          events: [
+            {
+              ...root,
+              id: yield* ids.allocate.event({ threadId: id }),
+              threadId: id,
+              payload: { ...root.payload, id },
+            },
+          ],
+        });
+      }
+      const providerSessionId = yield* ids.allocate.providerSession({
+        threadId: root.threadId,
+        providerInstanceId: modelSelection.instanceId,
+      });
+      const makeTurn = (id: string, hasSubagents: boolean): OrchestrationV2ProviderTurn => ({
+        id: ProviderTurnId.make(id),
+        providerThreadId: ids.derive.providerThread({ driver: CODEX_DRIVER, nativeThreadId: id }),
+        nodeId: NodeId.make(id),
+        runAttemptId: null,
+        nativeTurnRef: null,
+        ordinal: 1,
+        status: "completed",
+        startedAt: now,
+        completedAt: now,
+        turnTokenUsage: {
+          usageScope: "main_agent",
+          usageStatus: "complete",
+          hasSubagents,
+          inputTokens: 20,
+          outputTokens: 10,
+        },
+      });
+      const main = makeTurn("cost-main", true);
+      const child = {
+        ...makeTurn("cost-child-turn", true),
+        costModel: "child-model",
+        costParent: { threadId: root.threadId, turnId: main.id },
+      };
+      const grandchild = {
+        ...makeTurn("cost-grandchild-turn", false),
+        costModel: "other-model",
+        costParent: { threadId: childId, turnId: child.id },
+      };
+      const send = (threadId: ThreadId, providerTurn: OrchestrationV2ProviderTurn) =>
+        ingestor.ingestNormalized({
+          threadId: root.threadId,
+          providerSessionId,
+          providerInstanceId: modelSelection.instanceId,
+          analyticsContext: { modelSelection },
+          event: { type: "provider_turn.updated", driver: CODEX_DRIVER, threadId, providerTurn },
+        });
+      yield* send(root.threadId, main);
+      yield* send(childId, child);
+      let parent = (yield* projections.getThreadProjection(root.threadId)).providerTurns[0]!;
+      assert.strictEqual(parent.subagentCosts?.[0]?.amountUsd, 0.2);
+      assert.strictEqual(parent.subagentCosts?.[0]?.complete, false);
+      yield* send(grandchildId, grandchild);
+      yield* send(grandchildId, grandchild);
+      // A later parent status snapshot must preserve all collected child charges.
+      yield* send(root.threadId, main);
+      parent = (yield* projections.getThreadProjection(root.threadId)).providerTurns[0]!;
+      assert.lengthOf(parent.subagentCosts!, 1);
+      assert.closeTo(parent.subagentCosts![0]!.amountUsd!, 0.3, 1e-9);
+      assert.strictEqual(parent.subagentCosts![0]!.complete, true);
+      assert.strictEqual(parent.subagentCosts![0]!.model, "child-model");
+      assert.strictEqual(parent.turnCost?.amountUsd, 0.1);
+      // A follow-up child turn is an additional charge, not a replacement.
+      yield* send(childId, {
+        ...child,
+        id: ProviderTurnId.make("cost-child-followup"),
+        ordinal: 2,
+        turnTokenUsage: { ...child.turnTokenUsage!, hasSubagents: false },
+      });
+      parent = (yield* projections.getThreadProjection(root.threadId)).providerTurns[0]!;
+      assert.lengthOf(parent.subagentCosts!, 2);
+    }).pipe(Effect.provide(TestLayer.pipe(Layer.provide(pricing))));
+  },
+);

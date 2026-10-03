@@ -15,11 +15,11 @@ to keep a large paste editable in the composer instead.
 ## Attach files
 
 Attach up to 100 files per message. Each image can be up to 10 MiB, with at most
-80 MiB of images in one message. Other files, including videos, can be up to
-50 MiB each, subject to the environment's upload support and limit. The agent
-receives them on the environment's machine. Provider and model limits still
-apply, including images already in the conversation. A video attachment gives
-the agent a file path; it does not enable native video input.
+80 MiB of images in one message. Other files, including videos, have no fixed
+size limit in current environments. Older environments and individual providers
+may impose smaller limits. The agent receives them on the environment's machine.
+Provider and model limits still apply, including images already in the conversation.
+A video attachment gives the agent a file path; it does not enable native video input.
 
 Uploads begin when you add an attachment. All uploads must finish before the
 message can send. Retry or remove a failed upload. On web and desktop, reloading
@@ -31,6 +31,11 @@ library; photos over the image limit are also resized to fit. On mobile, you can
 also send files to T3 Code through another app's system share sheet.
 
 See [images and videos](#images-and-videos-in-messages) for previewing and saving media.
+
+On web and desktop, downloads from an environment go through your browser so you
+can track progress in its downloads list. Desktop opens your default browser.
+External media hosts may open a preview first; use the browser's save action in
+that case. Unsent local drafts and generated exports save directly from the app.
 
 ## Send while the agent is working
 

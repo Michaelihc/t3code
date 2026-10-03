@@ -3,6 +3,7 @@ import {
   EnvironmentId,
   EventId,
   CommandId,
+  ContextTransferId,
   CheckpointId,
   CheckpointRef,
   CheckpointScopeId,
@@ -403,6 +404,14 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         outputTokens: 2_000,
         updatedAt: "2026-08-29T12:00:01.000Z",
       } as const;
+      const turnTokenUsage = {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 90000,
+        outputTokens: 3000,
+      } as const;
+      const turnCost = { amountUsd: 0.25, source: "modelPriced" } as const;
 
       yield* projectionStore.apply({
         id: EventId.make("event:provider-usage-reload:thread"),
@@ -461,12 +470,31 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
         nodeId,
         driver,
         occurredAt: now,
-        payload: { ...providerTurn, status: "completed", completedAt: now },
+        payload: {
+          ...providerTurn,
+          status: "completed",
+          completedAt: now,
+          turnTokenUsage,
+          turnCost,
+          subagentCount: 1,
+          subagentCosts: [
+            {
+              turnId: providerTurn.id,
+              providerThreadId: providerTurn.providerThreadId,
+              model: "child",
+              amountUsd: 0.1,
+              estimated: true,
+              complete: true,
+            },
+          ],
+        },
       });
 
       const reloaded = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(reloaded.providerTurns[0]?.tokenUsage, initialUsage);
       assert.strictEqual(reloaded.providerTurns[0]?.status, "completed");
+      assert.deepEqual(reloaded.providerTurns[0]?.turnTokenUsage, turnTokenUsage);
+      assert.deepEqual(reloaded.providerTurns[0]?.turnCost, turnCost);
 
       yield* projectionStore.apply({
         id: EventId.make("event:provider-usage-reload:replacement"),
@@ -485,6 +513,10 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
 
       const replaced = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(replaced.providerTurns[0]?.tokenUsage, replacementUsage);
+      assert.deepEqual(replaced.providerTurns[0]?.turnTokenUsage, turnTokenUsage);
+      assert.deepEqual(replaced.providerTurns[0]?.turnCost, turnCost);
+      assert.strictEqual(replaced.providerTurns[0]?.subagentCount, 1);
+      assert.strictEqual(replaced.providerTurns[0]?.subagentCosts?.[0]?.amountUsd, 0.1);
     }),
   );
 
@@ -2943,6 +2975,44 @@ it.layer(TestLayer)("ProjectionStoreV2", (it) => {
       assert.equal(targetShell.itemCount, 0);
       assert.equal(targetShell.visibleItemCount, 4);
       assert.equal(targetProjection.visibleTurnItems.length, 4);
+
+      yield* projectionStore.apply({
+        id: EventId.make("event:active-fork-snapshot"),
+        type: "context-transfer.created",
+        threadId: targetThreadId,
+        occurredAt: now,
+        payload: {
+          id: ContextTransferId.make("transfer:active-fork-snapshot"),
+          type: "fork",
+          sourceThreadId,
+          targetThreadId,
+          sourcePoint: { threadId: sourceThreadId, runId: sourceRunId },
+          forkSnapshot: targetProjection.visibleTurnItems
+            .filter((row) => row.visibility !== "synthetic")
+            .map((row) => row.item),
+          basePoint: null,
+          sourceProviderInstanceId: providerInstanceId,
+          targetProviderInstanceId: null,
+          targetRunId: null,
+          status: "pending",
+          resolution: null,
+          createdBy: "user",
+          error: null,
+          createdAt: now,
+          updatedAt: now,
+          consumedAt: null,
+        },
+      });
+      yield* applyAssistantItem("later-source-output", sourceRunId, 4);
+      const frozenFork = yield* projectionStore.getThreadProjection(targetThreadId);
+      assert.lengthOf(frozenFork.runs, 0);
+      assert.lengthOf(frozenFork.providerSessions, 0);
+      assert.lengthOf(frozenFork.visibleTurnItems, 4);
+      assert.isFalse(
+        frozenFork.visibleTurnItems.some(
+          (row) => row.item.type === "assistant_message" && row.item.text === "later-source-output",
+        ),
+      );
     }),
   );
 

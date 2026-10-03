@@ -122,6 +122,17 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
         maxTokens: 200_000,
         updatedAt: "2026-08-29T00:00:00.000Z",
       },
+      turnTokenUsage: {
+        usageStatus: "complete" as const,
+        usageScope: "main_agent" as const,
+        hasSubagents: false,
+        inputTokens: 90000,
+        outputTokens: 5000,
+      },
+      turnCost: { amountUsd: 0.4, source: "modelPriced" as const },
+      subagentCount: 1,
+      subagentCosts: [],
+      costModel: "model",
     };
     const projection = { ...emptyProjection, providerTurns: [running] };
     const event = {
@@ -135,6 +146,11 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
         status: "completed",
         completedAt: now,
         tokenUsage: undefined,
+        turnTokenUsage: undefined,
+        turnCost: undefined,
+        subagentCount: undefined,
+        subagentCosts: undefined,
+        costModel: undefined,
       },
     } as OrchestrationV2DomainEvent;
 
@@ -142,6 +158,11 @@ describe("applyOrchestrationV2ProjectionEvent", () => {
 
     expect(next?.providerTurns[0]?.status).toBe("completed");
     expect(next?.providerTurns[0]?.tokenUsage).toEqual(running.tokenUsage);
+    expect(next?.providerTurns[0]?.turnTokenUsage).toEqual(running.turnTokenUsage);
+    expect(next?.providerTurns[0]?.turnCost).toEqual(running.turnCost);
+    expect(next?.providerTurns[0]?.subagentCount).toBe(1);
+    expect(next?.providerTurns[0]?.subagentCosts).toEqual([]);
+    expect(next?.providerTurns[0]?.costModel).toBe("model");
   });
 
   it("applies thread lifecycle payloads instead of leaving stale metadata", () => {

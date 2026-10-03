@@ -2363,6 +2363,11 @@ export function makeCodexAdapterV2(adapterOptions: CodexAdapterV2Options): Provi
               providerTurn: {
                 id: providerTurnId,
                 providerThreadId: subagent.providerThread.id,
+                costModel: subagent.task.model ?? subagent.parentContext.input.modelSelection.model,
+                costParent: {
+                  threadId: subagent.parentContext.projectionThreadId,
+                  turnId: subagent.parentContext.providerTurnId,
+                },
                 nodeId: providerNodeId,
                 runAttemptId: null,
                 nativeTurnRef: {

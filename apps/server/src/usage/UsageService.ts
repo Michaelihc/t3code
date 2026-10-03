@@ -26,6 +26,7 @@ import {
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
+  type TurnTokenUsage,
   UsageReadError,
 } from "@t3tools/contracts";
 import { HostProcessEnvironment, HostProcessPlatform } from "@t3tools/shared/hostProcess";
@@ -54,7 +55,13 @@ import { readOpenCodeUsage } from "./opencodeUsageReader.ts";
 import { readAntigravityUsage } from "./antigravityUsageReader.ts";
 import { readCursorAccountUsage } from "./cursorUsageReader.ts";
 import { UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  priceTurnUsage,
+  type PricedUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -119,6 +126,7 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    readonly priceTurn: (model: string, usage: TurnTokenUsage) => Effect.Effect<PricedUsage | null>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -146,6 +154,7 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    priceTurn: () => Effect.succeed(null),
   }),
 );
 
@@ -892,7 +901,23 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
-  return { readSummary, refreshRates } as const;
+  const priceTurn = Effect.fn("UsageService.priceTurn")(function* (
+    model: string,
+    usage: TurnTokenUsage,
+  ) {
+    if (usage.usageStatus !== "complete") return null;
+    // A rate-table network request must never delay completion of an agent turn.
+    yield* ensureRates(false).pipe(Effect.forkDetach);
+    const settings = yield* readSettings.pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (settings === null) return null;
+    return priceTurnUsage(
+      rates,
+      model,
+      usage,
+      createOverrideRateTable(settings.usagePriceOverrides),
+    );
+  });
+  return { readSummary, refreshRates, priceTurn } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

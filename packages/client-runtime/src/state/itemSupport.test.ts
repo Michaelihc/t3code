@@ -15,7 +15,12 @@ import * as DateTime from "effect/DateTime";
 import { describe, expect, it } from "vite-plus/test";
 
 import { v2Projection, v2ThreadId } from "./orchestrationV2TestFixtures.ts";
-import { EMPTY_V2_ITEM_SUPPORT, resolveV2ItemSupport, v2ItemSupportEqual } from "./itemSupport.ts";
+import {
+  EMPTY_V2_ITEM_SUPPORT,
+  resolveV2ItemSupport,
+  v2ItemSupportEqual,
+  presentTurnUsage,
+} from "./itemSupport.ts";
 
 const now = DateTime.makeUnsafe("2026-06-20T00:00:00.000Z");
 const runId = RunId.make("run-1");
@@ -25,6 +30,76 @@ const requestId = RuntimeRequestId.make("request-1");
 const providerInstanceId = ProviderInstanceId.make("codex");
 const providerThreadId = ProviderThreadId.make("provider-thread-1");
 const providerTurnId = ProviderTurnId.make("provider-turn-1");
+
+it("distinguishes turn totals, context occupancy, partial counts and unavailable cost", () => {
+  const turn = {
+    id: providerTurnId,
+    providerThreadId,
+    nodeId,
+    runAttemptId: null,
+    nativeTurnRef: null,
+    ordinal: 1,
+    status: "completed",
+    startedAt: now,
+    completedAt: now,
+    turnTokenUsage: {
+      usageScope: "main_agent",
+      usageStatus: "complete",
+      hasSubagents: true,
+      inputTokens: 123000,
+      outputTokens: 2000,
+      cachedInputTokens: 100000,
+    },
+    turnCost: { amountUsd: 0.42, source: "modelPriced" },
+    tokenUsage: { usedTokens: 40000, maxTokens: 200000, updatedAt: "2026-06-20T00:00:00Z" },
+  } as const;
+  expect(presentTurnUsage(turn)?.label).toBe(
+    "123,000 in · 2,000 out · ≈$0.4200 partial total · context 40,000/200,000 (20%)",
+  );
+  expect(presentTurnUsage(turn)?.detail).toContain("Missing costs are not zero");
+  const child = {
+    turnId: ProviderTurnId.make("child-turn"),
+    providerThreadId: ProviderThreadId.make("child-thread"),
+    model: "child-model",
+    amountUsd: 0.08,
+    estimated: true,
+    complete: true,
+  };
+  const inclusive = presentTurnUsage({ ...turn, subagentCount: 1, subagentCosts: [child] });
+  expect(inclusive?.label).toContain("≈$0.5000 incl. subagents");
+  expect(inclusive?.detail).toContain("Main agent: $0.4200");
+  expect(inclusive?.detail).toContain("Subagent turn (child-model): $0.0800");
+  expect(
+    presentTurnUsage({
+      ...turn,
+      turnTokenUsage: { ...turn.turnTokenUsage, usageStatus: "partial" },
+      subagentCosts: [child],
+    })?.label,
+  ).toContain("partial total");
+  expect(presentTurnUsage({ ...turn, subagentCount: 2, subagentCosts: [child] })?.label).toContain(
+    "partial total",
+  );
+  expect(
+    presentTurnUsage({ ...turn, subagentCosts: [{ ...child, complete: false }] })?.label,
+  ).toContain("partial total");
+  expect(
+    presentTurnUsage({ ...turn, turnCost: undefined, subagentCosts: [child] })?.label,
+  ).toContain("≈$0.0800 partial total");
+  expect(presentTurnUsage({ ...turn, status: "running" })).toBeNull();
+  const { turnCost: _cost, tokenUsage: _context, ...unpriced } = turn;
+  expect(
+    presentTurnUsage({
+      ...unpriced,
+      turnTokenUsage: { ...turn.turnTokenUsage, usageStatus: "partial" },
+    })?.label,
+  ).toContain("partial · cost unavailable");
+  expect(
+    presentTurnUsage({
+      ...unpriced,
+      turnTokenUsage: { usageScope: "main_agent", usageStatus: "unavailable", hasSubagents: false },
+    }),
+  ).toBeNull();
+});
 
 const commandItem: OrchestrationV2TurnItem = {
   id: itemId,

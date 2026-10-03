@@ -14,6 +14,7 @@ import type * as EffectAcpSchema from "effect-acp/compat";
 
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import {
+  ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES,
   antigravityPermissionMode,
   applyAntigravityAcpModelSelection,
   buildAntigravityPrompt,
@@ -459,8 +460,8 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       };
       const first = yield* fixture.write(pdfAttachment, "");
       const second = yield* fixture.write(secondAttachment, "");
-      yield* fixture.fs.truncate(first.filePath, (50 * 1024 * 1024) / 2);
-      yield* fixture.fs.truncate(second.filePath, (50 * 1024 * 1024) / 2);
+      yield* fixture.fs.truncate(first.filePath, ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES / 2);
+      yield* fixture.fs.truncate(second.filePath, ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES / 2);
       const input = {
         input: `Read ${first.filePath} and ${second.filePath}`,
         attachments: [pdfAttachment, secondAttachment],
@@ -483,7 +484,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
         },
       ]);
 
-      yield* fixture.fs.truncate(second.filePath, (50 * 1024 * 1024) / 2 + 1);
+      yield* fixture.fs.truncate(second.filePath, ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES / 2 + 1);
       expect(yield* buildAntigravityPrompt(input)).toEqual([
         { type: "text", text: input.input },
         {
@@ -500,7 +501,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
     Effect.gen(function* () {
       const fixture = yield* makeAttachmentFixture();
       const pdf = yield* fixture.write(pdfAttachment, "");
-      yield* fixture.fs.truncate(pdf.filePath, 50 * 1024 * 1024);
+      yield* fixture.fs.truncate(pdf.filePath, ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES);
       yield* fixture.write(imageAttachment, new Uint8Array([1]));
       const error = yield* buildAntigravityPrompt({
         input: "Inspect both attachments.",
@@ -519,7 +520,7 @@ it.layer(NodeServices.layer)("buildAntigravityPrompt", (it) => {
       const fixture = yield* makeAttachmentFixture();
       const pdf = yield* fixture.write(pdfAttachment, "");
       const text = yield* fixture.write(textAttachment, "a");
-      yield* fixture.fs.truncate(pdf.filePath, 50 * 1024 * 1024 - 1);
+      yield* fixture.fs.truncate(pdf.filePath, ANTIGRAVITY_MAX_TOTAL_ATTACHMENT_BYTES - 1);
       const error = yield* buildAntigravityPrompt({
         input: undefined,
         attachments: [pdfAttachment, textAttachment],

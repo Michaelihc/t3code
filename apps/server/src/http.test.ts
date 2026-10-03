@@ -26,6 +26,7 @@ import * as ServerConfig from "./config.ts";
 
 import {
   assetResponseHeaders,
+  assetDownloadResponse,
   browserApiCorsLayer,
   assetFileResponse,
   downloadContentDisposition,
@@ -82,6 +83,41 @@ describe("browser API CORS", () => {
 });
 
 const fileResponseLayer = Layer.mergeAll(NodeHttpPlatform.layer, NodeServices.layer);
+
+describe("browser asset downloads", () => {
+  it.effect("preserves streamed bytes and progress headers while forcing a download", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const dir = yield* fs.makeTempDirectoryScoped();
+      const path = yield* Path.Path;
+      const file = path.join(dir, "photo.png");
+      yield* fs.writeFileString(file, "original bytes");
+      const inline = yield* assetFileResponse({ path: file, mimeType: "image/png" });
+      expect(inline.headers["content-disposition"]).toBeUndefined();
+      const response = HttpServerResponse.toWeb(assetDownloadResponse(inline, "photo.png"));
+      expect(response.headers.get("content-disposition")).toBe('attachment; filename="photo.png"');
+      expect(response.headers.get("content-length")).toBe("14");
+      expect(response.headers.get("content-type")).toBe("application/octet-stream");
+      expect(yield* Effect.promise(() => response.text())).toBe("original bytes");
+    }).pipe(Effect.provide(fileResponseLayer)),
+  );
+
+  it("preserves range metadata for resumed transfers", () => {
+    const original = HttpServerResponse.text("bytes", {
+      status: 206,
+      headers: { "content-range": "bytes 5-9/10", "content-length": "5" },
+    });
+    const response = assetDownloadResponse(original, "video.mp4");
+    expect(response.status).toBe(206);
+    expect(response.headers["content-range"]).toBe("bytes 5-9/10");
+    expect(response.headers["content-length"]).toBe("5");
+  });
+
+  it.each([304, 404, 416, 502])("does not turn HTTP %s into a downloaded error file", (status) => {
+    const response = HttpServerResponse.empty({ status });
+    expect(assetDownloadResponse(response, "file.zip")).toBe(response);
+  });
+});
 
 const makeStaticRequest = Effect.fn("HttpTest.makeStaticRequest")(function* (staticDir: string) {
   const config = yield* ServerConfig.ServerConfig;

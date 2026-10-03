@@ -182,6 +182,33 @@ describe("AttachmentUpload", () => {
     }).pipe(Effect.provide(testLayer)),
   );
 
+  it.effect("streams file uploads larger than 50 MB", () =>
+    Effect.gen(function* () {
+      const config = yield* ServerConfig.ServerConfig;
+      const chunk = new Uint8Array(1024 * 1024);
+      const sizeBytes = 51 * chunk.byteLength;
+      const issued = yield* issueAttachmentUploadUrl({
+        type: "file",
+        name: "large.zip",
+        mimeType: "application/zip",
+        sizeBytes,
+      });
+      const token = issued.relativeUrl.slice(`${ATTACHMENT_UPLOAD_ROUTE_PREFIX}/`.length);
+      const claims = yield* validateAttachmentUploadToken(token);
+      if (!claims) throw new Error("Expected valid upload claims.");
+      expect(
+        yield* storeAttachmentUpload(
+          claims,
+          Stream.fromIterable(Array.from({ length: 51 }, () => chunk)),
+        ),
+      ).toEqual({ ok: true });
+      expect(
+        NodeFS.statSync(NodePath.join(config.attachmentsDir, `${issued.attachmentId}.zip`)).size,
+      ).toBe(sizeBytes);
+      yield* deletePendingAttachment(issued.attachmentId);
+    }).pipe(Effect.provide(testLayer)),
+  );
+
   it.effect("removes partial streamed uploads that exceed their signed size", () =>
     Effect.gen(function* () {
       const config = yield* ServerConfig.ServerConfig;

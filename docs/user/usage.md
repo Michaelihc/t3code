@@ -41,6 +41,17 @@ results appear as each one responds.
 If recent work is missing or a new model shows no cost, refresh to rescan session history and
 update model pricing.
 
+Completed responses also show recorded input and output tokens, estimated cost, and the last
+reported context-window snapshot when available. Turn totals include repeated model requests;
+context usage shows how much fits in the model's current window. Cache and reasoning counts are
+already included in the token totals, which remain main-agent only. Costs include linked subagent
+turns when their provider reports usage, priced with each agent's own model. Hover or focus the
+turn usage to see the main-agent and subagent breakdown. Nested agents count once, and late
+subagent results update the parent total. A **partial total** means some usage is still running
+or unavailable; it is not a complete bill. Older turns without recorded child usage remain partial.
+Missing usage or prices are not treated as zero. Cost estimates are saved for newly completed turns using the rates available
+at completion; changing prices on the Usage page does not rewrite these saved turn estimates.
+
 ## Set custom model prices
 
 On web or desktop, open the environment dropdown on **Usage**, then choose **Model prices** to add,
