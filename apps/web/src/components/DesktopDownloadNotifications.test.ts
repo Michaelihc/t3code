@@ -5,7 +5,7 @@ type Payload = {
   title: string;
   description: unknown;
   onClose: () => void;
-  actionProps: { children: string; onClick: () => void };
+  actionProps: { children: string; disabled?: boolean; onClick: () => void };
   data: { additionalActions: { props: { onClick: () => void } }[] };
 };
 const manager = vi.hoisted(() => ({
@@ -35,6 +35,33 @@ afterEach(() => {
 });
 
 describe("desktop download notifications", () => {
+  it("starts only one retry while URL renewal is pending and re-enables Retry on failure", async () => {
+    let reject!: (cause: Error) => void;
+    retry.mockImplementationOnce(
+      () =>
+        new Promise<void>((_resolve, fail) => {
+          reject = fail;
+        }),
+    );
+    const bridge = {
+      onFileDownload: () => () => {},
+      getFileDownloads: async () => [{ ...state, status: "failed" as const }],
+      getFileDownloadRetryInput: vi.fn(),
+    } as unknown as DesktopBridge;
+    const dispose = observeDesktopDownloads(bridge);
+    await Promise.resolve();
+    const payload = manager.add.mock.calls[0]![0];
+    payload.actionProps.onClick();
+    payload.actionProps.onClick();
+    expect(retry).toHaveBeenCalledOnce();
+    expect(manager.update.mock.calls.at(-1)![1].actionProps.disabled).toBe(true);
+    reject(new Error("Signing failed"));
+    await vi.waitFor(() =>
+      expect(manager.update.mock.calls.at(-1)![1].actionProps.disabled).toBe(false),
+    );
+    expect(manager.close).not.toHaveBeenCalled();
+    dispose();
+  });
   it("respects dismissed progress and restores completion with saved-file actions", async () => {
     let receive!: (value: DesktopFileDownloadState) => void;
     const acknowledge = vi.fn().mockResolvedValue(undefined);

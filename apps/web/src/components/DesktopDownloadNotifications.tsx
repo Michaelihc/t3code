@@ -43,6 +43,7 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
   if (!bridge.onFileDownload || !bridge.getFileDownloads) return () => {};
   const toastIds = new Map<string, ReturnType<typeof toastManager.add>>();
   const dismissedProgress = new Set<string>();
+  const retrying = new Set<string>();
   const observed = new Set<string>();
   let disposed = false;
   const action = (operation: () => Promise<void>) => {
@@ -75,9 +76,20 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
           : state.status === "failed" && retry
             ? {
                 children: "Retry",
+                disabled: retrying.has(state.id),
                 onClick: () => {
+                  if (retrying.has(state.id)) return;
+                  retrying.add(state.id);
+                  render(state);
                   action(async () => {
-                    await retry();
+                    try {
+                      await retry();
+                    } catch (cause) {
+                      retrying.delete(state.id);
+                      render(state);
+                      throw cause;
+                    }
+                    retrying.delete(state.id);
                     if (disposed) return;
                     const id = toastIds.get(state.id);
                     if (id) toastManager.close(id);
