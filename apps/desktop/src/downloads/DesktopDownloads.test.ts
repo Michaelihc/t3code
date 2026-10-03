@@ -23,6 +23,9 @@ class Item extends NodeEvents.EventEmitter {
   getURLChain() {
     return [this.url];
   }
+  getInitiatorOrigin() {
+    return "";
+  }
   setSaveDialogOptions = vi.fn();
   getReceivedBytes() {
     return this.received;
@@ -44,7 +47,6 @@ class Item extends NodeEvents.EventEmitter {
 
 function fixture(failFirstStart = false, deferDownload = false) {
   const session = new NodeEvents.EventEmitter();
-  session.setMaxListeners(0);
   const items: Item[] = [];
   const owner = Object.assign(new NodeEvents.EventEmitter(), {
     id: 7,
@@ -91,6 +93,7 @@ function fixture(failFirstStart = false, deferDownload = false) {
     layer,
     items,
     receive: (item: Item) => session.emit("will-download", undefined, item, owner),
+    listenerCount: () => session.listenerCount("will-download"),
   };
 }
 
@@ -98,24 +101,35 @@ describe("retained native downloads", () => {
   it.effect(
     "cancelled preparations release active slots and still cancel late native items",
     () => {
-      const { layer, items, receive } = fixture(false, true);
+      const { layer, items, receive, listenerCount } = fixture(false, true);
       return Effect.gen(function* () {
         const downloads = yield* DesktopDownloads.DesktopDownloads;
-        for (let index = 0; index < 20; index++) {
+        for (let index = 0; index < 80; index++) {
           yield* downloads.start(
             { id: `cancelled-${index}`, url: `https://files.example/${index}`, name: "report.bin" },
             7,
           );
           yield* downloads.cancel(`cancelled-${index}`, 7);
+          yield* downloads.acknowledge(`cancelled-${index}`, 7);
         }
         yield* downloads.start(
           { id: "active", url: "https://files.example/new", name: "new.bin" },
           7,
         );
         const cancel = vi.spyOn(items[0]!, "cancel");
+        expect(listenerCount()).toBe(1);
         receive(items[0]!);
         expect(cancel).toHaveBeenCalledOnce();
-        receive(items[20]!);
+        const blob = new Item("blob:https://app.t3.codes/file");
+        const blobCancel = vi.spyOn(blob, "cancel");
+        receive(blob);
+        expect(blobCancel).not.toHaveBeenCalled();
+        const rendererItem = new Item("https://files.example/renderer");
+        vi.spyOn(rendererItem, "getInitiatorOrigin").mockReturnValue("https://app.t3.codes");
+        const rendererCancel = vi.spyOn(rendererItem, "cancel");
+        receive(rendererItem);
+        expect(rendererCancel).not.toHaveBeenCalled();
+        receive(items[80]!);
         expect(yield* downloads.list(7)).toContainEqual(
           expect.objectContaining({ id: "active", status: "progressing" }),
         );
@@ -138,6 +152,46 @@ describe("retained native downloads", () => {
         { id: "restarted", status: "progressing" },
       ]);
     }).pipe(Effect.provide(layer));
+  });
+  it.effect(
+    "keeps persistent failure Retry actions through more than 50 terminal transfers",
+    () => {
+      const { layer, items } = fixture();
+      return Effect.gen(function* () {
+        const downloads = yield* DesktopDownloads.DesktopDownloads;
+        for (let index = 0; index < 60; index++) {
+          yield* downloads.start(
+            { id: `failed-${index}`, url: `https://files.example/${index}`, name: "report.bin" },
+            7,
+          );
+          items[index]!.emit("done", undefined, "interrupted");
+        }
+        expect(yield* downloads.retryInput("failed-0", 7)).toMatchObject({ id: "failed-0" });
+      }).pipe(Effect.provide(layer));
+    },
+  );
+  it.effect("protects recent completed actions before pruning acknowledged history", () => {
+    const { layer, items } = fixture();
+    const clock = vi.spyOn(performance, "now").mockReturnValue(0);
+    return Effect.gen(function* () {
+      const downloads = yield* DesktopDownloads.DesktopDownloads;
+      for (let index = 0; index < 60; index++) {
+        yield* downloads.start(
+          { id: `completed-${index}`, url: `https://files.example/${index}`, name: "report.bin" },
+          7,
+        );
+        items[index]!.emit("done", undefined, "completed");
+        yield* downloads.acknowledge(`completed-${index}`, 7);
+      }
+      yield* downloads.open("completed-0", true, 7);
+      clock.mockReturnValue(120_000);
+      yield* downloads.start(
+        { id: "new", url: "https://files.example/new", name: "report.bin" },
+        7,
+      );
+      items[60]!.emit("done", undefined, "completed");
+      expect(yield* downloads.open("completed-0", true, 7).pipe(Effect.isFailure)).toBe(true);
+    }).pipe(Effect.provide(layer), Effect.ensuring(Effect.sync(() => clock.mockRestore())));
   });
   it.effect(
     "recovers a missed completion once and keeps its saved-file actions after acknowledgement",

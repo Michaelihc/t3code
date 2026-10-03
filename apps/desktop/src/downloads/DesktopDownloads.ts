@@ -53,11 +53,12 @@ export const layer = Layer.effect(
         savePath: string | null;
         input: DesktopFileDownloadInput;
         terminalPresented: boolean;
+        presentedAt: number | null;
         cleanup: () => void;
       }
     >();
     const claimed = new WeakSet<Electron.DownloadItem>();
-    const watchedOwners = new WeakSet<Electron.WebContents>();
+    const ownerCleanups = new Map<Electron.WebContents, () => void>();
     const owned = (id: string, senderId: number) => {
       const entry = entries.get(id);
       if (!entry || entry.owner.id !== senderId) throw new Error("Download not found.");
@@ -76,12 +77,17 @@ export const layer = Layer.effect(
       entry.state = state;
       if (!entry.owner.isDestroyed())
         entry.owner.send(IpcChannels.FILE_DOWNLOAD_EVENT_CHANNEL, state);
-      // Keep recent completions for reloads and Open file, without retaining every past download.
+      // Keep unacknowledged failures and give completed actions a minute of grace before
+      // pruning the 50-entry history of notifications already presented.
       const terminal = [...entries.values()].filter((value) =>
         ["completed", "cancelled", "failed"].includes(value.state.status),
       );
       for (const previous of terminal
-        .filter((value) => value.item !== null || value.state.status === "failed")
+        .filter(
+          (value) =>
+            value.terminalPresented &&
+            (value.state.status !== "completed" || performance.now() - value.presentedAt! > 60_000),
+        )
         .slice(0, -50)) {
         previous.cleanup();
         entries.delete(previous.state.id);
@@ -93,6 +99,8 @@ export const layer = Layer.effect(
           entry.cleanup();
           if (entry.state.status === "progressing") entry.item?.cancel();
         }
+        for (const cleanup of ownerCleanups.values()) cleanup();
+        ownerCleanups.clear();
         entries.clear();
       }),
     );
@@ -111,15 +119,59 @@ export const layer = Layer.effect(
         });
       }
       const owner = window.value.webContents;
-      if (!watchedOwners.has(owner)) {
-        watchedOwners.add(owner);
-        owner.once("destroyed", () => {
+      if (!ownerCleanups.has(owner)) {
+        const receive = (
+          _event: Electron.Event,
+          item: Electron.DownloadItem,
+          source: Electron.WebContents,
+        ) => {
+          if (source?.id !== owner.id || claimed.has(item)) return;
+          const url = item.getURLChain()[0];
+          const entry = [...entries.values()].find(
+            (value) =>
+              value.owner === owner &&
+              value.item === null &&
+              value.state.status !== "failed" &&
+              value.input.url === url,
+          );
+          if (!entry) {
+            // This service owns main-window downloadURL calls. Reject late, pruned requests,
+            // while leaving renderer-initiated and blob downloads to their original handlers.
+            if (item.getInitiatorOrigin() === "" && url && /^https?:/.test(url)) item.cancel();
+            return;
+          }
+          claimed.add(item);
+          entry.item = item;
+          if (entry.state.status === "cancelled") {
+            item.cancel();
+            return;
+          }
+          item.setSaveDialogOptions({ defaultPath: entry.state.name });
+          entry.cleanup = trackDownloadTransfer({
+            item,
+            initial: entry.state,
+            now: () => performance.now(),
+            publish: (next, savePath) => {
+              entry.savePath = savePath;
+              publish(entry, next);
+            },
+          });
+        };
+        const destroyed = () => {
+          ownerCleanups.get(owner)?.();
+          ownerCleanups.delete(owner);
           for (const [id, entry] of entries) {
             if (entry.owner !== owner) continue;
             entry.cleanup();
             if (entry.state.status === "progressing") entry.item?.cancel();
             entries.delete(id);
           }
+        };
+        owner.session.on("will-download", receive);
+        owner.once("destroyed", destroyed);
+        ownerCleanups.set(owner, () => {
+          owner.session.removeListener("will-download", receive);
+          owner.removeListener("destroyed", destroyed);
         });
       }
       yield* attempt(() => {
@@ -153,38 +205,10 @@ export const layer = Layer.effect(
           savePath: null,
           input: { ...input, url: url.href, name: state.name },
           terminalPresented: false,
+          presentedAt: null,
           cleanup: () => {},
         };
-        const receive = (
-          _event: Electron.Event,
-          item: Electron.DownloadItem,
-          source: Electron.WebContents,
-        ) => {
-          if (source?.id !== owner.id || item.getURLChain()[0] !== url.href || claimed.has(item))
-            return;
-          claimed.add(item);
-          entry.cleanup();
-          entry.item = item;
-          if (entry.state.status === "cancelled" || entry.state.status === "failed") {
-            item.cancel();
-            return;
-          }
-          item.setSaveDialogOptions({ defaultPath: state.name });
-          entry.cleanup = trackDownloadTransfer({
-            item,
-            initial: state,
-            now: () => performance.now(),
-            publish: (next, savePath) => {
-              entry.savePath = savePath;
-              publish(entry, next);
-            },
-          });
-        };
-        entry.cleanup = () => {
-          owner.session.removeListener("will-download", receive);
-        };
         entries.set(input.id, entry);
-        owner.session.on("will-download", receive);
         publish(entry, state);
         try {
           owner.downloadURL(url.href);
@@ -214,8 +238,10 @@ export const layer = Layer.effect(
       acknowledge: (id, senderId) =>
         attempt(() => {
           const entry = owned(id, senderId);
-          if (["completed", "cancelled", "failed"].includes(entry.state.status))
+          if (["completed", "cancelled", "failed"].includes(entry.state.status)) {
+            if (!entry.terminalPresented) entry.presentedAt = performance.now();
             entry.terminalPresented = true;
+          }
         }),
       cancel: (id, senderId) =>
         attempt(() => {
