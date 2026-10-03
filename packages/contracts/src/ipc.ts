@@ -1141,6 +1141,8 @@ export type DesktopFileDownloadState = typeof DesktopFileDownloadStateSchema.Typ
 export interface DesktopBridge {
   startFileDownload?: (input: DesktopFileDownloadInput) => Promise<void>;
   cancelFileDownload?: (id: string) => Promise<void>;
+  retryFileDownload?: (id: string) => Promise<void>;
+  acknowledgeFileDownload?: (id: string) => Promise<void>;
   openDownloadedFile?: (input: { id: string; reveal: boolean }) => Promise<void>;
   getFileDownloads?: () => Promise<readonly DesktopFileDownloadState[]>;
   onFileDownload?: (listener: (state: DesktopFileDownloadState) => void) => () => void;

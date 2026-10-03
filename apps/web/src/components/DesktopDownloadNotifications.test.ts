@@ -30,6 +30,24 @@ const state: DesktopFileDownloadState = {
 afterEach(() => vi.clearAllMocks());
 
 describe("desktop download notifications", () => {
+  it("restores a missed terminal snapshot and retains Retry after a renderer reload", async () => {
+    const retry = vi.fn().mockResolvedValue(undefined);
+    const acknowledge = vi.fn().mockResolvedValue(undefined);
+    const bridge = {
+      onFileDownload: () => () => {},
+      getFileDownloads: async () => [{ ...state, id: "reloaded", status: "failed" as const }],
+      retryFileDownload: retry,
+      acknowledgeFileDownload: acknowledge,
+    } as unknown as DesktopBridge;
+    const dispose = observeDesktopDownloads(bridge);
+    await Promise.resolve();
+    const payload = manager.add.mock.calls[0]![0];
+    expect(payload.title).toBe("Download failed: report.pdf");
+    expect(acknowledge).toHaveBeenCalledWith("reloaded");
+    payload.actionProps.onClick();
+    expect(retry).toHaveBeenCalledWith("reloaded");
+    dispose();
+  });
   it("shows bytes for unknown lengths without inventing a percentage", () => {
     expect(downloadProgressLabel({ ...state, totalBytes: null })).toBe("1 KB received");
     expect(downloadProgressLabel(state)).toBe("1 KB / 4 KB · 25%");

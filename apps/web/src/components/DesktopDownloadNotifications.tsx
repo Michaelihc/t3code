@@ -52,7 +52,9 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
   const render = (state: DesktopFileDownloadState) => {
     if (disposed) return;
     const active = state.status === "preparing" || state.status === "progressing";
-    const retry = getDesktopDownloadRetry(state.id);
+    const retry =
+      getDesktopDownloadRetry(state.id) ??
+      (bridge.retryFileDownload ? () => bridge.retryFileDownload!(state.id) : undefined);
     const payload = stackedThreadToast({
       type: state.status === "failed" ? "error" : state.status === "completed" ? "success" : "info",
       title: `${active ? "Downloading" : state.status === "completed" ? "Downloaded" : state.status === "cancelled" ? "Download cancelled:" : "Download failed:"} ${state.name}`,
@@ -97,6 +99,7 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
     const existing = toastIds.get(state.id);
     if (existing) toastManager.update(existing, payload);
     else toastIds.set(state.id, toastManager.add(payload));
+    if (!active) void bridge.acknowledgeFileDownload?.(state.id).catch(() => {});
   };
   // Listen first so a stale initial snapshot cannot replace a newer progress event.
   const unsubscribe = bridge.onFileDownload((state) => {
@@ -107,11 +110,7 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
     .getFileDownloads()
     .then((states) => {
       for (const state of states) {
-        if (
-          !observed.has(state.id) &&
-          (state.status === "preparing" || state.status === "progressing")
-        )
-          render(state);
+        if (!observed.has(state.id)) render(state);
       }
     })
     .catch(() => {});

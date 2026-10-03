@@ -1,5 +1,6 @@
 import { type DesktopFileDownloadInput, type DesktopFileDownloadState } from "@t3tools/contracts";
 import * as Context from "effect/Context";
+import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -23,6 +24,11 @@ export class DesktopDownloads extends Context.Service<
       senderId: number,
     ) => Effect.Effect<void, DesktopDownloadError>;
     readonly cancel: (id: string, senderId: number) => Effect.Effect<void, DesktopDownloadError>;
+    readonly retry: (id: string, senderId: number) => Effect.Effect<void, DesktopDownloadError>;
+    readonly acknowledge: (
+      id: string,
+      senderId: number,
+    ) => Effect.Effect<void, DesktopDownloadError>;
     readonly open: (
       id: string,
       reveal: boolean,
@@ -36,6 +42,7 @@ export const layer = Layer.effect(
   DesktopDownloads,
   Effect.gen(function* () {
     const windows = yield* ElectronWindow.ElectronWindow;
+    const crypto = yield* Crypto.Crypto;
     const entries = new Map<
       string,
       {
@@ -43,6 +50,8 @@ export const layer = Layer.effect(
         state: DesktopFileDownloadState;
         item: Electron.DownloadItem | null;
         savePath: string | null;
+        url: string;
+        terminalPresented: boolean;
         cleanup: () => void;
       }
     >();
@@ -84,106 +93,133 @@ export const layer = Layer.effect(
         entries.clear();
       }),
     );
-    return DesktopDownloads.of({
-      start: Effect.fn("desktop.downloads.start")(function* (input, senderId) {
-        const window = yield* windows.main;
-        if (
-          Option.isNone(window) ||
-          window.value.isDestroyed() ||
-          window.value.webContents.id !== senderId
-        ) {
-          return yield* new DesktopDownloadError({
-            message: "The application window is unavailable.",
-          });
-        }
-        const owner = window.value.webContents;
-        if (!watchedOwners.has(owner)) {
-          watchedOwners.add(owner);
-          owner.once("destroyed", () => {
-            for (const [id, entry] of entries) {
-              if (entry.owner !== owner) continue;
-              entry.cleanup();
-              if (entry.state.status === "progressing") entry.item?.cancel();
-              entries.delete(id);
-            }
-          });
-        }
-        yield* attempt(() => {
-          const url = new URL(input.url);
-          url.hash = "";
-          if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
-            throw new Error("Only HTTP and HTTPS files can be downloaded.");
-          }
-          if (entries.has(input.id)) throw new Error("This download already exists.");
-          if (
-            [...entries.values()].filter(
-              (entry) => entry.item === null || entry.state.status === "progressing",
-            ).length >= 20
-          ) {
-            throw new Error("Wait for a download to finish before starting another.");
-          }
-          // oxlint-disable-next-line no-control-regex -- A save-dialog filename cannot contain control characters.
-          const name = input.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_");
-          const state: DesktopFileDownloadState = {
-            id: input.id,
-            name: name === "." || name === ".." ? "download" : name,
-            status: "preparing",
-            receivedBytes: 0,
-            totalBytes: null,
-            message: null,
-          };
-          const entry: ReturnType<typeof owned> = {
-            owner,
-            state,
-            item: null,
-            savePath: null,
-            cleanup: () => {},
-          };
-          const receive = (
-            _event: Electron.Event,
-            item: Electron.DownloadItem,
-            source: Electron.WebContents,
-          ) => {
-            if (source?.id !== owner.id || item.getURLChain()[0] !== url.href || claimed.has(item))
-              return;
-            claimed.add(item);
+    const start = Effect.fn("desktop.downloads.start")(function* (
+      input: DesktopFileDownloadInput,
+      senderId: number,
+    ) {
+      const window = yield* windows.main;
+      if (
+        Option.isNone(window) ||
+        window.value.isDestroyed() ||
+        window.value.webContents.id !== senderId
+      ) {
+        return yield* new DesktopDownloadError({
+          message: "The application window is unavailable.",
+        });
+      }
+      const owner = window.value.webContents;
+      if (!watchedOwners.has(owner)) {
+        watchedOwners.add(owner);
+        owner.once("destroyed", () => {
+          for (const [id, entry] of entries) {
+            if (entry.owner !== owner) continue;
             entry.cleanup();
-            entry.item = item;
-            if (entry.state.status === "cancelled" || entry.state.status === "failed") {
-              item.cancel();
-              return;
-            }
-            item.setSaveDialogOptions({ defaultPath: state.name });
-            entry.cleanup = trackDownloadTransfer({
-              item,
-              initial: state,
-              now: () => performance.now(),
-              publish: (next, savePath) => {
-                entry.savePath = savePath;
-                publish(entry, next);
-              },
-            });
-          };
-          entry.cleanup = () => {
-            owner.session.removeListener("will-download", receive);
-          };
-          entries.set(input.id, entry);
-          owner.session.on("will-download", receive);
-          publish(entry, state);
-          try {
-            owner.downloadURL(url.href);
-          } catch (cause) {
-            entry.cleanup();
-            publish(entry, {
-              ...state,
-              status: "failed",
-              message: "Could not start the download.",
-            });
-            entries.delete(input.id);
-            throw cause;
+            if (entry.state.status === "progressing") entry.item?.cancel();
+            entries.delete(id);
           }
         });
+      }
+      yield* attempt(() => {
+        const url = new URL(input.url);
+        url.hash = "";
+        if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) {
+          throw new Error("Only HTTP and HTTPS files can be downloaded.");
+        }
+        if (entries.has(input.id)) throw new Error("This download already exists.");
+        if (
+          [...entries.values()].filter(
+            (entry) => entry.item === null || entry.state.status === "progressing",
+          ).length >= 20
+        ) {
+          throw new Error("Wait for a download to finish before starting another.");
+        }
+        // oxlint-disable-next-line no-control-regex -- A save-dialog filename cannot contain control characters.
+        const name = input.name.replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_");
+        const state: DesktopFileDownloadState = {
+          id: input.id,
+          name: name === "." || name === ".." ? "download" : name,
+          status: "preparing",
+          receivedBytes: 0,
+          totalBytes: null,
+          message: null,
+        };
+        const entry: ReturnType<typeof owned> = {
+          owner,
+          state,
+          item: null,
+          savePath: null,
+          url: url.href,
+          terminalPresented: false,
+          cleanup: () => {},
+        };
+        const receive = (
+          _event: Electron.Event,
+          item: Electron.DownloadItem,
+          source: Electron.WebContents,
+        ) => {
+          if (source?.id !== owner.id || item.getURLChain()[0] !== url.href || claimed.has(item))
+            return;
+          claimed.add(item);
+          entry.cleanup();
+          entry.item = item;
+          if (entry.state.status === "cancelled" || entry.state.status === "failed") {
+            item.cancel();
+            return;
+          }
+          item.setSaveDialogOptions({ defaultPath: state.name });
+          entry.cleanup = trackDownloadTransfer({
+            item,
+            initial: state,
+            now: () => performance.now(),
+            publish: (next, savePath) => {
+              entry.savePath = savePath;
+              publish(entry, next);
+            },
+          });
+        };
+        entry.cleanup = () => {
+          owner.session.removeListener("will-download", receive);
+        };
+        entries.set(input.id, entry);
+        owner.session.on("will-download", receive);
+        publish(entry, state);
+        try {
+          owner.downloadURL(url.href);
+        } catch (cause) {
+          entry.cleanup();
+          publish(entry, {
+            ...state,
+            status: "failed",
+            message: "Could not start the download.",
+          });
+          entries.delete(input.id);
+          throw cause;
+        }
+      });
+    });
+    return DesktopDownloads.of({
+      start,
+      retry: Effect.fn("desktop.downloads.retry")(function* (id, senderId) {
+        const entry = yield* attempt(() => owned(id, senderId));
+        if (entry.state.status !== "failed") {
+          return yield* new DesktopDownloadError({
+            message: "Only failed downloads can be retried.",
+          });
+        }
+        const nextId = yield* crypto.randomUUIDv4.pipe(
+          Effect.mapError(
+            (cause) =>
+              new DesktopDownloadError({ message: "Could not restart the download.", cause }),
+          ),
+        );
+        yield* start({ id: nextId, url: entry.url, name: entry.state.name }, senderId);
       }),
+      acknowledge: (id, senderId) =>
+        attempt(() => {
+          const entry = owned(id, senderId);
+          if (["completed", "cancelled", "failed"].includes(entry.state.status))
+            entry.terminalPresented = true;
+        }),
       cancel: (id, senderId) =>
         attempt(() => {
           const entry = owned(id, senderId);
@@ -211,7 +247,8 @@ export const layer = Layer.effect(
       list: (senderId) =>
         Effect.sync(() =>
           [...entries.values()]
-            .filter((entry) => entry.owner.id === senderId)
+            // Recover terminal events missed during reload without replaying notifications already shown.
+            .filter((entry) => entry.owner.id === senderId && !entry.terminalPresented)
             .map((entry) => entry.state),
         ),
     });

@@ -32,6 +32,24 @@ export const openDownloadedFile = DesktopIpc.makeIpcMethod({
     return yield* downloads.open(input.id, input.reveal, event?.sender.id ?? -1);
   }),
 });
+export const retryFileDownload = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.FILE_DOWNLOAD_RETRY_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.downloads.retry")(function* (id, event) {
+    const downloads = yield* DesktopDownloads.DesktopDownloads;
+    return yield* downloads.retry(id, event?.sender.id ?? -1);
+  }),
+});
+export const acknowledgeFileDownload = DesktopIpc.makeIpcMethod({
+  channel: IpcChannels.FILE_DOWNLOAD_ACKNOWLEDGE_CHANNEL,
+  payload: Schema.String,
+  result: Schema.Void,
+  handler: Effect.fn("desktop.ipc.downloads.acknowledge")(function* (id, event) {
+    const downloads = yield* DesktopDownloads.DesktopDownloads;
+    return yield* downloads.acknowledge(id, event?.sender.id ?? -1);
+  }),
+});
 export const getFileDownloads = DesktopIpc.makeIpcMethod({
   channel: IpcChannels.FILE_DOWNLOAD_LIST_CHANNEL,
   payload: Schema.Void,
