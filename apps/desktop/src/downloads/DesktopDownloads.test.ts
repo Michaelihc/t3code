@@ -23,9 +23,6 @@ class Item extends NodeEvents.EventEmitter {
   getURLChain() {
     return [this.url];
   }
-  getInitiatorOrigin() {
-    return "";
-  }
   setSaveDialogOptions = vi.fn();
   getReceivedBytes() {
     return this.received;
@@ -106,15 +103,15 @@ describe("retained native downloads", () => {
       yield* downloads.start({ id: "cancelled", url, name: "report.bin" }, 7);
       yield* downloads.cancel("cancelled", 7);
       yield* downloads.start({ id: "active", url, name: "report.bin" }, 7);
+      const lateCancel = vi.spyOn(items[0]!, "cancel");
+      receive(items[0]!);
+      expect(lateCancel).toHaveBeenCalledOnce();
       const activeCancel = vi.spyOn(items[1]!, "cancel");
       receive(items[1]!);
       expect(activeCancel).not.toHaveBeenCalled();
       expect(yield* downloads.list(7)).toContainEqual(
         expect.objectContaining({ id: "active", status: "progressing" }),
       );
-      const lateCancel = vi.spyOn(items[0]!, "cancel");
-      receive(items[0]!);
-      expect(lateCancel).toHaveBeenCalledOnce();
     }).pipe(Effect.provide(layer));
   });
   it.effect(
@@ -144,7 +141,6 @@ describe("retained native downloads", () => {
         receive(blob);
         expect(blobCancel).not.toHaveBeenCalled();
         const rendererItem = new Item("https://files.example/renderer");
-        vi.spyOn(rendererItem, "getInitiatorOrigin").mockReturnValue("https://app.t3.codes");
         const rendererCancel = vi.spyOn(rendererItem, "cancel");
         receive(rendererItem);
         expect(rendererCancel).not.toHaveBeenCalled();
@@ -265,7 +261,13 @@ describe("retained native downloads", () => {
       const restored = yield* downloads.list(7);
       expect(restored).toMatchObject([{ name: "report.bin", status: "progressing" }]);
       expect(restored[0]!.id).not.toBe("old");
-      expect(items.map((item) => item.url)).toEqual([
+      expect(
+        items.map((item) => {
+          const url = new URL(item.url);
+          url.hash = "";
+          return url.href;
+        }),
+      ).toEqual([
         "https://files.example/report?signature=expired",
         "https://files.example/report?signature=fresh",
       ]);

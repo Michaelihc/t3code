@@ -1,3 +1,4 @@
+import * as NodeCrypto from "node:crypto";
 import { type DesktopFileDownloadInput, type DesktopFileDownloadState } from "@t3tools/contracts";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -52,6 +53,7 @@ export const layer = Layer.effect(
         item: Electron.DownloadItem | null;
         savePath: string | null;
         input: DesktopFileDownloadInput;
+        nativeUrl: string;
         terminalPresented: boolean;
         presentedAt: number | null;
         cleanup: () => void;
@@ -132,12 +134,11 @@ export const layer = Layer.effect(
               value.owner === owner &&
               value.item === null &&
               value.state.status === "preparing" &&
-              value.input.url === url,
+              value.nativeUrl === url,
           );
           if (!entry) {
-            // This service owns main-window downloadURL calls. Reject late, pruned requests,
-            // while leaving renderer-initiated and blob downloads to their original handlers.
-            if (item.getInitiatorOrigin() === "" && url && /^https?:/.test(url)) item.cancel();
+            // A fragment identifies our late, pruned requests without claiming other downloads.
+            if (url?.includes("#t3code-native-download=")) item.cancel();
             return;
           }
           claimed.add(item);
@@ -194,12 +195,16 @@ export const layer = Layer.effect(
           totalBytes: null,
           message: null,
         };
+        const nativeUrl = new URL(url);
+        // Electron retains fragments on DownloadItem, while HTTP and signed capabilities omit them.
+        nativeUrl.hash = `t3code-native-download=${NodeCrypto.randomUUID()}`;
         const entry: ReturnType<typeof owned> = {
           owner,
           state,
           item: null,
           savePath: null,
           input: { ...input, url: url.href, name: state.name },
+          nativeUrl: nativeUrl.href,
           terminalPresented: false,
           presentedAt: null,
           cleanup: () => {},
@@ -207,7 +212,7 @@ export const layer = Layer.effect(
         entries.set(input.id, entry);
         publish(entry, state);
         try {
-          owner.downloadURL(url.href);
+          owner.downloadURL(entry.nativeUrl);
         } catch {
           entry.cleanup();
           publish(entry, {
