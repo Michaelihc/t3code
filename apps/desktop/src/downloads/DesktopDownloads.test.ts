@@ -91,7 +91,7 @@ describe("retained native downloads", () => {
     return Effect.gen(function* () {
       const downloads = yield* DesktopDownloads.DesktopDownloads;
       const input = { id: "failed-start", url: "https://files.example/report", name: "report.bin" };
-      expect(yield* downloads.start(input, 7).pipe(Effect.isFailure)).toBe(true);
+      yield* downloads.start(input, 7);
       expect(yield* downloads.list(7)).toMatchObject([{ id: input.id, status: "failed" }]);
       expect(yield* downloads.retryInput(input.id, 8).pipe(Effect.isFailure)).toBe(true);
       const retained = yield* downloads.retryInput(input.id, 7);

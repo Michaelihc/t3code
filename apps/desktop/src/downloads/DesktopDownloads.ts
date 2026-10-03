@@ -190,14 +190,14 @@ export const layer = Layer.effect(
         publish(entry, state);
         try {
           owner.downloadURL(url.href);
-        } catch (cause) {
+        } catch {
           entry.cleanup();
           publish(entry, {
             ...state,
             status: "failed",
             message: "Could not start the download.",
           });
-          throw cause;
+          // The retained transfer reports the failure; accepting the command lets Retry replace its old toast.
         }
       });
     });
