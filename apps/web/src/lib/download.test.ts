@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { downloadBlob, downloadUrl } from "./download";
+import { EnvironmentId, ChatAttachmentId } from "@t3tools/contracts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -9,6 +10,48 @@ afterEach(() => {
 });
 
 describe("browser downloads", () => {
+  it("retains the asset source natively for renewal after a renderer reload", async () => {
+    const startFileDownload = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", {
+      location: { href: "t3://app/" },
+      desktopBridge: { startFileDownload },
+    });
+    const source = {
+      environmentId: EnvironmentId.make("remote"),
+      resource: { _tag: "attachment" as const, attachmentId: ChatAttachmentId.make("report") },
+    };
+    await downloadUrl(
+      "https://remote.example/api/assets/report?signature=old",
+      "Report.pdf",
+      source,
+    );
+    expect(startFileDownload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source,
+      }),
+    );
+  });
+  it("uses the native desktop downloader for signed remote assets", async () => {
+    const startFileDownload = vi.fn().mockResolvedValue(undefined);
+    const openExternal = vi.fn();
+    const fetch = vi.fn();
+    vi.stubGlobal("window", {
+      location: { href: "t3://app/" },
+      desktopBridge: { startFileDownload, openExternal },
+    });
+    vi.stubGlobal("fetch", fetch);
+    await downloadUrl(
+      "https://remote.example/api/assets/signed/report.pdf?signature=abc",
+      "Report.pdf",
+    );
+    expect(startFileDownload).toHaveBeenCalledWith({
+      id: expect.any(String),
+      name: "Report.pdf",
+      url: "https://remote.example/api/assets/signed/report.pdf?signature=abc&download=1&downloadName=Report.pdf",
+    });
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("hands a remote signed asset directly to the desktop browser without fetching bytes", async () => {
     const openExternal = vi.fn().mockResolvedValue(true);
     const fetch = vi.fn();

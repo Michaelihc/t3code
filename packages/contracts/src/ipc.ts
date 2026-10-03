@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { AssetResource } from "./assets.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -1121,7 +1122,38 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export const DesktopFileDownloadSourceSchema = Schema.Struct({
+  environmentId: EnvironmentId,
+  resource: AssetResource,
+});
+export type DesktopFileDownloadSource = typeof DesktopFileDownloadSourceSchema.Type;
+
+export const DesktopFileDownloadInputSchema = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  url: TrimmedNonEmptyString,
+  name: TrimmedNonEmptyString,
+  source: Schema.optional(DesktopFileDownloadSourceSchema),
+});
+export type DesktopFileDownloadInput = typeof DesktopFileDownloadInputSchema.Type;
+
+export const DesktopFileDownloadStateSchema = Schema.Struct({
+  id: Schema.String,
+  name: Schema.String,
+  status: Schema.Literals(["preparing", "progressing", "completed", "cancelled", "failed"]),
+  receivedBytes: Schema.Number,
+  totalBytes: Schema.NullOr(Schema.Number),
+  message: Schema.NullOr(Schema.String),
+});
+export type DesktopFileDownloadState = typeof DesktopFileDownloadStateSchema.Type;
+
 export interface DesktopBridge {
+  startFileDownload?: (input: DesktopFileDownloadInput) => Promise<void>;
+  cancelFileDownload?: (id: string) => Promise<void>;
+  getFileDownloadRetryInput?: (id: string) => Promise<DesktopFileDownloadInput>;
+  acknowledgeFileDownload?: (id: string) => Promise<void>;
+  openDownloadedFile?: (input: { id: string; reveal: boolean }) => Promise<void>;
+  getFileDownloads?: () => Promise<readonly DesktopFileDownloadState[]>;
+  onFileDownload?: (listener: (state: DesktopFileDownloadState) => void) => () => void;
   getAppBranding: () => DesktopAppBranding | null;
   /** Absolute path of a dropped or picked file; absent on desktop builds predating it. */
   getPathForFile?: (file: File) => string;

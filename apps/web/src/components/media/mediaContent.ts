@@ -1,4 +1,5 @@
 import { downloadUrl } from "~/lib/download";
+import type { DesktopFileDownloadSource } from "@t3tools/contracts";
 
 /** Resolves web references without inheriting the desktop renderer's custom app scheme. */
 export function resolveProtocolRelativeMediaUrl(src: string): string {
@@ -28,8 +29,12 @@ async function readMediaBlob(src: string): Promise<Blob> {
 }
 
 /** Sends the original URL to the browser without changing the active playback URL. */
-export async function downloadMedia(src: string, name: string): Promise<void> {
-  await downloadUrl(resolveProtocolRelativeMediaUrl(src), name);
+export async function downloadMedia(
+  src: string,
+  name: string,
+  source?: DesktopFileDownloadSource,
+): Promise<void> {
+  await downloadUrl(resolveProtocolRelativeMediaUrl(src), name, source);
 }
 
 /** Converts browser-decodable images, including SVG, into the clipboard's portable PNG format. */
