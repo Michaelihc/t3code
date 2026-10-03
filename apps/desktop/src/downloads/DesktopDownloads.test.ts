@@ -38,7 +38,7 @@ class Item extends NodeEvents.EventEmitter {
   }
 }
 
-function fixture() {
+function fixture(failFirstStart = false) {
   const session = new NodeEvents.EventEmitter();
   const items: Item[] = [];
   const owner = Object.assign(new NodeEvents.EventEmitter(), {
@@ -47,6 +47,10 @@ function fixture() {
     isDestroyed: () => false,
     send: vi.fn(),
     downloadURL: (url: string) => {
+      if (failFirstStart) {
+        failFirstStart = false;
+        throw new Error("Could not start native transfer");
+      }
       const item = new Item(url);
       items.push(item);
       session.emit("will-download", undefined, item, owner);
@@ -82,6 +86,23 @@ function fixture() {
 }
 
 describe("retained native downloads", () => {
+  it.effect("keeps retry metadata when native startup throws", () => {
+    const { layer, items } = fixture(true);
+    return Effect.gen(function* () {
+      const downloads = yield* DesktopDownloads.DesktopDownloads;
+      const input = { id: "failed-start", url: "https://files.example/report", name: "report.bin" };
+      expect(yield* downloads.start(input, 7).pipe(Effect.isFailure)).toBe(true);
+      expect(yield* downloads.list(7)).toMatchObject([{ id: input.id, status: "failed" }]);
+      expect(yield* downloads.retryInput(input.id, 8).pipe(Effect.isFailure)).toBe(true);
+      const retained = yield* downloads.retryInput(input.id, 7);
+      yield* downloads.start({ ...retained, id: "restarted" }, 7);
+      expect(items).toHaveLength(1);
+      expect(yield* downloads.list(7)).toMatchObject([
+        { id: "failed-start", status: "failed" },
+        { id: "restarted", status: "progressing" },
+      ]);
+    }).pipe(Effect.provide(layer));
+  });
   it.effect(
     "recovers a missed completion once and keeps its saved-file actions after acknowledgement",
     () => {

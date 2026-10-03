@@ -80,7 +80,9 @@ export const layer = Layer.effect(
       const terminal = [...entries.values()].filter((value) =>
         ["completed", "cancelled", "failed"].includes(value.state.status),
       );
-      for (const previous of terminal.filter((value) => value.item !== null).slice(0, -50)) {
+      for (const previous of terminal
+        .filter((value) => value.item !== null || value.state.status === "failed")
+        .slice(0, -50)) {
         previous.cleanup();
         entries.delete(previous.state.id);
       }
@@ -129,7 +131,9 @@ export const layer = Layer.effect(
         if (entries.has(input.id)) throw new Error("This download already exists.");
         if (
           [...entries.values()].filter(
-            (entry) => entry.item === null || entry.state.status === "progressing",
+            (entry) =>
+              entry.state.status !== "failed" &&
+              (entry.item === null || entry.state.status === "progressing"),
           ).length >= 20
         ) {
           throw new Error("Wait for a download to finish before starting another.");
@@ -193,7 +197,6 @@ export const layer = Layer.effect(
             status: "failed",
             message: "Could not start the download.",
           });
-          entries.delete(input.id);
           throw cause;
         }
       });
