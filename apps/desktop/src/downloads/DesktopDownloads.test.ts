@@ -1,4 +1,5 @@
 import * as NodeEvents from "node:events";
+import { EnvironmentId, ChatAttachmentId } from "@t3tools/contracts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import type * as Electron from "electron";
 import * as Effect from "effect/Effect";
@@ -103,25 +104,40 @@ describe("retained native downloads", () => {
     },
   );
 
-  it.effect("retries a retained failure without renderer metadata and checks ownership", () => {
+  it.effect("retains the asset source for renewal after reload and checks ownership", () => {
     const { layer, items } = fixture();
     return Effect.gen(function* () {
       const downloads = yield* DesktopDownloads.DesktopDownloads;
+      const source = {
+        environmentId: EnvironmentId.make("remote"),
+        resource: { _tag: "attachment" as const, attachmentId: ChatAttachmentId.make("report") },
+      };
       yield* downloads.start(
-        { id: "old", url: "https://files.example/report", name: "report.bin" },
+        {
+          id: "old",
+          url: "https://files.example/report?signature=expired",
+          name: "report.bin",
+          source,
+        },
         7,
       );
+      expect(yield* downloads.retryInput("old", 7).pipe(Effect.isFailure)).toBe(true);
       items[0]!.emit("done", undefined, "interrupted");
       expect(yield* downloads.list(7)).toMatchObject([{ id: "old", status: "failed" }]);
-      expect(yield* downloads.retry("old", 8).pipe(Effect.isFailure)).toBe(true);
+      expect(yield* downloads.retryInput("old", 8).pipe(Effect.isFailure)).toBe(true);
+      const input = yield* downloads.retryInput("old", 7);
+      expect(input.source).toEqual(source);
+      yield* downloads.start(
+        { ...input, id: "new", url: "https://files.example/report?signature=fresh" },
+        7,
+      );
       yield* downloads.acknowledge("old", 7);
-      yield* downloads.retry("old", 7);
       const restored = yield* downloads.list(7);
       expect(restored).toMatchObject([{ name: "report.bin", status: "progressing" }]);
       expect(restored[0]!.id).not.toBe("old");
       expect(items.map((item) => item.url)).toEqual([
-        "https://files.example/report",
-        "https://files.example/report",
+        "https://files.example/report?signature=expired",
+        "https://files.example/report?signature=fresh",
       ]);
     }).pipe(Effect.provide(layer));
   });

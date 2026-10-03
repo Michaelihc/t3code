@@ -1,6 +1,5 @@
 import { type DesktopFileDownloadInput, type DesktopFileDownloadState } from "@t3tools/contracts";
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -24,7 +23,10 @@ export class DesktopDownloads extends Context.Service<
       senderId: number,
     ) => Effect.Effect<void, DesktopDownloadError>;
     readonly cancel: (id: string, senderId: number) => Effect.Effect<void, DesktopDownloadError>;
-    readonly retry: (id: string, senderId: number) => Effect.Effect<void, DesktopDownloadError>;
+    readonly retryInput: (
+      id: string,
+      senderId: number,
+    ) => Effect.Effect<DesktopFileDownloadInput, DesktopDownloadError>;
     readonly acknowledge: (
       id: string,
       senderId: number,
@@ -42,7 +44,6 @@ export const layer = Layer.effect(
   DesktopDownloads,
   Effect.gen(function* () {
     const windows = yield* ElectronWindow.ElectronWindow;
-    const crypto = yield* Crypto.Crypto;
     const entries = new Map<
       string,
       {
@@ -50,7 +51,7 @@ export const layer = Layer.effect(
         state: DesktopFileDownloadState;
         item: Electron.DownloadItem | null;
         savePath: string | null;
-        url: string;
+        input: DesktopFileDownloadInput;
         terminalPresented: boolean;
         cleanup: () => void;
       }
@@ -148,7 +149,7 @@ export const layer = Layer.effect(
           state,
           item: null,
           savePath: null,
-          url: url.href,
+          input: { ...input, url: url.href, name: state.name },
           terminalPresented: false,
           cleanup: () => {},
         };
@@ -199,20 +200,15 @@ export const layer = Layer.effect(
     });
     return DesktopDownloads.of({
       start,
-      retry: Effect.fn("desktop.downloads.retry")(function* (id, senderId) {
+      retryInput: Effect.fn("desktop.downloads.retryInput")(function* (id, senderId) {
         const entry = yield* attempt(() => owned(id, senderId));
         if (entry.state.status !== "failed") {
           return yield* new DesktopDownloadError({
             message: "Only failed downloads can be retried.",
           });
         }
-        const nextId = yield* crypto.randomUUIDv4.pipe(
-          Effect.mapError(
-            (cause) =>
-              new DesktopDownloadError({ message: "Could not restart the download.", cause }),
-          ),
-        );
-        yield* start({ id: nextId, url: entry.url, name: entry.state.name }, senderId);
+        // The renderer renews environment asset capabilities using its current connection.
+        return entry.input;
       }),
       acknowledge: (id, senderId) =>
         attempt(() => {

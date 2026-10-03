@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { AssetResource } from "./assets.ts";
 
 import {
   PreviewAutomationClickInput,
@@ -1121,10 +1122,17 @@ export const DesktopPreviewAutomationWaitForInputSchema = Schema.Struct({
 export const SystemSettingsPaneSchema = Schema.Literals(["full-disk-access"]);
 export type SystemSettingsPane = typeof SystemSettingsPaneSchema.Type;
 
+export const DesktopFileDownloadSourceSchema = Schema.Struct({
+  environmentId: EnvironmentId,
+  resource: AssetResource,
+});
+export type DesktopFileDownloadSource = typeof DesktopFileDownloadSourceSchema.Type;
+
 export const DesktopFileDownloadInputSchema = Schema.Struct({
   id: TrimmedNonEmptyString,
   url: TrimmedNonEmptyString,
   name: TrimmedNonEmptyString,
+  source: Schema.optional(DesktopFileDownloadSourceSchema),
 });
 export type DesktopFileDownloadInput = typeof DesktopFileDownloadInputSchema.Type;
 
@@ -1141,7 +1149,7 @@ export type DesktopFileDownloadState = typeof DesktopFileDownloadStateSchema.Typ
 export interface DesktopBridge {
   startFileDownload?: (input: DesktopFileDownloadInput) => Promise<void>;
   cancelFileDownload?: (id: string) => Promise<void>;
-  retryFileDownload?: (id: string) => Promise<void>;
+  getFileDownloadRetryInput?: (id: string) => Promise<DesktopFileDownloadInput>;
   acknowledgeFileDownload?: (id: string) => Promise<void>;
   openDownloadedFile?: (input: { id: string; reveal: boolean }) => Promise<void>;
   getFileDownloads?: () => Promise<readonly DesktopFileDownloadState[]>;

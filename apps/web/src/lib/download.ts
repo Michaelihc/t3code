@@ -1,11 +1,11 @@
-import { registerDesktopDownloadRetry } from "./desktopDownloadRetry";
+import type { DesktopFileDownloadSource } from "@t3tools/contracts";
 import { randomUUID } from "./utils";
 
 /** Native transfers avoid buffering large files in the renderer. */
 export async function downloadUrl(
   src: string,
   name: string,
-  resolveSource?: () => Promise<string>,
+  source?: DesktopFileDownloadSource,
 ): Promise<void> {
   const url = new URL(src, window.location.href);
   const isWeb = url.protocol === "http:" || url.protocol === "https:";
@@ -21,10 +21,12 @@ export async function downloadUrl(
   if (isWeb && window.desktopBridge) {
     if (window.desktopBridge.startFileDownload) {
       const id = randomUUID();
-      registerDesktopDownloadRetry(id, async () =>
-        downloadUrl(resolveSource ? await resolveSource() : src, name, resolveSource),
-      );
-      await window.desktopBridge.startFileDownload({ id, url: url.href, name });
+      await window.desktopBridge.startFileDownload({
+        id,
+        url: url.href,
+        name,
+        ...(source && { source }),
+      });
       return;
     }
     if (!(await window.desktopBridge.openExternal(url.href))) {

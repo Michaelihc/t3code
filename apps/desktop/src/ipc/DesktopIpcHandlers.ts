@@ -135,7 +135,7 @@ export const installDesktopIpcHandlers = Effect.fn("desktop.ipc.installHandlers"
   yield* ipc.handle(openExternal);
   yield* ipc.handle(FileDownloads.startFileDownload);
   yield* ipc.handle(FileDownloads.cancelFileDownload);
-  yield* ipc.handle(FileDownloads.retryFileDownload);
+  yield* ipc.handle(FileDownloads.getFileDownloadRetryInput);
   yield* ipc.handle(FileDownloads.acknowledgeFileDownload);
   yield* ipc.handle(FileDownloads.openDownloadedFile);
   yield* ipc.handle(FileDownloads.getFileDownloads);

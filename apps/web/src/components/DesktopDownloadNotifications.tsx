@@ -1,7 +1,7 @@
 import type { DesktopBridge, DesktopFileDownloadState } from "@t3tools/contracts";
 import { DownloadIcon } from "lucide-react";
 import { useEffect } from "react";
-import { getDesktopDownloadRetry } from "../lib/desktopDownloadRetry";
+import { retryDesktopDownload } from "../lib/desktopDownloadRetry";
 
 import { toastManager, stackedThreadToast } from "./ui/toast";
 
@@ -52,9 +52,9 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
   const render = (state: DesktopFileDownloadState) => {
     if (disposed) return;
     const active = state.status === "preparing" || state.status === "progressing";
-    const retry =
-      getDesktopDownloadRetry(state.id) ??
-      (bridge.retryFileDownload ? () => bridge.retryFileDownload!(state.id) : undefined);
+    const retry = bridge.getFileDownloadRetryInput
+      ? () => retryDesktopDownload(bridge, state.id)
+      : undefined;
     const payload = stackedThreadToast({
       type: state.status === "failed" ? "error" : state.status === "completed" ? "success" : "info",
       title: `${active ? "Downloading" : state.status === "completed" ? "Downloaded" : state.status === "cancelled" ? "Download cancelled:" : "Download failed:"} ${state.name}`,
@@ -73,8 +73,12 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
             ? {
                 children: "Retry",
                 onClick: () => {
-                  toastManager.close(toastIds.get(state.id)!);
-                  action(retry);
+                  action(async () => {
+                    await retry();
+                    if (disposed) return;
+                    toastManager.close(toastIds.get(state.id)!);
+                    await bridge.acknowledgeFileDownload?.(state.id);
+                  });
                 },
               }
             : { children: null },
@@ -99,7 +103,8 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
     const existing = toastIds.get(state.id);
     if (existing) toastManager.update(existing, payload);
     else toastIds.set(state.id, toastManager.add(payload));
-    if (!active) void bridge.acknowledgeFileDownload?.(state.id).catch(() => {});
+    if (!active && state.status !== "failed")
+      void bridge.acknowledgeFileDownload?.(state.id).catch(() => {});
   };
   // Listen first so a stale initial snapshot cannot replace a newer progress event.
   const unsubscribe = bridge.onFileDownload((state) => {

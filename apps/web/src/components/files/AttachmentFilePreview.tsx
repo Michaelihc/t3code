@@ -206,7 +206,13 @@ export function AttachmentFilePreview(props: {
             if (!target) throw new Error("Reconnect to the environment and try again.");
             return target;
           };
-          await downloadUrl(await resolveDownloadUrl(), props.name, resolveDownloadUrl);
+          await downloadUrl(
+            await resolveDownloadUrl(),
+            props.name,
+            props.asset && downloadResource
+              ? { environmentId: props.asset.environmentId, resource: downloadResource }
+              : undefined,
+          );
         }
       } catch (cause) {
         toastManager.add({

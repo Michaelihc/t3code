@@ -189,7 +189,8 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
   startFileDownload: (input) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_START_CHANNEL, input),
   cancelFileDownload: (id) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_CANCEL_CHANNEL, id),
-  retryFileDownload: (id) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_RETRY_CHANNEL, id),
+  getFileDownloadRetryInput: (id) =>
+    ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_RETRY_CHANNEL, id),
   acknowledgeFileDownload: (id) =>
     ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_ACKNOWLEDGE_CHANNEL, id),
   openDownloadedFile: (input) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_OPEN_CHANNEL, input),

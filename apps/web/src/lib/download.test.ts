@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { downloadBlob, downloadUrl } from "./download";
-import { getDesktopDownloadRetry } from "./desktopDownloadRetry";
+import { EnvironmentId, ChatAttachmentId } from "@t3tools/contracts";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -10,29 +10,26 @@ afterEach(() => {
 });
 
 describe("browser downloads", () => {
-  it("renews signed attachment URLs when retrying a native download", async () => {
+  it("retains the asset source natively for renewal after a renderer reload", async () => {
     const startFileDownload = vi.fn().mockResolvedValue(undefined);
     vi.stubGlobal("window", {
       location: { href: "t3://app/" },
       desktopBridge: { startFileDownload },
     });
-    const resolveSource = vi
-      .fn()
-      .mockResolvedValue("https://remote.example/api/assets/report?signature=new");
+    const source = {
+      environmentId: EnvironmentId.make("remote"),
+      resource: { _tag: "attachment" as const, attachmentId: ChatAttachmentId.make("report") },
+    };
     await downloadUrl(
       "https://remote.example/api/assets/report?signature=old",
       "Report.pdf",
-      resolveSource,
+      source,
     );
-    const id = startFileDownload.mock.calls[0]![0].id;
-    await getDesktopDownloadRetry(id)!();
-    expect(resolveSource).toHaveBeenCalledOnce();
-    expect(startFileDownload).toHaveBeenLastCalledWith(
+    expect(startFileDownload).toHaveBeenCalledWith(
       expect.objectContaining({
-        url: "https://remote.example/api/assets/report?signature=new&download=1&downloadName=Report.pdf",
+        source,
       }),
     );
-    expect(startFileDownload.mock.calls[1]![0].id).not.toBe(id);
   });
   it("uses the native desktop downloader for signed remote assets", async () => {
     const startFileDownload = vi.fn().mockResolvedValue(undefined);

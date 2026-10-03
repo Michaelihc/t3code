@@ -3580,7 +3580,15 @@ export default function ChatView(props: ChatViewProps) {
             httpBaseUrl: connection.httpBaseUrl,
             createAssetUrl: createAttachmentAssetUrl,
           });
-        await downloadUrl(await resolveDownloadUrl(), attachment.name, resolveDownloadUrl);
+        await downloadUrl(await resolveDownloadUrl(), attachment.name, {
+          environmentId,
+          resource: {
+            _tag: "attachment",
+            attachmentId: attachment.id,
+            fileName: attachment.name,
+            mimeType: attachment.mimeType,
+          },
+        });
       } catch (error) {
         toastManager.add({
           type: "error",

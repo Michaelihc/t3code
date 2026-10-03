@@ -17,7 +17,8 @@ vi.mock("./ui/toast", () => ({
   stackedThreadToast: (value: unknown) => value,
 }));
 import { downloadProgressLabel, observeDesktopDownloads } from "./DesktopDownloadNotifications";
-import { registerDesktopDownloadRetry } from "../lib/desktopDownloadRetry";
+const retry = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+vi.mock("../lib/desktopDownloadRetry", () => ({ retryDesktopDownload: retry }));
 
 const state: DesktopFileDownloadState = {
   id: "transfer",
@@ -27,25 +28,29 @@ const state: DesktopFileDownloadState = {
   totalBytes: 4096,
   message: null,
 };
-afterEach(() => vi.clearAllMocks());
+afterEach(() => {
+  vi.clearAllMocks();
+  retry.mockReset().mockResolvedValue(undefined);
+});
 
 describe("desktop download notifications", () => {
   it("restores a missed terminal snapshot and retains Retry after a renderer reload", async () => {
-    const retry = vi.fn().mockResolvedValue(undefined);
     const acknowledge = vi.fn().mockResolvedValue(undefined);
     const bridge = {
       onFileDownload: () => () => {},
       getFileDownloads: async () => [{ ...state, id: "reloaded", status: "failed" as const }],
-      retryFileDownload: retry,
+      getFileDownloadRetryInput: vi.fn(),
       acknowledgeFileDownload: acknowledge,
     } as unknown as DesktopBridge;
     const dispose = observeDesktopDownloads(bridge);
     await Promise.resolve();
     const payload = manager.add.mock.calls[0]![0];
     expect(payload.title).toBe("Download failed: report.pdf");
-    expect(acknowledge).toHaveBeenCalledWith("reloaded");
+    expect(acknowledge).not.toHaveBeenCalled();
     payload.actionProps.onClick();
-    expect(retry).toHaveBeenCalledWith("reloaded");
+    expect(retry).toHaveBeenCalledWith(bridge, "reloaded");
+    await Promise.resolve();
+    expect(acknowledge).toHaveBeenCalledWith("reloaded");
     dispose();
   });
   it("shows bytes for unknown lengths without inventing a percentage", () => {
@@ -91,8 +96,6 @@ describe("desktop download notifications", () => {
   it("offers cancellation while active and retry only after failure", async () => {
     let receive!: (value: DesktopFileDownloadState) => void;
     const cancel = vi.fn().mockResolvedValue(undefined);
-    const retry = vi.fn().mockResolvedValue(undefined);
-    registerDesktopDownloadRetry(state.id, retry);
     const bridge = {
       onFileDownload: (callback: typeof receive) => {
         receive = callback;
@@ -100,6 +103,7 @@ describe("desktop download notifications", () => {
       },
       getFileDownloads: async () => [],
       cancelFileDownload: cancel,
+      getFileDownloadRetryInput: vi.fn(),
     } as unknown as DesktopBridge;
     const dispose = observeDesktopDownloads(bridge);
     receive(state);
@@ -112,6 +116,26 @@ describe("desktop download notifications", () => {
     expect(payload.data.additionalActions).toEqual([]);
     payload.actionProps.onClick();
     expect(retry).toHaveBeenCalledOnce();
+    dispose();
+  });
+  it("keeps the persistent Retry action when restarting fails, then closes it on success", async () => {
+    const bridge = {
+      onFileDownload: () => () => {},
+      getFileDownloads: async () => [{ ...state, status: "failed" as const }],
+      getFileDownloadRetryInput: vi.fn(),
+      acknowledgeFileDownload: vi.fn().mockResolvedValue(undefined),
+    } as unknown as DesktopBridge;
+    retry.mockRejectedValueOnce(new Error("Disconnected"));
+    const dispose = observeDesktopDownloads(bridge);
+    await Promise.resolve();
+    const payload = manager.add.mock.calls[0]![0];
+    payload.actionProps.onClick();
+    await vi.waitFor(() => expect(manager.add).toHaveBeenCalledTimes(2));
+    expect(manager.close).not.toHaveBeenCalled();
+    expect(bridge.acknowledgeFileDownload).not.toHaveBeenCalled();
+    payload.actionProps.onClick();
+    await vi.waitFor(() => expect(manager.close).toHaveBeenCalledWith("toast-1"));
+    expect(bridge.acknowledgeFileDownload).toHaveBeenCalledWith(state.id);
     dispose();
   });
 });
