@@ -131,9 +131,7 @@ export const layer = Layer.effect(
         if (entries.has(input.id)) throw new Error("This download already exists.");
         if (
           [...entries.values()].filter(
-            (entry) =>
-              entry.state.status !== "failed" &&
-              (entry.item === null || entry.state.status === "progressing"),
+            (entry) => entry.state.status === "preparing" || entry.state.status === "progressing",
           ).length >= 20
         ) {
           throw new Error("Wait for a download to finish before starting another.");

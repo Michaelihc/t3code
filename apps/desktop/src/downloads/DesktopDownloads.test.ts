@@ -42,8 +42,9 @@ class Item extends NodeEvents.EventEmitter {
   }
 }
 
-function fixture(failFirstStart = false) {
+function fixture(failFirstStart = false, deferDownload = false) {
   const session = new NodeEvents.EventEmitter();
+  session.setMaxListeners(0);
   const items: Item[] = [];
   const owner = Object.assign(new NodeEvents.EventEmitter(), {
     id: 7,
@@ -57,7 +58,7 @@ function fixture(failFirstStart = false) {
       }
       const item = new Item(url);
       items.push(item);
-      session.emit("will-download", undefined, item, owner);
+      if (!deferDownload) session.emit("will-download", undefined, item, owner);
     },
   });
   const window = {
@@ -86,10 +87,41 @@ function fixture(failFirstStart = false) {
       ),
     ),
   );
-  return { layer, items };
+  return {
+    layer,
+    items,
+    receive: (item: Item) => session.emit("will-download", undefined, item, owner),
+  };
 }
 
 describe("retained native downloads", () => {
+  it.effect(
+    "cancelled preparations release active slots and still cancel late native items",
+    () => {
+      const { layer, items, receive } = fixture(false, true);
+      return Effect.gen(function* () {
+        const downloads = yield* DesktopDownloads.DesktopDownloads;
+        for (let index = 0; index < 20; index++) {
+          yield* downloads.start(
+            { id: `cancelled-${index}`, url: `https://files.example/${index}`, name: "report.bin" },
+            7,
+          );
+          yield* downloads.cancel(`cancelled-${index}`, 7);
+        }
+        yield* downloads.start(
+          { id: "active", url: "https://files.example/new", name: "new.bin" },
+          7,
+        );
+        const cancel = vi.spyOn(items[0]!, "cancel");
+        receive(items[0]!);
+        expect(cancel).toHaveBeenCalledOnce();
+        receive(items[20]!);
+        expect(yield* downloads.list(7)).toContainEqual(
+          expect.objectContaining({ id: "active", status: "progressing" }),
+        );
+      }).pipe(Effect.provide(layer));
+    },
+  );
   it.effect("keeps retry metadata when native startup throws", () => {
     const { layer, items } = fixture(true);
     return Effect.gen(function* () {
