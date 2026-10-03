@@ -3573,13 +3573,14 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       try {
-        const url = await resolveFileAttachmentUrl({
-          attachment,
-          environmentId,
-          httpBaseUrl: connection.httpBaseUrl,
-          createAssetUrl: createAttachmentAssetUrl,
-        });
-        await downloadUrl(url, attachment.name);
+        const resolveDownloadUrl = () =>
+          resolveFileAttachmentUrl({
+            attachment,
+            environmentId,
+            httpBaseUrl: connection.httpBaseUrl,
+            createAssetUrl: createAttachmentAssetUrl,
+          });
+        await downloadUrl(await resolveDownloadUrl(), attachment.name, resolveDownloadUrl);
       } catch (error) {
         toastManager.add({
           type: "error",

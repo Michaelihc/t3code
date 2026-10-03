@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 
 import { downloadBlob, downloadUrl } from "./download";
+import { getDesktopDownloadRetry } from "./desktopDownloadRetry";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -9,6 +10,51 @@ afterEach(() => {
 });
 
 describe("browser downloads", () => {
+  it("renews signed attachment URLs when retrying a native download", async () => {
+    const startFileDownload = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal("window", {
+      location: { href: "t3://app/" },
+      desktopBridge: { startFileDownload },
+    });
+    const resolveSource = vi
+      .fn()
+      .mockResolvedValue("https://remote.example/api/assets/report?signature=new");
+    await downloadUrl(
+      "https://remote.example/api/assets/report?signature=old",
+      "Report.pdf",
+      resolveSource,
+    );
+    const id = startFileDownload.mock.calls[0]![0].id;
+    await getDesktopDownloadRetry(id)!();
+    expect(resolveSource).toHaveBeenCalledOnce();
+    expect(startFileDownload).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        url: "https://remote.example/api/assets/report?signature=new&download=1&downloadName=Report.pdf",
+      }),
+    );
+    expect(startFileDownload.mock.calls[1]![0].id).not.toBe(id);
+  });
+  it("uses the native desktop downloader for signed remote assets", async () => {
+    const startFileDownload = vi.fn().mockResolvedValue(undefined);
+    const openExternal = vi.fn();
+    const fetch = vi.fn();
+    vi.stubGlobal("window", {
+      location: { href: "t3://app/" },
+      desktopBridge: { startFileDownload, openExternal },
+    });
+    vi.stubGlobal("fetch", fetch);
+    await downloadUrl(
+      "https://remote.example/api/assets/signed/report.pdf?signature=abc",
+      "Report.pdf",
+    );
+    expect(startFileDownload).toHaveBeenCalledWith({
+      id: expect.any(String),
+      name: "Report.pdf",
+      url: "https://remote.example/api/assets/signed/report.pdf?signature=abc&download=1&downloadName=Report.pdf",
+    });
+    expect(openExternal).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
   it("hands a remote signed asset directly to the desktop browser without fetching bytes", async () => {
     const openExternal = vi.fn().mockResolvedValue(true);
     const fetch = vi.fn();

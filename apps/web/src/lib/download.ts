@@ -1,5 +1,12 @@
-/** Hands transfers to the browser instead of buffering the file in the renderer. */
-export async function downloadUrl(src: string, name: string): Promise<void> {
+import { registerDesktopDownloadRetry } from "./desktopDownloadRetry";
+import { randomUUID } from "./utils";
+
+/** Native transfers avoid buffering large files in the renderer. */
+export async function downloadUrl(
+  src: string,
+  name: string,
+  resolveSource?: () => Promise<string>,
+): Promise<void> {
   const url = new URL(src, window.location.href);
   const isWeb = url.protocol === "http:" || url.protocol === "https:";
   if (!isWeb && url.protocol !== "blob:" && url.protocol !== "data:") {
@@ -12,6 +19,14 @@ export async function downloadUrl(src: string, name: string): Promise<void> {
     url.searchParams.set("downloadName", name);
   }
   if (isWeb && window.desktopBridge) {
+    if (window.desktopBridge.startFileDownload) {
+      const id = randomUUID();
+      registerDesktopDownloadRetry(id, async () =>
+        downloadUrl(resolveSource ? await resolveSource() : src, name, resolveSource),
+      );
+      await window.desktopBridge.startFileDownload({ id, url: url.href, name });
+      return;
+    }
     if (!(await window.desktopBridge.openExternal(url.href))) {
       throw new Error("Could not open the download in your browser.");
     }

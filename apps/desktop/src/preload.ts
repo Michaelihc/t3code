@@ -187,6 +187,16 @@ contextBridge.exposeInMainWorld("desktopBridge", {
   cancelProviderAuthCallback: (url: string) =>
     ipcRenderer.invoke(IpcChannels.CANCEL_PROVIDER_AUTH_CALLBACK_CHANNEL, url),
   openExternal: (url: string) => ipcRenderer.invoke(IpcChannels.OPEN_EXTERNAL_CHANNEL, url),
+  startFileDownload: (input) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_START_CHANNEL, input),
+  cancelFileDownload: (id) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_CANCEL_CHANNEL, id),
+  openDownloadedFile: (input) => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_OPEN_CHANNEL, input),
+  getFileDownloads: () => ipcRenderer.invoke(IpcChannels.FILE_DOWNLOAD_LIST_CHANNEL),
+  onFileDownload: (listener) => {
+    const wrapped = (_event: Electron.IpcRendererEvent, state: Parameters<typeof listener>[0]) =>
+      listener(state);
+    ipcRenderer.on(IpcChannels.FILE_DOWNLOAD_EVENT_CHANNEL, wrapped);
+    return () => ipcRenderer.removeListener(IpcChannels.FILE_DOWNLOAD_EVENT_CHANNEL, wrapped);
+  },
   checkSystemPermission: (pane: string) =>
     ipcRenderer.invoke(IpcChannels.CHECK_SYSTEM_PERMISSION_CHANNEL, pane),
   openSystemSettings: (pane: string) =>

@@ -201,9 +201,12 @@ export function AttachmentFilePreview(props: {
         if (props.file) {
           await downloadBlob(props.file, props.name);
         } else {
-          const target = await prepareDownload();
-          if (!target) throw new Error("Reconnect to the environment and try again.");
-          await downloadUrl(target, props.name);
+          const resolveDownloadUrl = async () => {
+            const target = await prepareDownload();
+            if (!target) throw new Error("Reconnect to the environment and try again.");
+            return target;
+          };
+          await downloadUrl(await resolveDownloadUrl(), props.name, resolveDownloadUrl);
         }
       } catch (cause) {
         toastManager.add({

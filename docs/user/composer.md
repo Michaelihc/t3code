@@ -32,9 +32,10 @@ also send files to T3 Code through another app's system share sheet.
 
 See [images and videos](#images-and-videos-in-messages) for previewing and saving media.
 
-On web and desktop, downloads from an environment go through your browser so you
-can track progress in its downloads list. Desktop opens your default browser.
-External media hosts may open a preview first; use the browser's save action in
+On desktop, downloads from an environment show progress in the app. You can cancel
+a transfer, retry a failed download, or open the saved file when it finishes.
+On web, track progress in your browser's downloads list.
+On web, external media hosts may open a preview first; use the browser's save action in
 that case. Unsent local drafts and generated exports save directly from the app.
 
 ## Send while the agent is working
