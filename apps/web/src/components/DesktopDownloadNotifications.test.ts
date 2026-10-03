@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 type Payload = {
   title: string;
   description: unknown;
+  onClose: () => void;
   actionProps: { children: string; onClick: () => void };
   data: { additionalActions: { props: { onClick: () => void } }[] };
 };
@@ -12,9 +13,9 @@ const manager = vi.hoisted(() => ({
   update: vi.fn((_id: string, _payload: Payload) => {}),
   close: vi.fn(),
 }));
-vi.mock("./ui/toast", () => ({
+vi.mock("./ui/toast", async () => ({
   toastManager: manager,
-  stackedThreadToast: (value: unknown) => value,
+  stackedThreadToast: (await import("./ui/toastHelpers")).stackedThreadToast,
 }));
 import { downloadProgressLabel, observeDesktopDownloads } from "./DesktopDownloadNotifications";
 const retry = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
@@ -34,6 +35,35 @@ afterEach(() => {
 });
 
 describe("desktop download notifications", () => {
+  it("respects dismissed progress and restores completion with saved-file actions", async () => {
+    let receive!: (value: DesktopFileDownloadState) => void;
+    const acknowledge = vi.fn().mockResolvedValue(undefined);
+    const open = vi.fn().mockResolvedValue(undefined);
+    const bridge = {
+      onFileDownload: (callback: typeof receive) => {
+        receive = callback;
+        return () => {};
+      },
+      getFileDownloads: async () => [],
+      acknowledgeFileDownload: acknowledge,
+      openDownloadedFile: open,
+    } as unknown as DesktopBridge;
+    const dispose = observeDesktopDownloads(bridge);
+    receive(state);
+    manager.add.mock.calls[0]![0].onClose();
+    receive({ ...state, receivedBytes: 2048 });
+    expect(manager.add).toHaveBeenCalledTimes(1);
+    expect(manager.update).not.toHaveBeenCalled();
+    expect(acknowledge).not.toHaveBeenCalled();
+    receive({ ...state, status: "completed" });
+    expect(manager.add).toHaveBeenCalledTimes(2);
+    const completion = manager.add.mock.calls[1]![0];
+    expect(completion.title).toBe("Downloaded report.pdf");
+    completion.actionProps.onClick();
+    expect(open).toHaveBeenCalledWith({ id: state.id, reveal: false });
+    expect(acknowledge).toHaveBeenCalledWith(state.id);
+    dispose();
+  });
   it("restores a missed terminal snapshot and retains Retry after a renderer reload", async () => {
     const acknowledge = vi.fn().mockResolvedValue(undefined);
     const bridge = {

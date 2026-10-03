@@ -42,6 +42,7 @@ function DownloadProgress({ state }: { state: DesktopFileDownloadState }) {
 export function observeDesktopDownloads(bridge: DesktopBridge) {
   if (!bridge.onFileDownload || !bridge.getFileDownloads) return () => {};
   const toastIds = new Map<string, ReturnType<typeof toastManager.add>>();
+  const dismissedProgress = new Set<string>();
   const observed = new Set<string>();
   let disposed = false;
   const action = (operation: () => Promise<void>) => {
@@ -52,6 +53,8 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
   const render = (state: DesktopFileDownloadState) => {
     if (disposed) return;
     const active = state.status === "preparing" || state.status === "progressing";
+    if (active && dismissedProgress.has(state.id)) return;
+    if (!active) dismissedProgress.delete(state.id);
     const retry = bridge.getFileDownloadRetryInput
       ? () => retryDesktopDownload(bridge, state.id)
       : undefined;
@@ -76,7 +79,8 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
                   action(async () => {
                     await retry();
                     if (disposed) return;
-                    toastManager.close(toastIds.get(state.id)!);
+                    const id = toastIds.get(state.id);
+                    if (id) toastManager.close(id);
                     await bridge.acknowledgeFileDownload?.(state.id);
                   });
                 },
@@ -100,6 +104,13 @@ export function observeDesktopDownloads(bridge: DesktopBridge) {
             : [],
       },
     });
+    payload.onClose = () => {
+      toastIds.delete(state.id);
+      if (disposed) return;
+      if (active) dismissedProgress.add(state.id);
+      else if (state.status === "failed")
+        void bridge.acknowledgeFileDownload?.(state.id).catch(() => {});
+    };
     const existing = toastIds.get(state.id);
     if (existing) toastManager.update(existing, payload);
     else toastIds.set(state.id, toastManager.add(payload));
