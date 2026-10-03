@@ -130,7 +130,7 @@ describe("native file downloads", () => {
       "C:/Downloads/report.zip",
     );
   });
-  it("offers Retry if native recovery is interrupted again", () => {
+  it("offers Retry if native recovery is interrupted again without receiving new bytes", () => {
     const { item, publish } = setup();
     item.resumable = true;
     item.emit("updated", undefined, "interrupted");
@@ -138,6 +138,26 @@ describe("native file downloads", () => {
     expect(item.resume).toHaveBeenCalledOnce();
     expect(publish).toHaveBeenLastCalledWith(expect.objectContaining({ status: "failed" }), null);
     expect(item.listenerCount("updated")).toBe(0);
+  });
+  it("can recover a later interruption after resumed bytes advance", () => {
+    const { item, publish } = setup();
+    item.received = 45;
+    item.resumable = true;
+    item.emit("updated", undefined, "interrupted");
+    item.received = 70;
+    item.emit("updated", undefined, "progressing");
+    item.emit("updated", undefined, "interrupted");
+    expect(item.resume).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "progressing", receivedBytes: 70 }),
+      null,
+    );
+    item.received = 100;
+    item.emit("done", undefined, "completed");
+    expect(publish).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: "completed" }),
+      "C:/Downloads/report.zip",
+    );
   });
   it("offers Retry if native resume throws", () => {
     const { item, publish } = setup();

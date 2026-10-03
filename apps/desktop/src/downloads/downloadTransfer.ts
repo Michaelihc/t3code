@@ -20,7 +20,7 @@ export function trackDownloadTransfer(input: {
   now: () => number;
 }) {
   let lastPublishedAt = -Infinity;
-  let attemptedResume = false;
+  let resumeAttemptBytes: number | null = null;
   const snapshot = (status: DesktopFileDownloadState["status"], message: string | null) => ({
     ...input.initial,
     status,
@@ -30,8 +30,8 @@ export function trackDownloadTransfer(input: {
   });
   const updated = (_event: unknown, nativeState: string) => {
     if (nativeState === "interrupted") {
-      if (!attemptedResume && input.item.canResume()) {
-        attemptedResume = true;
+      if (resumeAttemptBytes === null && input.item.canResume()) {
+        resumeAttemptBytes = input.item.getReceivedBytes();
         input.publish(snapshot("progressing", "Reconnecting download…"), null);
         try {
           input.item.resume();
@@ -47,6 +47,10 @@ export function trackDownloadTransfer(input: {
       );
       input.item.cancel();
       return;
+    }
+    // New bytes prove recovery; duplicate state updates cannot trigger a resume loop.
+    if (resumeAttemptBytes !== null && input.item.getReceivedBytes() > resumeAttemptBytes) {
+      resumeAttemptBytes = null;
     }
     const now = input.now();
     if (now - lastPublishedAt < 250) return;
