@@ -61,6 +61,7 @@ export const layer = Layer.effect(
     >();
     const claimed = new WeakSet<Electron.DownloadItem>();
     const ownerCleanups = new Map<Electron.WebContents, () => void>();
+    let nativeDownloadId = 0;
     const owned = (id: string, senderId: number) => {
       const entry = entries.get(id);
       if (!entry || entry.owner.id !== senderId) throw new Error("Download not found.");
@@ -106,21 +107,7 @@ export const layer = Layer.effect(
         entries.clear();
       }),
     );
-    const start = Effect.fn("desktop.downloads.start")(function* (
-      input: DesktopFileDownloadInput,
-      senderId: number,
-    ) {
-      const window = yield* windows.main;
-      if (
-        Option.isNone(window) ||
-        window.value.isDestroyed() ||
-        window.value.webContents.id !== senderId
-      ) {
-        return yield* new DesktopDownloadError({
-          message: "The application window is unavailable.",
-        });
-      }
-      const owner = window.value.webContents;
+    const observeOwner = (owner: Electron.WebContents) => {
       if (!ownerCleanups.has(owner)) {
         const receive = (
           _event: Electron.Event,
@@ -129,7 +116,7 @@ export const layer = Layer.effect(
         ) => {
           if (source?.id !== owner.id || claimed.has(item)) return;
           const url = item.getURLChain()[0];
-          const entry = [...entries.values()].find(
+          let entry = [...entries.values()].find(
             (value) =>
               value.owner === owner &&
               value.item === null &&
@@ -137,20 +124,58 @@ export const layer = Layer.effect(
               value.nativeUrl === url,
           );
           if (!entry) {
-            // A fragment identifies our late, pruned requests without claiming other downloads.
-            if (url?.includes("#t3code-native-download=")) item.cancel();
-            return;
+            // Late requests must not be adopted as new transfers after cancellation or pruning.
+            if (url?.includes("#t3code-native-download=")) {
+              item.cancel();
+              return;
+            }
+            if (!url || !URL.canParse(url)) return;
+            const target = new URL(url);
+            // Blob exports already have their bytes and cannot use the HTTP retry path.
+            if (
+              !["http:", "https:"].includes(target.protocol) ||
+              target.username ||
+              target.password
+            )
+              return;
+            let id: string;
+            do {
+              id = `native-${owner.id}-${++nativeDownloadId}`;
+            } while (entries.has(id));
+            const name = item.getFilename() || "download";
+            const state: DesktopFileDownloadState = {
+              id,
+              name,
+              status: "preparing",
+              receivedBytes: 0,
+              totalBytes: null,
+              message: null,
+            };
+            entry = {
+              owner,
+              state,
+              item: null,
+              savePath: null,
+              input: { id, url, name },
+              nativeUrl: url,
+              terminalPresented: false,
+              presentedAt: null,
+              cleanup: () => {},
+            };
+            entries.set(id, entry);
+          } else {
+            item.setSaveDialogOptions({ defaultPath: entry.state.name });
           }
           claimed.add(item);
           entry.item = item;
-          item.setSaveDialogOptions({ defaultPath: entry.state.name });
+          const transfer = entry;
           entry.cleanup = trackDownloadTransfer({
             item,
             initial: entry.state,
             now: () => performance.now(),
             publish: (next, savePath) => {
-              entry.savePath = savePath;
-              publish(entry, next);
+              transfer.savePath = savePath;
+              publish(transfer, next);
             },
           });
         };
@@ -171,6 +196,23 @@ export const layer = Layer.effect(
           owner.removeListener("destroyed", destroyed);
         });
       }
+    };
+    const start = Effect.fn("desktop.downloads.start")(function* (
+      input: DesktopFileDownloadInput,
+      senderId: number,
+    ) {
+      const window = yield* windows.main;
+      if (
+        Option.isNone(window) ||
+        window.value.isDestroyed() ||
+        window.value.webContents.id !== senderId
+      ) {
+        return yield* new DesktopDownloadError({
+          message: "The application window is unavailable.",
+        });
+      }
+      const owner = window.value.webContents;
+      yield* Effect.sync(() => observeOwner(owner));
       yield* attempt(() => {
         const url = new URL(input.url);
         url.hash = "";
@@ -268,13 +310,26 @@ export const layer = Layer.effect(
           if (error) return yield* new DesktopDownloadError({ message: error });
         }
       }),
-      list: (senderId) =>
-        Effect.sync(() =>
-          [...entries.values()]
-            // Recover terminal events missed during reload without replaying notifications already shown.
-            .filter((entry) => entry.owner.id === senderId && !entry.terminalPresented)
-            .map((entry) => entry.state),
-        ),
+      list: Effect.fn("desktop.downloads.list")(function* (senderId) {
+        const window = yield* windows.main;
+        if (
+          Option.isNone(window) ||
+          window.value.isDestroyed() ||
+          window.value.webContents.id !== senderId
+        )
+          return [];
+        return yield* Effect.sync(() => {
+          // The renderer subscribes before listing, so native video downloads are observed
+          // even when no managed download has been started in this window.
+          observeOwner(window.value.webContents);
+          return (
+            [...entries.values()]
+              // Recover terminal events missed during reload without replaying notifications already shown.
+              .filter((entry) => entry.owner.id === senderId && !entry.terminalPresented)
+              .map((entry) => entry.state)
+          );
+        });
+      }),
     });
   }),
 );
