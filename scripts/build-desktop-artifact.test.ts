@@ -184,6 +184,7 @@ const WINDOWS_PAYLOAD_FIXTURE_VERSION = "1.2.3";
 const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(function* (input: {
   readonly copyUnpackedNatives: boolean;
   readonly serverEntrySource?: string;
+  readonly nativeLoaderSource?: string;
   readonly wslRuntime?: "valid" | "loose-server-tree" | "missing-pty" | "bad-digest";
   readonly targetArch?: "x64" | "arm64";
   readonly ptyPrebuildArch?: "x64" | "arm64";
@@ -200,6 +201,11 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
   yield* fs.makeDirectory(path.dirname(nativePath), { recursive: true });
   yield* fs.writeFileString(serverEntryPath, input.serverEntrySource ?? "console.log('server');\n");
   yield* fs.writeFileString(nativePath, "MZ native-binary");
+  if (input.nativeLoaderSource !== undefined) {
+    const loaderPath = path.join(sourceDir, "node_modules/msgpackr-extract/index.js");
+    yield* fs.makeDirectory(path.dirname(loaderPath), { recursive: true });
+    yield* fs.writeFileString(loaderPath, input.nativeLoaderSource);
+  }
 
   const generatedAsarPath = path.join(tempDir, WINDOWS_SERVER_ASAR_RESOURCE);
   yield* packWindowsServerAsar({ sourceDir, asarPath: generatedAsarPath, arch: "x64" });
@@ -220,7 +226,7 @@ const makeWindowsPayloadFixture = Effect.fn("test.makeWindowsPayloadFixture")(fu
     "monitor",
   );
   const appExecutableName = "t3code.exe";
-  yield* fs.writeFileString(path.join(packagedAppDir, appExecutableName), "electron");
+  yield* fs.copyFile(process.execPath, path.join(packagedAppDir, appExecutableName));
   yield* fs.writeFileString(path.join(packagedAppDir, "chrome_crashpad_handler.exe"), "crashpad");
 
   if (input.wslRuntime !== undefined) {
@@ -1248,7 +1254,7 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
                 Effect.gen(function* () {
                   assert.equal(command._tag, "StandardCommand");
                   if (command._tag !== "StandardCommand") return mockProcess(1);
-                  assert.equal(command.command, "cargo");
+                  assert.match(path.basename(command.command), /^cargo(?:\.exe)?$/i);
                   assert.deepEqual(command.args, [
                     "build",
                     "--locked",
@@ -1276,7 +1282,9 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
               `${backend}-capture/t3-${backend}-snap-shot`,
             );
             assert.equal(yield* fs.readFileString(installed), `helper-${arch}`);
-            assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            if ((yield* HostProcess.Platform) !== "win32") {
+              assert.equal((yield* fs.stat(installed)).mode & 0o777, 0o755);
+            }
             if (backend === "hyprland")
               assert.equal(
                 yield* fs.readFileString(
@@ -1804,6 +1812,27 @@ it.layer(NodeServices.layer)("build-desktop-artifact", (it) => {
         assert.isAbove(error.fileCount ?? 0, 2);
       }),
     ),
+  );
+
+  it.effect(
+    "rejects a sidecar native loader failure even when the server can print its version",
+    () =>
+      Effect.scoped(
+        Effect.gen(function* () {
+          const fixture = yield* makeWindowsPayloadFixture({
+            copyUnpackedNatives: true,
+            nativeLoaderSource: 'throw new Error("wrong-native-architecture");\n',
+          });
+          const error = yield* validateWindowsPackagedPayload({
+            stageDistDir: fixture.stageDistDir,
+            appExecutableName: fixture.appExecutableName,
+            targetArch: "x64",
+            appVersion: WINDOWS_PAYLOAD_FIXTURE_VERSION,
+          }).pipe(Effect.flip);
+          assert.instanceOf(error, BundleNotSelfContainedError);
+          assert.include(error.output, "wrong-native-architecture");
+        }),
+      ).pipe(Effect.provideService(HostProcess.Platform, "linux")),
   );
 
   it.effect("rejects a sidecar whose extracted server bundle cannot resolve", () =>

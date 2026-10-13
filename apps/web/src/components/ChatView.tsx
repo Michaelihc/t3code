@@ -312,6 +312,7 @@ import {
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
+import { downloadUrl } from "~/lib/download";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import {
@@ -2931,6 +2932,11 @@ export default function ChatView(props: ChatViewProps) {
   );
 
   useEffect(() => {
+    lastDispatchedVisitRef.current = null;
+    lastVisitDispatchAtRef.current = 0;
+  }, [routeThreadKey]);
+
+  useEffect(() => {
     if (!serverThread?.id) return;
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
@@ -2939,7 +2945,14 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadLocalLastVisitedAt,
     );
     const lastVisitedAt = effectiveLastVisitedAt ? Date.parse(effectiveLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) return;
+    const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) {
+      // Opening an already-read thread also counts as seeing this watermark.
+      // A subsequent mark-unread must survive until we leave and reopen it.
+      lastDispatchedVisitRef.current = dispatchKey;
+      return;
+    }
+    if (lastDispatchedVisitRef.current === dispatchKey) return;
 
     if (serverThread.lastVisitedAt !== undefined) {
       // Server-tracked visited state: record the watermark server-side so it
@@ -2948,8 +2961,6 @@ export default function ChatView(props: ChatViewProps) {
       // dedupe also keeps a mark-unread on the open thread sticky: the rewind
       // leaves updatedAt untouched, so the already-dispatched key skips a
       // fresh visit until new activity lands or the thread is reopened.
-      const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
-      if (lastDispatchedVisitRef.current === dispatchKey) return;
       const dispatch = () => {
         lastDispatchedVisitRef.current = dispatchKey;
         lastVisitDispatchAtRef.current = Date.now();
@@ -2978,6 +2989,7 @@ export default function ChatView(props: ChatViewProps) {
       return () => clearTimeout(timer);
     }
 
+    lastDispatchedVisitRef.current = dispatchKey;
     markThreadVisited(
       scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
       serverThread.updatedAt,
@@ -3743,16 +3755,22 @@ export default function ChatView(props: ChatViewProps) {
       }
 
       try {
-        const url = await resolveFileAttachmentUrl({
-          attachment,
+        const resolveDownloadUrl = () =>
+          resolveFileAttachmentUrl({
+            attachment,
+            environmentId,
+            httpBaseUrl: connection.httpBaseUrl,
+            createAssetUrl: createAttachmentAssetUrl,
+          });
+        await downloadUrl(await resolveDownloadUrl(), attachment.name, {
           environmentId,
-          httpBaseUrl: connection.httpBaseUrl,
-          createAssetUrl: createAttachmentAssetUrl,
+          resource: {
+            _tag: "attachment",
+            attachmentId: attachment.id,
+            fileName: attachment.name,
+            mimeType: attachment.mimeType,
+          },
         });
-        const anchor = document.createElement("a");
-        anchor.href = url;
-        anchor.download = attachment.name;
-        anchor.click();
       } catch (error) {
         toastManager.add({
           type: "error",

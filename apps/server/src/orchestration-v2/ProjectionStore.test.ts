@@ -628,6 +628,14 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         outputTokens: 2_000,
         updatedAt: "2026-08-29T12:00:01.000Z",
       } as const;
+      const turnTokenUsage = {
+        usageScope: "main_agent",
+        usageStatus: "complete",
+        hasSubagents: false,
+        inputTokens: 90000,
+        outputTokens: 3000,
+      } as const;
+      const turnCost = { amountUsd: 0.25, source: "modelPriced" } as const;
 
       yield* projectionStore.apply({
         id: EventId.make("event:provider-usage-reload:thread"),
@@ -686,12 +694,31 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
         nodeId,
         driver,
         occurredAt: now,
-        payload: { ...providerTurn, status: "completed", completedAt: now },
+        payload: {
+          ...providerTurn,
+          status: "completed",
+          completedAt: now,
+          turnTokenUsage,
+          turnCost,
+          subagentCount: 1,
+          subagentCosts: [
+            {
+              turnId: providerTurn.id,
+              providerThreadId: providerTurn.providerThreadId,
+              model: "child",
+              amountUsd: 0.1,
+              estimated: true,
+              complete: true,
+            },
+          ],
+        },
       });
 
       const reloaded = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(reloaded.providerTurns[0]?.tokenUsage, initialUsage);
       assert.strictEqual(reloaded.providerTurns[0]?.status, "completed");
+      assert.deepEqual(reloaded.providerTurns[0]?.turnTokenUsage, turnTokenUsage);
+      assert.deepEqual(reloaded.providerTurns[0]?.turnCost, turnCost);
 
       yield* projectionStore.apply({
         id: EventId.make("event:provider-usage-reload:replacement"),
@@ -710,6 +737,10 @@ it.layer(layerTest)("ProjectionStoreV2", (it) => {
 
       const replaced = yield* projectionStore.getThreadProjection(threadId);
       assert.deepEqual(replaced.providerTurns[0]?.tokenUsage, replacementUsage);
+      assert.deepEqual(replaced.providerTurns[0]?.turnTokenUsage, turnTokenUsage);
+      assert.deepEqual(replaced.providerTurns[0]?.turnCost, turnCost);
+      assert.strictEqual(replaced.providerTurns[0]?.subagentCount, 1);
+      assert.strictEqual(replaced.providerTurns[0]?.subagentCosts?.[0]?.amountUsd, 0.1);
     }),
   );
 

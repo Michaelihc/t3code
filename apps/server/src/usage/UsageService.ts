@@ -29,6 +29,7 @@ import {
   type UsagePricing,
   type UsageSummary,
   type UsageSummaryInput,
+  type TurnTokenUsage,
   UsageReadError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -60,7 +61,13 @@ import type {
   UsageRecord,
 } from "@t3tools/provider-core/server/usage";
 import { resolveModelAliases, UsageAggregator } from "./usageAggregation.ts";
-import { createOverrideRateTable, parseRateTable, type RateTable } from "./usagePricing.ts";
+import {
+  createOverrideRateTable,
+  parseRateTable,
+  priceTurnUsage,
+  type PricedUsage,
+  type RateTable,
+} from "./usagePricing.ts";
 import {
   listTranscriptFiles,
   readDirectoryVolumeId,
@@ -191,6 +198,7 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
+    readonly priceTurn: (model: string, usage: TurnTokenUsage) => Effect.Effect<PricedUsage | null>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -218,6 +226,7 @@ const layerTest = Layer.succeed(
         scanDurationMs: 0,
       }),
     refreshRates: Effect.succeed(EMPTY_PRICING),
+    priceTurn: () => Effect.succeed(null),
   }),
 );
 
@@ -928,9 +937,25 @@ export const make = Effect.gen(function* () {
     return yield* Deferred.await(deferred);
   });
 
+  const priceTurn = Effect.fn("UsageService.priceTurn")(function* (
+    model: string,
+    usage: TurnTokenUsage,
+  ) {
+    if (usage.usageStatus !== "complete") return null;
+    // A rate-table network request must never delay completion of an agent turn.
+    yield* ensureRates(false).pipe(Effect.forkDetach);
+    const settings = yield* readSettings.pipe(Effect.catchCause(() => Effect.succeed(null)));
+    if (settings === null) return null;
+    return priceTurnUsage(
+      rates,
+      model,
+      usage,
+      createOverrideRateTable(settings.usagePriceOverrides),
+    );
+  });
   // `awaitPersisted` is outside the service interface: tests use it to restart
   // against what a previous instance wrote.
-  return { readSummary, refreshRates, awaitPersisted } as const;
+  return { readSummary, refreshRates, priceTurn, awaitPersisted } as const;
 });
 
 export const layer = Layer.effect(UsageService, make);

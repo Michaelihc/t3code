@@ -1089,6 +1089,28 @@ export const OrchestrationV2ProviderTurn = Schema.Struct({
   completedAt: Schema.NullOr(Schema.DateTimeUtc),
   tokenUsage: Schema.optional(OrchestrationV2ProviderTurnTokenUsage),
   turnTokenUsage: Schema.optional(TurnTokenUsage),
+  costModel: Schema.optional(Schema.String),
+  // The delegating turn, captured before a reusable agent can be reassigned.
+  costParent: Schema.optional(Schema.Struct({ threadId: ThreadId, turnId: ProviderTurnId })),
+  subagentCount: Schema.optional(NonNegativeInt),
+  subagentCosts: Schema.optional(
+    Schema.Array(
+      Schema.Struct({
+        turnId: ProviderTurnId,
+        providerThreadId: ProviderThreadId,
+        model: Schema.String,
+        amountUsd: Schema.NullOr(Schema.Number),
+        estimated: Schema.Boolean,
+        complete: Schema.Boolean,
+      }),
+    ),
+  ),
+  turnCost: Schema.optional(
+    Schema.Struct({
+      amountUsd: Schema.Number,
+      source: Schema.Literals(["providerReported", "modelPriced"]),
+    }),
+  ),
 });
 export type OrchestrationV2ProviderTurn = typeof OrchestrationV2ProviderTurn.Type;
 

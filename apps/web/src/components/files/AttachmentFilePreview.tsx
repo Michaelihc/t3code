@@ -15,6 +15,7 @@ import { toastManager } from "~/components/ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
+import { downloadBlob, downloadUrl } from "~/lib/download";
 
 import { AudioPreview } from "./AudioPreview";
 import { BrowserDocumentFrame } from "./BrowserDocumentFrame";
@@ -191,24 +192,21 @@ export function AttachmentFilePreview(props: {
     setSaving(true);
     void (async () => {
       try {
-        let file = props.file;
-        if (!file) {
-          const target = await prepareDownload();
-          if (!target) throw new Error("Reconnect to the environment and try again.");
-          const response = await fetch(target);
-          if (!response.ok) throw new Error("The file could not be loaded. Try again.");
-          file = await response.blob();
-        }
-        // A Blob keeps cross-origin downloads inside the desktop client instead of
-        // navigating its custom app scheme to an external browser.
-        const downloadUrl = URL.createObjectURL(file);
-        try {
-          const anchor = document.createElement("a");
-          anchor.href = downloadUrl;
-          anchor.download = props.name;
-          anchor.click();
-        } finally {
-          setTimeout(() => URL.revokeObjectURL(downloadUrl), 30_000);
+        if (props.file) {
+          await downloadBlob(props.file, props.name);
+        } else {
+          const resolveDownloadUrl = async () => {
+            const target = await prepareDownload();
+            if (!target) throw new Error("Reconnect to the environment and try again.");
+            return target;
+          };
+          await downloadUrl(
+            await resolveDownloadUrl(),
+            props.name,
+            props.asset && downloadResource
+              ? { environmentId: props.asset.environmentId, resource: downloadResource }
+              : undefined,
+          );
         }
       } catch (cause) {
         toastManager.add({

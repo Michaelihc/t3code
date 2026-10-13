@@ -30,7 +30,7 @@ describe("AttachmentCreateUploadUrlInput", () => {
         type: "file",
         name: "report.pdf",
         mimeType: "application/pdf",
-        sizeBytes: PROVIDER_SEND_TURN_MAX_IMAGE_BYTES + 1,
+        sizeBytes: 512 * 1024 * 1024,
       }),
     ).toBe(true);
     expect(

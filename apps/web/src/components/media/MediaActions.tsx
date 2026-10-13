@@ -95,7 +95,7 @@ export function useMediaActions(source: MediaActionSource) {
     return url;
   }, [source, createAssetUrl, assertCanReadMedia]);
   const save = useCallback(async () => {
-    await downloadMedia(await actionUrl(), mediaFileName(source));
+    await downloadMedia(await actionUrl(), mediaFileName(source), source.asset);
   }, [actionUrl, source]);
   const copyImage = useCallback(async () => {
     assertCanReadMedia();

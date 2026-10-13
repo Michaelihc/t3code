@@ -7,17 +7,24 @@ import { useAtomCommand } from "../state/use-atom-command";
 import { useUiStateStore } from "../uiStateStore";
 
 // Module-level so each thread is considered once per page load. The visit
-// command is idempotent server-side (the server keeps max(stored, supplied)),
-// so repeats across page loads are harmless — this only avoids re-dispatching
-// within a session.
+// command keeps max(stored, supplied); only seed an unset server watermark so
+// refreshing another client cannot undo a deliberate mark-unread.
 const migratedThreadKeys = new Set<string>();
+
+export function localVisitToMigrate(
+  serverLastVisitedAt: string | null | undefined,
+  localLastVisitedAt: string | undefined,
+): string | undefined {
+  if (serverLastVisitedAt !== null || !localLastVisitedAt) return undefined;
+  return Number.isFinite(Date.parse(localLastVisitedAt)) ? localLastVisitedAt : undefined;
+}
 
 /**
  * One-way migration of the browser-local visited watermarks into servers with
  * visited tracking. Before tracking existed, "Done" lived in this browser's
  * localStorage; pushing those watermarks up seeds the server value so other
- * devices see the same read state. The server never rewinds a newer visit, so
- * this cannot clobber progress made elsewhere.
+ * devices see the same read state. An existing server watermark is authoritative,
+ * including a deliberate rewind from marking a thread unread.
  */
 export function useThreadVisitedMigration(): void {
   const threads = useThreadShells();
@@ -30,12 +37,11 @@ export function useThreadVisitedMigration(): void {
       const threadKey = scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id));
       if (migratedThreadKeys.has(threadKey)) continue;
       migratedThreadKeys.add(threadKey);
-      const local = useUiStateStore.getState().threadLastVisitedAtById[threadKey];
+      const local = localVisitToMigrate(
+        thread.lastVisitedAt,
+        useUiStateStore.getState().threadLastVisitedAtById[threadKey],
+      );
       if (!local) continue;
-      const localMs = Date.parse(local);
-      if (!Number.isFinite(localMs)) continue;
-      const serverMs = thread.lastVisitedAt === null ? null : Date.parse(thread.lastVisitedAt);
-      if (serverMs !== null && Number.isFinite(serverMs) && serverMs >= localMs) continue;
       void visitThreadMutation({
         environmentId: thread.environmentId,
         input: { threadId: thread.id, visitedAt: local },
