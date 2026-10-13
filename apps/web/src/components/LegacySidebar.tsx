@@ -1288,12 +1288,9 @@ const SidebarProjectItem = memo(function SidebarProjectItem(props: SidebarProjec
     useShallow((state) =>
       projectThreads.map(
         (thread) =>
-          resolveThreadLastVisitedAt(
-            thread.lastVisitedAt,
-            state.threadLastVisitedAtById[
-              scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
-            ],
-          ) ?? null,
+          state.threadLastVisitedAtById[
+            scopedThreadKey(scopeThreadRef(thread.environmentId, thread.id))
+          ] ?? null,
       ),
     ),
   );
