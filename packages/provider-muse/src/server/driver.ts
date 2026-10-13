@@ -22,6 +22,7 @@ import * as ProviderEventLoggers from "@t3tools/provider-core/server/ProviderEve
 import { makeManagedServerProvider } from "@t3tools/provider-core/server/managedProvider";
 import { enrichMuseSnapshot, latestMuseVersion, museMaintenance } from "./maintenance.ts";
 import { makeMuseEnvironment } from "./sdk.ts";
+import { readMuseAccountUsage } from "./accountUsage.ts";
 import {
   defaultProviderContinuationIdentity,
   type ProviderDriver,
@@ -126,7 +127,15 @@ export const MuseDriver: ProviderDriver<MuseSettings, MuseDriverEnv> = {
         initialSnapshot: (settings) =>
           makePendingMuseProvider(settings.provider).pipe(Effect.map(stampIdentity)),
         checkProvider: checkMuseProviderStatus(effectiveConfig, processEnvironment, cwd).pipe(
+          Effect.flatMap((current) =>
+            current.usageLimits?.windows.length === 0
+              ? readMuseAccountUsage(processEnvironment).pipe(
+                  Effect.map((usageLimits) => ({ ...current, usageLimits })),
+                )
+              : Effect.succeed(current),
+          ),
           Effect.map(stampIdentity),
+          Effect.provideService(HttpClient.HttpClient, httpClient),
           Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
           Effect.provideService(FileSystem.FileSystem, fileSystem),
           Effect.provideService(Path.Path, path),
