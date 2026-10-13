@@ -191,7 +191,7 @@ const makeHarness = Effect.fnUntraced(function* (
   policy = runtimePolicy,
   overrides: Pick<
     MuseAdapterV2Options,
-    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests"
+    "createHost" | "nativeEventLogger" | "modelCatalog" | "continuationRequests" | "onUsageLimits"
   > = {},
 ) {
   let hostCount = 0;
@@ -548,6 +548,116 @@ describe("MuseAdapterV2", () => {
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 
+  it.effect("publishes host-wide limits without a session id while the session is idle", () =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const updates =
+        yield* Queue.unbounded<Parameters<NonNullable<MuseAdapterV2Options["onUsageLimits"]>>[0]>();
+      const harness = yield* makeHarness(
+        fake,
+        INSTANCE_ID,
+        undefined,
+        undefined,
+        undefined,
+        runtimePolicy,
+        {
+          onUsageLimits: (update) => Queue.offer(updates, update).pipe(Effect.asVoid),
+        },
+      );
+      yield* fake.emit("usage/changed", {
+        sessionId: undefined,
+        observedAtMs: 1_800_000_000_000,
+        window: { usedPercent: 41, resetsAtMs: 1_800_001_000_000, windowDurationMins: 300 },
+        weekly: { usedPercent: 13, resetsAtMs: 1_800_010_000_000 },
+      });
+      const update = yield* Queue.take(updates);
+      assert.deepStrictEqual(
+        update.windows.map((window) => window.usedPercent),
+        [41, 13],
+      );
+      yield* fake.emit("usage/changed", { weekly: "invalid" });
+      const { nativeId } = yield* startConversation(harness, fake);
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      assert.strictEqual((yield* harness.takeEvent("turn.terminal")).status, "completed");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each(["completed", "cancelled", "failed", "malformed", "no-usage"] as const)(
+    "keeps streamed accounting truthful after %s",
+    (scenario) =>
+      Effect.gen(function* () {
+        const fake = yield* makeFakeMuse();
+        const harness = yield* makeHarness(fake);
+        const { nativeId } = yield* startConversation(harness, fake);
+        if (scenario !== "no-usage") {
+          for (const promptTokens of [100, 200])
+            yield* fake.emit("session/tokenUsage", {
+              turnId: nativeId,
+              promptTokens,
+              usage: {
+                inputTokens: 60,
+                outputTokens: 20,
+                cachedTokens: 40,
+                cacheReadTokens: 30,
+                cacheWriteTokens: 5,
+                reasoningTokens: 10,
+              },
+            });
+        }
+        if (scenario === "malformed")
+          yield* fake.emit("session/tokenUsage", { turnId: nativeId, usage: "invalid" });
+        yield* fake.emit("turn/completed", {
+          turnId: nativeId,
+          terminal: scenario === "cancelled" || scenario === "failed" ? scenario : "completed",
+        });
+        const event = yield* harness.takeEvent(
+          "provider_turn.updated",
+          (event) => event.providerTurn.completedAt !== null,
+        );
+        if (scenario === "no-usage") assert.isUndefined(event.providerTurn.turnTokenUsage);
+        else
+          assert.deepStrictEqual(event.providerTurn.turnTokenUsage, {
+            usageScope: "main_agent",
+            usageStatus: scenario === "completed" ? "complete" : "partial",
+            hasSubagents: false,
+            inputTokens: 300,
+            outputTokens: 40,
+            cachedInputTokens: 60,
+            cacheCreationTokens: 10,
+            reasoningTokens: 20,
+          });
+      }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
+  it.effect.each([
+    { models: ["effective-model", "effective-model"], expected: "effective-model" },
+    { models: ["effective-model", "other-model"], expected: "" },
+    { models: [null, "effective-model"], expected: "" },
+    { models: ["effective-model", null], expected: "" },
+    { models: [undefined, "effective-model"], expected: "" },
+  ])("prices only consistently identified billing legs: $models", ({ models, expected }) =>
+    Effect.gen(function* () {
+      const fake = yield* makeFakeMuse();
+      const harness = yield* makeHarness(fake);
+      const { nativeId } = yield* startConversation(harness, fake);
+      for (const modelId of models) {
+        yield* fake.emit("session/tokenUsage", {
+          turnId: nativeId,
+          modelId,
+          promptTokens: 100,
+          usage: { inputTokens: 100, outputTokens: 20, cachedTokens: 0, reasoningTokens: 0 },
+        });
+      }
+      yield* fake.emit("turn/completed", { turnId: nativeId, terminal: "completed" });
+      const event = yield* harness.takeEvent(
+        "provider_turn.updated",
+        (event) => event.providerTurn.completedAt !== null,
+      );
+      assert.strictEqual(event.providerTurn.costModel, expected);
+      assert.strictEqual(event.providerTurn.turnTokenUsage?.usageStatus, "complete");
+    }).pipe(Effect.scoped, Effect.provide(testLayer)),
+  );
+
   it.effect("moves a resumed session on another model back to the catalog default", () =>
     Effect.gen(function* () {
       const fake = yield* makeFakeMuse();
@@ -585,6 +695,8 @@ describe("MuseAdapterV2", () => {
         providerId: "meta",
       });
       yield* fake.takeCall("turn/start");
+      const started = yield* harness.takeEvent("provider_turn.updated");
+      assert.strictEqual(started.providerTurn.costModel, "");
     }).pipe(Effect.scoped, Effect.provide(testLayer)),
   );
 

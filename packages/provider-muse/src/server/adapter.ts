@@ -16,6 +16,7 @@ import {
   type NodeId,
   type OrchestrationV2TurnItem,
   type ProviderInstanceId,
+  type ProviderUsageLimitsUpdate,
   type PlanId,
   type OrchestrationV2PlanStep,
   type ProviderApprovalDecision,
@@ -88,6 +89,7 @@ import {
 } from "@t3tools/provider-core/server/subagentProjection";
 import { turnScopedSelectionTransition } from "@t3tools/provider-core/server/selectionTransition";
 import { museItemStatus, museToolPresentation } from "./itemPresentation.ts";
+import { decodeMuseUsageLimits } from "./usageLimits.ts";
 
 const MUSE_PROVIDER = ProviderDriverKind.make("muse");
 const isOpenSessionError = Schema.is(ProviderAdapter.ProviderAdapterOpenSessionError);
@@ -192,6 +194,9 @@ export interface MuseAdapterV2Options {
   readonly settings: MuseSettings;
   readonly environment: NodeJS.ProcessEnv;
   readonly modelCatalog?: Effect.Effect<ReadonlyArray<ServerProviderModel>>;
+  readonly onUsageLimits?: (
+    update: ProviderUsageLimitsUpdate & { readonly checkedAt: string },
+  ) => Effect.Effect<void>;
   readonly createHost?: typeof createMuseSdkHost;
   readonly requestTimeoutMs?: number;
   readonly nativeEventLogger?: ProviderEventLoggers.EventNdjsonLogger;
@@ -220,6 +225,7 @@ interface ActiveTurn {
   flushScheduled: boolean;
   interruptRequested: boolean;
   compact: boolean;
+  usageIncomplete?: boolean;
 }
 
 interface PendingRequest {
@@ -257,6 +263,7 @@ const nativeRef = (nativeId: string) => ({
 const recordSchema = Schema.Record(Schema.String, Schema.Unknown);
 // Notifications that only add detail. A malformed one is skipped instead of ending the session.
 const INFORMATIONAL_NOTIFICATIONS = new Set([
+  "usage/changed",
   "session/contextUsage",
   "session/tokenUsage",
   "session/todoListChanged",
@@ -1284,6 +1291,11 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
         }
       });
       const handleNotification = Effect.fnUntraced(function* (method: string, data: unknown) {
+        if (method === "usage/changed") {
+          const limits = yield* decodeMuseUsageLimits(data);
+          if (options.onUsageLimits) yield* options.onUsageLimits(limits);
+          return;
+        }
         const params = yield* decode(recordSchema, data);
         if (params.sessionId !== nativeSessionId) return;
         if (method === "view/gap")
@@ -1451,6 +1463,26 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                 },
               };
             }
+            const accumulated = turn.providerTurn.turnTokenUsage;
+            // Muse can omit the terminal summary. A successful, uninterrupted
+            // stream still supplies the totals; a skipped usage event does not.
+            if (
+              !result.usage &&
+              result.terminal === "completed" &&
+              !turn.usageIncomplete &&
+              accumulated?.inputTokens !== undefined &&
+              accumulated.outputTokens !== undefined
+            ) {
+              turn.providerTurn = {
+                ...turn.providerTurn,
+                turnTokenUsage: {
+                  ...accumulated,
+                  inputTokens: accumulated.inputTokens,
+                  outputTokens: accumulated.outputTokens,
+                  usageStatus: "complete",
+                },
+              };
+            }
             const status =
               result.terminal === "completed"
                 ? "completed"
@@ -1475,6 +1507,13 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             const contextUsage = thread?.contextUsage;
             turn.providerTurn = {
               ...turn.providerTurn,
+              // Empty means explicitly unpriced, so ingestion cannot fall back
+              // to the selected model for mixed or unidentified billing legs.
+              costModel:
+                !turn.usageIncomplete &&
+                (!previous || turn.providerTurn.costModel === usage.modelId)
+                  ? (usage.modelId ?? "")
+                  : "",
               ...(contextUsage
                 ? {
                     tokenUsage: {
@@ -1634,11 +1673,15 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
                     input.threadId,
                   );
                 yield* handleNotification(entry.method, entry.params).pipe(
-                  Effect.catch((cause) =>
-                    INFORMATIONAL_NOTIFICATIONS.has(entry.method)
+                  Effect.catch((cause) => {
+                    if (entry.method === "session/tokenUsage" && active) {
+                      active.usageIncomplete = true;
+                      active.providerTurn = { ...active.providerTurn, costModel: "" };
+                    }
+                    return INFORMATIONAL_NOTIFICATIONS.has(entry.method)
                       ? Effect.logWarning(`Skipped an unreadable Muse ${entry.method}`, cause)
-                      : failHost(cause),
-                  ),
+                      : failHost(cause);
+                  }),
                 );
               }
             }
@@ -1955,6 +1998,7 @@ export const makeMuseAdapterV2 = Effect.fn("makeMuseAdapterV2")(function* (
             ? { ...nativeRef(nativeId), strength: "weak" }
             : nativeRef(nativeId),
           ordinal: turnInput.providerTurnOrdinal,
+          costModel: "",
           status: "running",
           startedAt,
           completedAt: null,

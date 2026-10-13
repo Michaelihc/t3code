@@ -30,6 +30,7 @@ import {
   type UsageSummary,
   type UsageSummaryInput,
   type TurnTokenUsage,
+  type UsageModelPriceOverride,
   UsageReadError,
 } from "@t3tools/contracts";
 import * as HostProcess from "@t3tools/shared/HostProcess";
@@ -198,7 +199,11 @@ export class UsageService extends Context.Service<
     readonly readSummary: (input: UsageSummaryInput) => Effect.Effect<UsageSummary, UsageReadError>;
     /** Refetches the rate table ahead of its TTL. See `ensureRates`. */
     readonly refreshRates: Effect.Effect<UsagePricing>;
-    readonly priceTurn: (model: string, usage: TurnTokenUsage) => Effect.Effect<PricedUsage | null>;
+    readonly priceTurn: (
+      model: string,
+      usage: TurnTokenUsage,
+      catalogPrices?: UsageModelPriceOverride,
+    ) => Effect.Effect<PricedUsage | null>;
   }
 >()("t3/usage/UsageService") {}
 
@@ -940,6 +945,7 @@ export const make = Effect.gen(function* () {
   const priceTurn = Effect.fn("UsageService.priceTurn")(function* (
     model: string,
     usage: TurnTokenUsage,
+    catalogPrices?: UsageModelPriceOverride,
   ) {
     if (usage.usageStatus !== "complete") return null;
     // A rate-table network request must never delay completion of an agent turn.
@@ -950,7 +956,10 @@ export const make = Effect.gen(function* () {
       rates,
       model,
       usage,
-      createOverrideRateTable(settings.usagePriceOverrides),
+      createOverrideRateTable({
+        ...(catalogPrices ? { [model.trim()]: catalogPrices } : {}),
+        ...settings.usagePriceOverrides,
+      }),
     );
   });
   // `awaitPersisted` is outside the service interface: tests use it to restart

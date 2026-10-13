@@ -9,7 +9,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 
 import { createMuseSdkHost, makeMuseEnvironment } from "./sdk.ts";
 import { parseMuseVersion } from "./maintenance.ts";
-import { discoverMuseModels, museModelCapabilities } from "./modelCatalog.ts";
+import { discoverMuseMetadata, museModelCapabilities } from "./modelCatalog.ts";
 import {
   buildServerProvider,
   COMPACT_SLASH_COMMAND,
@@ -118,7 +118,7 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
     });
   }
 
-  const catalog = yield* discoverMuseModels(settings, museEnvironment, cwd, createHost).pipe(
+  const catalog = yield* discoverMuseMetadata(settings, museEnvironment, cwd, createHost).pipe(
     Effect.scoped,
     Effect.timeoutOption(12_000),
     Effect.result,
@@ -133,22 +133,25 @@ export const checkMuseProviderStatus = Effect.fn("checkMuseProviderStatus")(func
         "Muse Code SDK could not read the model catalog. Check your Muse installation and run `muse login` on this T3 server host.",
     });
   }
-  const models = catalog.success.value;
+  const { models, usageLimits } = catalog.success.value;
   // MSP has no auth signal, and model/list answers from Muse's cache even when logged out.
   // Auth failures surface on the first turn instead.
-  return snapshot(
-    {
-      installed: true,
-      version,
-      auth: { status: "unknown" },
-      ...(models.length > 0
-        ? { status: "ready" }
-        : {
-            status: "warning",
-            message:
-              "Muse Code returned no models. Run `muse login` on this T3 server host and refresh its status.",
-          }),
-    },
-    models,
-  );
+  return {
+    ...snapshot(
+      {
+        installed: true,
+        version,
+        auth: { status: "unknown" },
+        ...(models.length > 0
+          ? { status: "ready" }
+          : {
+              status: "warning",
+              message:
+                "Muse Code returned no models. Run `muse login` on this T3 server host and refresh its status.",
+            }),
+      },
+      models,
+    ),
+    usageLimits,
+  };
 });

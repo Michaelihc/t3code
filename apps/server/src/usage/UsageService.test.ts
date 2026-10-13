@@ -270,6 +270,53 @@ function cursorSource(summary: { readonly sources: readonly UsageSource[] }) {
 }
 
 describe("UsageService", () => {
+  it.live("prices Muse turns from catalog rates while honoring user overrides", () =>
+    Effect.gen(function* () {
+      const { home, settings } = yield* setup;
+      yield* Effect.gen(function* () {
+        const service = yield* UsageService.make;
+        const settingsService = yield* ServerSettings.ServerSettingsService;
+        const tokens = {
+          usageScope: "main_agent" as const,
+          usageStatus: "complete" as const,
+          hasSubagents: false,
+          inputTokens: 1_000_000,
+          cachedInputTokens: 800_000,
+          cacheCreationTokens: 50_000,
+          outputTokens: 100_000,
+          reasoningTokens: 50_000,
+        };
+        const catalog = {
+          inputCostPerMillionTokens: 2,
+          outputCostPerMillionTokens: 8,
+          cacheReadCostPerMillionTokens: 0.2,
+        };
+        assert.isNull(yield* service.priceTurn("muse-example", tokens));
+        const priced = yield* service.priceTurn("muse-example", tokens, catalog);
+        assert.closeTo(priced?.costUsd ?? -1, 1.36, 1e-12);
+        assert.strictEqual(priced?.costSource, "modelPriced");
+        assert.isNull(
+          yield* service.priceTurn("muse-example", { ...tokens, usageStatus: "partial" }, catalog),
+        );
+        yield* settingsService.updateSettings({
+          usagePriceOverrides: {
+            "muse-example": { inputCostPerMillionTokens: 1, outputCostPerMillionTokens: 1 },
+          },
+        });
+        assert.closeTo(
+          (yield* service.priceTurn("muse-example", tokens, catalog))?.costUsd ?? -1,
+          1.1,
+          1e-12,
+        );
+        yield* settingsService.updateSettings({ usagePriceOverrides: { "muse-example": null } });
+        assert.closeTo(
+          (yield* service.priceTurn("muse-example", tokens, catalog))?.costUsd ?? -1,
+          1.36,
+          1e-12,
+        );
+      }).pipe(Effect.provide(layerService({ prefix: "muse-catalog-prices", home, settings })));
+    }).pipe(Effect.scoped),
+  );
   it.live(
     "reads Pi per-model usage and auxiliary costs once across forks and repeated entries",
     () =>

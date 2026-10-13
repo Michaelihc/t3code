@@ -152,9 +152,10 @@ it.effect("records accepted billed turn usage once without billing the context w
       }),
   });
   const pricing = Layer.succeed(ProviderEventIngestor.ProviderTurnPricing, {
-    price: (turn, model) =>
+    price: (turn, model, instanceId) =>
       Effect.sync(() => {
         assert.strictEqual(model, modelSelection.model);
+        assert.strictEqual(instanceId, modelSelection.instanceId);
         assert.strictEqual(turn.turnTokenUsage?.inputTokens, 40);
         return { ...turn, turnCost: { amountUsd: 0.123, source: "modelPriced" as const } };
       }),

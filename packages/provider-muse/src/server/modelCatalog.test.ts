@@ -2,18 +2,22 @@ import { describe, expect, it } from "@effect/vitest";
 import { MuseSettings } from "../settings.ts";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
 
 import type { MuseSdkHost } from "./sdk.ts";
 import {
-  discoverMuseModels,
+  discoverMuseMetadata,
   museModelCapabilities,
   resolveMuseReasoningEffort,
 } from "./modelCatalog.ts";
 
 const settings = Schema.decodeSync(MuseSettings)({});
-const host = (catalog: Record<string, unknown>): MuseSdkHost => ({
+const host = (
+  catalog: Record<string, unknown>,
+  usage: Record<string, unknown> = {},
+): MuseSdkHost => ({
   connection: {
-    request: async () => catalog,
+    request: async (method) => (method === "usage/read" ? usage : catalog),
     command: async () => ({}),
     mintCommandId: () => "test",
     onNotification: () => {},
@@ -37,9 +41,78 @@ const row = (modelId: string, extra: Record<string, unknown> = {}) => ({
 });
 
 describe("Muse model catalog", () => {
+  it.effect(
+    "carries valid USD catalog prices without inventing prices for unknown currencies",
+    () =>
+      Effect.gen(function* () {
+        const cost = { input: "2.50", output: "10", cached: "0.25", currency: "USD" };
+        const { models, usageLimits } = yield* discoverMuseMetadata(
+          settings,
+          {},
+          undefined,
+          async () =>
+            host(
+              {
+                providerId: "meta",
+                models: [
+                  row("priced", { cost }),
+                  row("free", { cost: { ...cost, input: "0", output: "0", cached: "0" } }),
+                  row("unknown-currency", { cost: { ...cost, currency: null } }),
+                  row("foreign-currency", { cost: { ...cost, currency: "EUR" } }),
+                  row("invalid", { cost: { ...cost, input: "" } }),
+                  row("overflow", { cost: { ...cost, input: "9".repeat(400) } }),
+                ],
+              },
+              {
+                usage: {
+                  observedAtMs: 1_800_000_000_000,
+                  tier: "pro",
+                  window: {
+                    usedPercent: 41,
+                    resetsAtMs: 1_800_001_000_000,
+                    windowDurationMins: 300,
+                  },
+                  weekly: { usedPercent: 113, resetsAtMs: 1_800_010_000_000 },
+                },
+              },
+            ),
+        ).pipe(Effect.scoped);
+        expect(models[0]?.tokenPrices).toEqual({
+          inputCostPerMillionTokens: 2.5,
+          outputCostPerMillionTokens: 10,
+          cacheReadCostPerMillionTokens: 0.25,
+        });
+        expect(models[1]?.tokenPrices?.inputCostPerMillionTokens).toBe(0);
+        expect(models.slice(2).every((model) => model.tokenPrices === undefined)).toBe(true);
+        expect(usageLimits.checkedAt).toBe(
+          DateTime.formatIso(DateTime.makeUnsafe(1_800_000_000_000)),
+        );
+        expect(usageLimits.windows.map((window) => window.usedPercent)).toEqual([41, 100]);
+        expect(usageLimits.windows[0]?.windowDurationMins).toBe(300);
+      }),
+  );
+
+  it.effect("keeps models available when an older host rejects usage/read", () =>
+    Effect.gen(function* () {
+      const sdk = host({ providerId: "meta", models: [row("available")] });
+      const request = sdk.connection.request;
+      sdk.connection.request = async (method, params) => {
+        if (method === "usage/read") throw new Error("unsupported");
+        return request(method, params);
+      };
+      const result = yield* discoverMuseMetadata(settings, {}, undefined, async () => sdk).pipe(
+        Effect.scoped,
+      );
+      expect(result.models[0]?.slug).toBe("available");
+      expect(result.usageLimits).toMatchObject({
+        windows: [],
+        unavailable: { reason: "probeFailed" },
+      });
+    }),
+  );
   it.effect("uses the labels, efforts and defaults that model/list sends", () =>
     Effect.gen(function* () {
-      const models = yield* discoverMuseModels(settings, {}, undefined, async () =>
+      const { models } = yield* discoverMuseMetadata(settings, {}, undefined, async () =>
         host({
           providerId: "meta",
           profileId: "tbh",

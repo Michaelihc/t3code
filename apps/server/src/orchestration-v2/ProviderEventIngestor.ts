@@ -37,6 +37,7 @@ import * as IdAllocator from "@t3tools/provider-core/server/IdAllocator";
 import * as ProviderAdapter from "@t3tools/provider-core/server/ProviderAdapter";
 import { makeProviderFailureTurnItem } from "@t3tools/provider-core/server/failure";
 import * as UsageService from "../usage/UsageService.ts";
+import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
 import * as ThreadCommandExecutor from "./ThreadCommandExecutor.ts";
 import { stripUnservedToolOutputImageBytes } from "./toolOutputImageBytes.ts";
 
@@ -89,6 +90,7 @@ export class ProviderTurnPricing extends Context.Reference<{
   readonly price: (
     turn: OrchestrationV2ProviderTurn,
     model: string | undefined,
+    instanceId?: ProviderInstanceId,
   ) => Effect.Effect<OrchestrationV2ProviderTurn>;
 }>("t3/orchestration-v2/ProviderTurnPricing", {
   defaultValue: () => ({ price: (turn) => Effect.succeed(turn) }),
@@ -98,14 +100,19 @@ export const layerPricing = Layer.effect(
   ProviderTurnPricing,
   Effect.gen(function* () {
     const usage = yield* UsageService.UsageService;
+    const providers = yield* ProviderRegistry.ProviderRegistry;
     yield* usage.refreshRates.pipe(Effect.forkScoped);
     return {
       price: Effect.fn("ProviderTurnPricing.price")(function* (
         turn: OrchestrationV2ProviderTurn,
         model: string | undefined,
+        instanceId?: ProviderInstanceId,
       ) {
-        if (turn.turnCost || !turn.turnTokenUsage || !model) return turn;
-        const cost = yield* usage.priceTurn(model, turn.turnTokenUsage);
+        if (turn.turnCost || turn.turnTokenUsage?.usageStatus !== "complete" || !model) return turn;
+        const catalogPrices = (yield* providers.getProviders)
+          .find((provider) => provider.instanceId === instanceId)
+          ?.models.find((entry) => entry.slug === model)?.tokenPrices;
+        const cost = yield* usage.priceTurn(model, turn.turnTokenUsage, catalogPrices);
         return cost === null || cost.costSource === "unpriced"
           ? turn
           : {
@@ -680,7 +687,7 @@ export const layer: Layer.Layer<
               yield* makeDomainEvent(input, {
                 type: "provider-turn.updated",
                 ...(input.event.threadId === undefined ? {} : { threadId: input.event.threadId }),
-                payload: yield* pricing.price(turn, model),
+                payload: yield* pricing.price(turn, model, input.providerInstanceId),
                 nodeId: input.event.providerTurn.nodeId,
               }),
             ];
