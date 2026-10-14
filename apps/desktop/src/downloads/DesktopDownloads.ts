@@ -214,11 +214,14 @@ export const layer = Layer.effect(
       }
       const owner = window.value.webContents;
       yield* Effect.sync(() => observeOwner(owner));
-      const requestId = yield* crypto.randomUUIDv4.pipe(
-        Effect.mapError(
-          (cause) => new DesktopDownloadError({ message: "Could not start the download.", cause }),
-        ),
-      );
+      const requestId = yield* crypto
+        .randomUUIDv4()
+        .pipe(
+          Effect.mapError(
+            (cause) =>
+              new DesktopDownloadError({ message: "Could not start the download.", cause }),
+          ),
+        );
       yield* attempt(() => {
         const url = new URL(input.url);
         url.hash = "";
