@@ -138,6 +138,21 @@ export function assetResponseHeaders(
   };
 }
 
+/** A download changes presentation only, after the signed asset has been authorized. */
+export function assetDownloadResponse(
+  response: HttpServerResponse.HttpServerResponse,
+  fileName: string,
+): HttpServerResponse.HttpServerResponse {
+  if (response.status !== 200 && response.status !== 206) return response;
+  return HttpServerResponse.setHeaders(response, {
+    "Content-Disposition": downloadContentDisposition(fileName),
+    "Content-Type": "application/octet-stream",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+    "Cache-Control": "private, no-store",
+  });
+}
+
+/** A single byte range for native media readers; unsupported range syntax uses the full file. */
 function assetByteRange(header: string, size: bigint) {
   const match = /^bytes=(\d*)-(\d*)$/i.exec(header.trim());
   if (!match || (!match[1] && !match[2])) return null;
@@ -424,14 +439,37 @@ export const layerAssetRoute = HttpRouter.add(
     if (!asset) {
       return HttpServerResponse.text("Not Found", { status: 404 });
     }
+    const asDownload = (response: HttpServerResponse.HttpServerResponse) => {
+      if (url.value.searchParams.get("download") !== "1") return response;
+      // Image preview URLs can predate filename metadata. The save action can
+      // suggest a name without changing which bytes the signature authorizes.
+      const requestedName = url.value.searchParams.get("downloadName")?.trim();
+      const fileName =
+        requestedName && requestedName.length <= 255
+          ? requestedName
+          : asset.kind === "file"
+            ? (("fileName" in asset ? asset.fileName : undefined) ??
+              asset.path.split(/[\\/]/).at(-1) ??
+              "download")
+            : asset.kind === "github-media"
+              ? new URL(asset.url).pathname.split("/").at(-1) || "download"
+              : "download";
+      return assetDownloadResponse(response, fileName);
+    };
     if (asset.kind === "bytes") {
-      return HttpServerResponse.uint8Array(asset.bytes, {
-        contentType: asset.mimeType,
-        headers: { "cache-control": "private, max-age=3600", "x-content-type-options": "nosniff" },
-      });
+      return asDownload(
+        HttpServerResponse.uint8Array(asset.bytes, {
+          contentType: asset.mimeType,
+          headers: {
+            "cache-control": "private, max-age=3600",
+            "x-content-type-options": "nosniff",
+          },
+        }),
+      );
     }
     if (asset.kind === "github-media") {
       return yield* githubMediaResponse(asset, request.headers).pipe(
+        Effect.map(asDownload),
         Effect.tapError((cause) =>
           Effect.logWarning("Failed to fetch GitHub media.", { url: asset.url, cause }),
         ),
@@ -449,6 +487,7 @@ export const layerAssetRoute = HttpRouter.add(
       request.headers["if-range"],
       request.method === "HEAD" ? "HEAD" : "GET",
     ).pipe(
+      Effect.map(asDownload),
       Effect.orElseSucceed(() => HttpServerResponse.text("Internal Server Error", { status: 500 })),
     );
   }),

@@ -4,6 +4,7 @@ import { shouldPreserveAssistantLineBreaks } from "@t3tools/shared/markdownPipel
 import { MarkdownFindContext, useFindRevealRef } from "./markdownFindContext";
 import { useChatCanvas } from "./ChatCanvasContext";
 import { WorkLogBlock, WorkLogButton, WorkLogDetails, WorkLogList, WorkLogRow } from "./WorkLog";
+import { presentTurnUsage } from "@t3tools/client-runtime/state/item-support";
 import { PullRequestGlyph } from "../pullRequest/pullRequestIcons";
 import type { WorktreeSetupSnapshot } from "@t3tools/contracts";
 import { ReadOnlySourcePreview } from "../files/AttachmentFilePreview";
@@ -2693,13 +2694,40 @@ function AssistantMetaTimelineRow({
   );
 }
 
+function AssistantTurnUsage({
+  projectedItem,
+}: {
+  projectedItem: NonNullable<Extract<TimelineRow, { kind: "message" }>["projectedItem"]>;
+}) {
+  const ctx = use(TimelineRowCtx);
+  const support = useV2ItemSupport({
+    environmentId: ctx.activeThreadEnvironmentId,
+    sourceThreadId: projectedItem.sourceThreadId,
+    sourceItemId: projectedItem.sourceItemId,
+  });
+  const usage = presentTurnUsage(support.providerTurn);
+  if (!usage) return null;
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <span tabIndex={0} className="basis-full text-foreground/70 text-xs tabular-nums" />
+        }
+      >
+        {usage.label}
+      </TooltipTrigger>
+      <TooltipPopup className="max-w-sm">{usage.detail}</TooltipPopup>
+    </Tooltip>
+  );
+}
+
 function AssistantMessageMeta({
   className,
   projectedItem,
   message,
   showCopyButton,
   copyStreaming,
-  alwaysVisible = false,
+  alwaysVisible = true,
 }: {
   className?: string;
   projectedItem?: Extract<TimelineRow, { kind: "message" }>["projectedItem"];
@@ -2713,7 +2741,7 @@ function AssistantMessageMeta({
   return (
     <div
       className={cn(
-        "flex items-center gap-2 text-xs tabular-nums transition-opacity duration-200",
+        "flex flex-wrap items-center gap-x-2 gap-y-1 text-xs tabular-nums transition-opacity duration-200",
         alwaysVisible
           ? "opacity-100"
           : "opacity-0 pointer-coarse:opacity-100 focus-within:opacity-100 group-hover/assistant:opacity-100",
@@ -2743,6 +2771,9 @@ function AssistantMessageMeta({
           </TooltipPopup>
         </Tooltip>
       )}
+      {projectedItem && !message.streaming ? (
+        <AssistantTurnUsage projectedItem={projectedItem} />
+      ) : null}
     </div>
   );
 }

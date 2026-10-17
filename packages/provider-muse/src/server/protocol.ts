@@ -138,6 +138,7 @@ export type MuseUserInput = typeof MuseUserInput.Type;
 
 export const MuseTokenUsageEvent = Schema.Struct({
   turnId: NonEmptyString,
+  modelId: Schema.optional(Schema.NullOr(NonEmptyString)),
   promptTokens: Schema.Int.check(Schema.isGreaterThanOrEqualTo(0)),
   usage: MuseUsage,
 });

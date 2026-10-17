@@ -1,4 +1,5 @@
 import type { OrchestrationV2ThreadProjection, TurnItemId } from "@t3tools/contracts";
+import { summarizeTurnCost } from "@t3tools/shared/turnCost";
 
 type Projection = OrchestrationV2ThreadProjection;
 
@@ -15,6 +16,70 @@ export interface V2ItemSupport {
   readonly subagent: Projection["subagents"][number] | null;
   readonly contextHandoff: Projection["contextHandoffs"][number] | null;
   readonly contextTransfer: Projection["contextTransfers"][number] | null;
+}
+
+/** Display recorded turn usage separately from the provider's context snapshot. */
+export function presentTurnUsage(turn: Projection["providerTurns"][number] | null) {
+  if (!turn || turn.status === "running" || turn.status === "pending") return null;
+  const usage = turn.turnTokenUsage;
+  const tokens = (value: number) => value.toLocaleString("en-US");
+  const parts: string[] = [];
+  if (usage && usage.usageStatus !== "unavailable") {
+    if (usage.inputTokens !== undefined) parts.push(`${tokens(usage.inputTokens)} in`);
+    if (usage.outputTokens !== undefined) parts.push(`${tokens(usage.outputTokens)} out`);
+    if (usage.usageStatus === "partial") parts.push("partial");
+  }
+  const cost = turn.turnCost;
+  const total = summarizeTurnCost(turn);
+  if (total.amountUsd !== null && Number.isFinite(total.amountUsd) && total.amountUsd >= 0) {
+    parts.push(
+      `${total.estimated ? "≈" : ""}$${total.amountUsd.toFixed(4)}${total.hasSubagents ? (total.complete ? " incl. subagents" : " partial total") : ""}`,
+    );
+  } else if (parts.length > 0) {
+    parts.push("cost unavailable");
+  }
+  const context = turn.tokenUsage;
+  if (context) {
+    parts.push(
+      context.maxTokens != null && context.maxTokens > 0
+        ? `context ${tokens(context.usedTokens)}/${tokens(context.maxTokens)} (${Math.round((context.usedTokens / context.maxTokens) * 100)}%)`
+        : `context ${tokens(context.usedTokens)}`,
+    );
+  }
+  if (parts.length === 0) return null;
+  const details = [
+    "Main-agent tokens for this provider turn. Input includes cache reads and writes; output includes reasoning.",
+  ];
+  if (usage?.cachedInputTokens !== undefined)
+    details.push(`Cached input: ${tokens(usage.cachedInputTokens)}.`);
+  if (usage?.cacheCreationTokens !== undefined)
+    details.push(`Cache writes: ${tokens(usage.cacheCreationTokens)}.`);
+  if (usage?.reasoningTokens !== undefined)
+    details.push(`Reasoning: ${tokens(usage.reasoningTokens)}.`);
+  if (total.hasSubagents) {
+    details.push(`Main agent: ${cost ? `$${cost.amountUsd.toFixed(4)}` : "cost unavailable"}.`);
+    for (const child of turn.subagentCosts ?? []) {
+      details.push(
+        `Subagent turn (${child.model}): ${child.amountUsd === null ? "cost unavailable" : `$${child.amountUsd.toFixed(4)}`}${child.complete ? "" : " (partial)"}.`,
+      );
+    }
+    details.push(
+      "Subagent amounts include their descendants, counted once. Token counts and context remain main-agent only.",
+    );
+    if (!total.complete)
+      details.push(
+        "Partial total: some main-agent or subagent costs are unavailable or still running. Missing costs are not zero.",
+      );
+  }
+  if (total.estimated)
+    details.push(
+      "Estimated API-equivalent cost at base model rates, not your subscription charge.",
+    );
+  if (context)
+    details.push(
+      "Context is the last reported snapshot for this turn, not total tokens processed.",
+    );
+  return { label: parts.join(" · "), detail: details.join(" ") };
 }
 
 export const EMPTY_V2_ITEM_SUPPORT: V2ItemSupport = Object.freeze({

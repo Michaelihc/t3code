@@ -12,11 +12,11 @@ import { COMPACT_SLASH_COMMAND } from "@t3tools/provider-core/server/snapshotPro
 import { checkMuseProviderStatus } from "./status.ts";
 
 const settings = Schema.decodeSync(MuseSettings);
-const makeHost = (catalog: Record<string, unknown>) => {
+const makeHost = (catalog: Record<string, unknown>, usage: Record<string, unknown> = {}) => {
   const host: MuseSdkHost = {
     initializeResult: { grantedCapabilities: [] },
     connection: {
-      request: vi.fn(async () => catalog),
+      request: vi.fn(async (method) => (method === "usage/read" ? usage : catalog)),
       command: vi.fn(async () => ({})),
       mintCommandId: () => "test-command",
       onNotification: () => {},
@@ -122,6 +122,8 @@ it.layer(NodeServices.layer)("Muse status", (it) => {
           descriptor?.type === "select" && descriptor.options.map((option) => option.id),
         ).toEqual(["low", "medium", "high", "xhigh", "max"]);
         expect(host.connection.request).toHaveBeenCalledWith("model/list", {});
+        expect(host.connection.request).toHaveBeenCalledWith("usage/read", {});
+        expect(snapshot.usageLimits).toMatchObject({ unavailable: { reason: "probeFailed" } });
         expect(host.connection.command).not.toHaveBeenCalled();
         expect(host.close).toHaveBeenCalledOnce();
       }),

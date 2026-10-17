@@ -89,7 +89,8 @@ const buildCmd = Command.make(
       const clientTarget = path.join(serverDir, "dist/client");
 
       if (yield* fs.exists(webDist)) {
-        yield* fs.copy(webDist, clientTarget);
+        // Rebuilds must replace index.html and other stable asset names too.
+        yield* fs.copy(webDist, clientTarget, { overwrite: true });
         yield* applyDevelopmentIconOverrides(repoRoot, serverDir);
         yield* Effect.log("[cli] Bundled web app into dist/client");
       } else {

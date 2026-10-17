@@ -1,3 +1,6 @@
+import { downloadUrl } from "~/lib/download";
+import type { DesktopFileDownloadSource } from "@t3tools/contracts";
+
 /** Resolves web references without inheriting the desktop renderer's custom app scheme. */
 export function resolveProtocolRelativeMediaUrl(src: string): string {
   if (!src.startsWith("//")) return src;
@@ -6,6 +9,7 @@ export function resolveProtocolRelativeMediaUrl(src: string): string {
   return `${protocol}${src}`;
 }
 
+/** Reads media for copying; remote hosts must allow browser CORS. */
 async function readMediaBlob(src: string): Promise<Blob> {
   let response: Response;
   try {
@@ -24,16 +28,13 @@ async function readMediaBlob(src: string): Promise<Blob> {
   return blob;
 }
 
-export async function downloadMedia(src: string, name: string): Promise<void> {
-  const url = URL.createObjectURL(await readMediaBlob(src));
-  try {
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = name;
-    anchor.click();
-  } finally {
-    setTimeout(() => URL.revokeObjectURL(url), 30_000);
-  }
+/** Sends the original URL to the browser without changing the active playback URL. */
+export async function downloadMedia(
+  src: string,
+  name: string,
+  source?: DesktopFileDownloadSource,
+): Promise<void> {
+  await downloadUrl(resolveProtocolRelativeMediaUrl(src), name, source);
 }
 
 export async function readMediaPng(src: string): Promise<Blob> {

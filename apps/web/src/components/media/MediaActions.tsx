@@ -91,7 +91,7 @@ export function useMediaActions(source: MediaActionSource) {
     return url;
   };
   const save = async () => {
-    await downloadMedia(await actionUrl(), mediaFileName(source));
+    await downloadMedia(await actionUrl(), mediaFileName(source), source.asset);
   };
   const copyImage = async () => {
     assertCanReadMedia();
@@ -177,7 +177,7 @@ export function MediaActions({
       } else if (action === "save" || action === "copy-image") {
         progressToast = toastManager.add({
           type: "loading",
-          title: action === "save" ? `Preparing ${noun} download…` : "Copying image…",
+          title: action === "save" ? `Preparing ${noun} downloadâ€¦` : "Copying imageâ€¦",
         });
         await (action === "save" ? save() : copyImage());
         toastManager.update(progressToast, {

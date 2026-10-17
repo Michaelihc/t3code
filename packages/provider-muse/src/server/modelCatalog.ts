@@ -1,9 +1,15 @@
 import type { SendUserTurnOptions } from "@muse-code/sdk";
-import { ModelCapabilities, ServerProviderModel } from "@t3tools/contracts";
+import {
+  ModelCapabilities,
+  ServerProviderModel,
+  UsageModelPriceOverride,
+} from "@t3tools/contracts";
 import { MuseSettings } from "../settings.ts";
 import { createModelCapabilities, getProviderOptionDescriptors } from "@t3tools/shared/model";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as DateTime from "effect/DateTime";
+import { decodeMuseUsageLimits } from "./usageLimits.ts";
 import { createMuseSdkHost, createMuseSdkHostEffect, type MuseSdkHost } from "./sdk.ts";
 
 type MuseReasoningEffort = NonNullable<SendUserTurnOptions<never>["reasoningEffort"]>;
@@ -30,6 +36,7 @@ const ModelCatalogEntry = Schema.Struct({
   displayLabel: Schema.String,
   providerId: Schema.String,
   isDefault: Schema.Boolean,
+  cost: Schema.optional(Schema.Unknown),
   variants: Schema.optional(Schema.Union([Schema.Array(Schema.String), Schema.Literal("unknown")])),
   defaultReasoningEffort: Schema.optional(Schema.String),
   reasoningEffortVariants: Schema.optional(
@@ -93,7 +100,7 @@ class MuseCatalogError extends Schema.TaggedError<MuseCatalogError>()("MuseCatal
   detail: Schema.String,
 }) {}
 
-export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
+export const discoverMuseMetadata = Effect.fn("discoverMuseMetadata")(function* (
   settings: MuseSettings,
   environment: NodeJS.ProcessEnv | undefined,
   cwd?: string,
@@ -119,7 +126,7 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
     return yield* new MuseCatalogError({ detail: "Muse returned a catalog for another provider." });
   }
   const seen = new Set<string>();
-  return catalog.models.flatMap((model): ServerProviderModel[] => {
+  const models = catalog.models.flatMap((model): ServerProviderModel[] => {
     if (model.providerId !== "meta" || seen.has(model.modelId)) return [];
     seen.add(model.modelId);
     return [
@@ -129,7 +136,47 @@ export const discoverMuseModels = Effect.fn("discoverMuseModels")(function* (
         isCustom: false,
         isDefault: model.isDefault,
         capabilities: museModelCapabilities(model),
+        ...museTokenPrices(model.cost),
       },
     ];
   });
+  const usageLimits = yield* Effect.gen(function* () {
+    const result = yield* Effect.tryPromise(() => host.connection.request("usage/read", {}));
+    return yield* decodeMuseUsageLimits(result.usage);
+  }).pipe(
+    Effect.timeout("3 seconds"),
+    Effect.catch(() =>
+      DateTime.now.pipe(
+        Effect.map((now) => ({
+          checkedAt: DateTime.formatIso(now),
+          windows: [],
+          unavailable: {
+            reason: "probeFailed" as const,
+            message: "Muse has no readable subscription usage observation.",
+          },
+        })),
+      ),
+    ),
+  );
+  return { models, usageLimits };
 });
+
+const CatalogCost = Schema.Struct({
+  currency: Schema.Literal("USD"),
+  input: Schema.String,
+  output: Schema.String,
+  cached: Schema.String,
+});
+const isCatalogCost = Schema.is(CatalogCost);
+const isTokenPrice = Schema.is(UsageModelPriceOverride);
+function museTokenPrices(cost: unknown): { tokenPrices?: UsageModelPriceOverride } {
+  if (!isCatalogCost(cost)) return {};
+  const decimal = /^\d+(?:\.\d+)?$/;
+  if (![cost.input, cost.output, cost.cached].every((value) => decimal.test(value))) return {};
+  const tokenPrices = {
+    inputCostPerMillionTokens: Number(cost.input),
+    outputCostPerMillionTokens: Number(cost.output),
+    cacheReadCostPerMillionTokens: Number(cost.cached),
+  };
+  return isTokenPrice(tokenPrices) ? { tokenPrices } : {};
+}

@@ -274,6 +274,7 @@ import {
   WifiOffIcon,
 } from "lucide-react";
 import { cn, randomUUID } from "~/lib/utils";
+import { downloadUrl } from "~/lib/download";
 import { COLLAPSED_SIDEBAR_TITLEBAR_INSET_CLASS } from "~/workspaceTitlebar";
 import { stackedThreadToast, toastManager } from "./ui/toast";
 import { projectScriptIdFromCommand } from "~/projectScripts";
@@ -1164,7 +1165,7 @@ export default function ChatView(props: ChatViewProps) {
   })() as MessagesTimelineHistoryControls | undefined;
   const committedServerMessageIds = deriveCommittedServerUserMessageIds(serverVisibleTurnItems);
   // Queued messages have no turn item until their run starts, so the
-  // turn-item-derived set alone can never retire their optimistic rows —
+  // turn-item-derived set alone can never retire their optimistic rows â€”
   // cancelling such a run would leave a phantom "pending" queue row behind.
   const serverAcknowledgedUserMessageIds = (() => {
     const ids = new Set(committedServerMessageIds);
@@ -1597,7 +1598,7 @@ export default function ChatView(props: ChatViewProps) {
   const timelineAnchorMessageId = timelineAnchor.messageId;
   // LegendList sizes the anchored end-space filler for the geometry at anchor
   // time and never recomputes it, so a lingering anchor leaves stale filler
-  // height behind the composer — phantom scroll range on threads whose content
+  // height behind the composer â€” phantom scroll range on threads whose content
   // fits.
   const anchorRunSettled = (() => {
     if (timelineAnchorMessageId === null) return false;
@@ -1744,7 +1745,7 @@ export default function ChatView(props: ChatViewProps) {
   }
   const latestRunSettled = isLatestRunSettled(activeLatestRun, activeRuntime);
   const activePlan = deriveActivePlanState(serverProjection, activeActivityRun?.runId);
-  // Tasks progress for the running turn's own plan only — deriveActivePlanState
+  // Tasks progress for the running turn's own plan only â€” deriveActivePlanState
   // falls back to older runs' plans, which must not label fresh work.
   const activeComposerTasksProgress = (() => {
     if (
@@ -2177,6 +2178,11 @@ export default function ChatView(props: ChatViewProps) {
   const handlePreparedPullRequestThreadStable = useStableCallback(handlePreparedPullRequestThread);
 
   useEffect(() => {
+    lastDispatchedVisitRef.current = null;
+    lastVisitDispatchAtRef.current = 0;
+  }, [routeThreadKey]);
+
+  useEffect(() => {
     if (!serverThread?.id) return;
     const threadUpdatedAt = Date.parse(serverThread.updatedAt);
     if (Number.isNaN(threadUpdatedAt)) return;
@@ -2185,15 +2191,22 @@ export default function ChatView(props: ChatViewProps) {
       activeThreadLocalLastVisitedAt,
     );
     const lastVisitedAt = effectiveLastVisitedAt ? Date.parse(effectiveLastVisitedAt) : NaN;
-    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) return;
+    const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
+    if (!Number.isNaN(lastVisitedAt) && lastVisitedAt >= threadUpdatedAt) {
+      // Opening an already-read thread also counts as seeing this watermark.
+      // A subsequent mark-unread must survive until we leave and reopen it.
+      lastDispatchedVisitRef.current = dispatchKey;
+      return;
+    }
+    if (lastDispatchedVisitRef.current === dispatchKey) return;
 
     if (serverThread.lastVisitedAt !== undefined) {
-      // Dedupe per watermark — the effect re-runs before the command's echo
-      // lands. The dedupe also keeps a mark-unread on the open thread sticky:
-      // the rewind leaves updatedAt untouched, so the already-dispatched key
-      // skips a fresh visit until new activity lands or the thread is reopened.
-      const dispatchKey = `${routeThreadKey}:${serverThread.updatedAt}`;
-      if (lastDispatchedVisitRef.current === dispatchKey) return;
+      // Server-tracked visited state: record the watermark server-side so it
+      // syncs across every device connected to the environment. Dedupe per
+      // watermark â€” the effect re-runs before the command's echo lands. The
+      // dedupe also keeps a mark-unread on the open thread sticky: the rewind
+      // leaves updatedAt untouched, so the already-dispatched key skips a
+      // fresh visit until new activity lands or the thread is reopened.
       const dispatch = () => {
         lastDispatchedVisitRef.current = dispatchKey;
         lastVisitDispatchAtRef.current = Date.now();
@@ -2217,6 +2230,7 @@ export default function ChatView(props: ChatViewProps) {
       return () => clearTimeout(timer);
     }
 
+    lastDispatchedVisitRef.current = dispatchKey;
     markThreadVisited(
       scopedThreadKey(scopeThreadRef(serverThread.environmentId, serverThread.id)),
       serverThread.updatedAt,
@@ -2402,7 +2416,7 @@ export default function ChatView(props: ChatViewProps) {
               />
               <TooltipPopup side="top">
                 {versionMismatchServerLabel} {versionMismatch.serverVersion}{" "}
-                <span aria-hidden="true">→</span> {versionMismatch.clientVersion}
+                <span aria-hidden="true">â†’</span> {versionMismatch.clientVersion}
               </TooltipPopup>
             </Tooltip>
           ) : (
@@ -2729,10 +2743,15 @@ export default function ChatView(props: ChatViewProps) {
         httpBaseUrl: connection.httpBaseUrl,
         createAssetUrl: createAttachmentAssetUrl,
       });
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.download = attachment.name;
-      anchor.click();
+      await downloadUrl(url, attachment.name, {
+        environmentId,
+        resource: {
+          _tag: "attachment",
+          attachmentId: attachment.id,
+          fileName: attachment.name,
+          mimeType: attachment.mimeType,
+        },
+      });
     } catch (error) {
       toastManager.add({
         type: "error",
@@ -3269,7 +3288,7 @@ export default function ChatView(props: ChatViewProps) {
     ? draftThread?.loadBalancedEnvironmentId
       ? "Auto balance"
       : loadBalancing.pending
-        ? "Checking machines…"
+        ? "Checking machinesâ€¦"
         : loadBalancing.failed
           ? "Auto balance unavailable"
           : "Auto balance"
@@ -4258,7 +4277,7 @@ export default function ChatView(props: ChatViewProps) {
         const scrollNode = legendListRef.current?.getScrollableNode();
         if (!scrollNode) {
           // The list may not have mounted on the first frame after a thread
-          // switch — without a retry the opt-out listeners never attach and
+          // switch â€” without a retry the opt-out listeners never attach and
           // live-follow becomes impossible to escape for the whole thread.
           if (remainingAttempts > 0) {
             attach(remainingAttempts - 1);
@@ -4297,7 +4316,7 @@ export default function ChatView(props: ChatViewProps) {
         };
         // Touch direction isn't observable here (touchmove fires on any
         // finger motion, scrolling or not), so break only once the drag has
-        // actually carried the viewport out of the end band — an upward flick
+        // actually carried the viewport out of the end band â€” an upward flick
         // gets there within its first few events and later touchmoves break.
         const handleTouchMove = () => {
           if (viewportIsAwayFromEnd()) {
@@ -5215,7 +5234,7 @@ export default function ChatView(props: ChatViewProps) {
       title:
         presentation.usage === null
           ? presentation.title
-          : `${presentation.title} · ${presentation.usage}`,
+          : `${presentation.title} Â· ${presentation.usage}`,
       description: presentation.objective,
       actions: isWorking ? undefined : (
         <>
@@ -5470,7 +5489,7 @@ export default function ChatView(props: ChatViewProps) {
         icon: <GitBranchIcon />,
         title: (
           <span className="flex min-w-0 items-baseline gap-1.5">
-            <span className="shrink-0 font-normal text-muted-foreground">Branch changed — was</span>
+            <span className="shrink-0 font-normal text-muted-foreground">Branch changed â€” was</span>
             <Tooltip>
               <TooltipTrigger
                 render={

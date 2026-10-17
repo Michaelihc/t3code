@@ -18,6 +18,7 @@ import { toastManager } from "~/components/ui/toast";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
 import { useClientSettings, useUpdateClientSettings } from "~/hooks/useSettings";
 import { cn } from "~/lib/utils";
+import { downloadBlob, downloadUrl } from "~/lib/download";
 
 import { AudioPreview } from "./AudioPreview";
 import { BrowserDocumentFrame } from "./BrowserDocumentFrame";
@@ -184,23 +185,19 @@ export function AttachmentFilePreview(props: {
   const save = () => {
     setSaving(true);
     void settlePromise(async () => {
-      let file = props.file;
-      if (!file) {
+      if (props.file) {
+        await downloadBlob(props.file, props.name);
+      } else {
         const target = await prepareDownload();
         if (!target) throw new Error("Reconnect to the environment and try again.");
-        const response = await fetch(target);
-        if (!response.ok) throw new Error("The file could not be loaded. Try again.");
-        file = await response.blob();
+        await downloadUrl(
+          target,
+          props.name,
+          props.asset && downloadResource
+            ? { environmentId: props.asset.environmentId, resource: downloadResource }
+            : undefined,
+        );
       }
-      // A Blob keeps cross-origin downloads inside the desktop client instead of
-      // navigating its custom app scheme to an external browser.
-      const downloadUrl = URL.createObjectURL(file);
-      // Scheduled before the click so the URL is revoked even if the click throws.
-      setTimeout(() => URL.revokeObjectURL(downloadUrl), 30_000);
-      const anchor = document.createElement("a");
-      anchor.href = downloadUrl;
-      anchor.download = props.name;
-      anchor.click();
     }).then((result) => {
       if (!AsyncResult.isSuccess(result)) {
         const cause = Cause.squash(result.cause);
@@ -323,7 +320,7 @@ export function AttachmentFilePreview(props: {
         ) : null}
         {url ? (
           <FileSurfaceAction
-            label={saving ? "Preparing file…" : "Save file"}
+            label={saving ? "Preparing fileâ€¦" : "Save file"}
             disabled={saving}
             onPress={save}
           >

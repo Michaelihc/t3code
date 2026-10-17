@@ -1,3 +1,4 @@
+import { preserveTurnAccounting } from "@t3tools/shared/turnCost";
 import { applyThreadPullRequestLinkUpdate } from "@t3tools/shared/threadPullRequests";
 import type {
   OrchestrationV2DomainEvent,
@@ -274,7 +275,27 @@ export function applyOrchestrationV2ProjectionEvent(
       return {
         ...base,
         providerTurns: upsertEntity(base.providerTurns, {
-          ...event.payload,
+          ...preserveTurnAccounting(
+            base.providerTurns.find((turn) => turn.id === event.payload.id),
+            event.payload,
+          ),
+          ...((event.payload.turnTokenUsage ??
+            base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnTokenUsage) ===
+          undefined
+            ? {}
+            : {
+                turnTokenUsage:
+                  event.payload.turnTokenUsage ??
+                  base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnTokenUsage,
+              }),
+          ...((event.payload.turnCost ??
+            base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnCost) === undefined
+            ? {}
+            : {
+                turnCost:
+                  event.payload.turnCost ??
+                  base.providerTurns.find((turn) => turn.id === event.payload.id)?.turnCost,
+              }),
           ...((event.payload.tokenUsage ??
             base.providerTurns.find((turn) => turn.id === event.payload.id)?.tokenUsage) ===
           undefined
