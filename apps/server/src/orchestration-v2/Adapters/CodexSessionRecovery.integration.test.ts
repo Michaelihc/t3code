@@ -1,6 +1,7 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, it } from "@effect/vitest";
 import { CodexSettings, CommandId, MessageId, ProjectId, ThreadId } from "@t3tools/contracts";
+import * as HostProcess from "@t3tools/shared/HostProcess";
 import * as Crypto from "effect/Crypto";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -32,6 +33,7 @@ describe("Codex shared session recovery", () => {
     "fails active turns and replaces the shared app-server after %s",
     (termination) =>
       Effect.gen(function* () {
+        const platform = yield* HostProcess.Platform;
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const cwd = yield* fs.makeTempDirectoryScoped({ prefix: "t3-codex-session-recovery-" });
@@ -151,8 +153,16 @@ describe("Codex shared session recovery", () => {
             );
           }
           const exit = yield* Effect.exit(handle.exitCode);
-          assert.equal(Exit.isFailure(exit), termination === "SIGKILL");
-          if (Exit.isSuccess(exit)) assert.equal(Number(exit.value), 7);
+          if (termination === "exit code") {
+            assert.isTrue(Exit.isSuccess(exit));
+            if (Exit.isSuccess(exit)) assert.equal(Number(exit.value), 7);
+          } else if (platform === "win32") {
+            // Windows reports a forced kill as a nonzero exit code rather than a signal failure.
+            assert.isTrue(Exit.isSuccess(exit));
+            if (Exit.isSuccess(exit)) assert.notEqual(Number(exit.value), 0);
+          } else {
+            assert.isTrue(Exit.isFailure(exit));
+          }
 
           // Await committed failures, rather than guessing when the event pump ran.
           yield* eventSink

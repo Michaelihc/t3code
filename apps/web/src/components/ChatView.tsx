@@ -2180,6 +2180,7 @@ export default function ChatView(props: ChatViewProps) {
   useEffect(() => {
     lastDispatchedVisitRef.current = null;
     lastVisitDispatchAtRef.current = 0;
+    // oxlint-disable-next-line react/exhaustive-effect-dependencies -- Changing threads begins a new visible visit.
   }, [routeThreadKey]);
 
   useEffect(() => {
