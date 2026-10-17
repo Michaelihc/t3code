@@ -320,7 +320,7 @@ export function AttachmentFilePreview(props: {
         ) : null}
         {url ? (
           <FileSurfaceAction
-            label={saving ? "Preparing fileâ€¦" : "Save file"}
+            label={saving ? "Preparing file…" : "Save file"}
             disabled={saving}
             onPress={save}
           >

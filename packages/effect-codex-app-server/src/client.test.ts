@@ -3,6 +3,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Effect from "effect/Effect";
 import * as Ref from "effect/Ref";
+import * as Queue from "effect/Queue";
 import * as Scope from "effect/Scope";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
@@ -10,6 +11,19 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, it } from "@effect/vitest";
 
 import * as CodexClient from "./client.ts";
+import * as CodexError from "./errors.ts";
+import { makeInMemoryStdio } from "./_internal/stdio.ts";
+
+it.effect("retains transport termination for current and later observers", () =>
+  Effect.gen(function* () {
+    const { stdio, input } = yield* makeInMemoryStdio();
+    const client = yield* CodexClient.make(stdio);
+    yield* Queue.end(input);
+    const error = yield* client.terminated;
+    assert.instanceOf(error, CodexError.CodexAppServerInputStreamEndedError);
+    assert.strictEqual(yield* client.terminated, error);
+  }).pipe(Effect.scoped),
+);
 
 const mockPeerPath = Effect.map(Effect.service(Path.Path), (path) =>
   path.join(import.meta.dirname, "../test/fixtures/codex-app-server-mock-peer.ts"),

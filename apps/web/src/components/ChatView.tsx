@@ -1165,7 +1165,7 @@ export default function ChatView(props: ChatViewProps) {
   })() as MessagesTimelineHistoryControls | undefined;
   const committedServerMessageIds = deriveCommittedServerUserMessageIds(serverVisibleTurnItems);
   // Queued messages have no turn item until their run starts, so the
-  // turn-item-derived set alone can never retire their optimistic rows â€”
+  // turn-item-derived set alone can never retire their optimistic rows —
   // cancelling such a run would leave a phantom "pending" queue row behind.
   const serverAcknowledgedUserMessageIds = (() => {
     const ids = new Set(committedServerMessageIds);
@@ -1598,7 +1598,7 @@ export default function ChatView(props: ChatViewProps) {
   const timelineAnchorMessageId = timelineAnchor.messageId;
   // LegendList sizes the anchored end-space filler for the geometry at anchor
   // time and never recomputes it, so a lingering anchor leaves stale filler
-  // height behind the composer â€” phantom scroll range on threads whose content
+  // height behind the composer — phantom scroll range on threads whose content
   // fits.
   const anchorRunSettled = (() => {
     if (timelineAnchorMessageId === null) return false;
@@ -1745,7 +1745,7 @@ export default function ChatView(props: ChatViewProps) {
   }
   const latestRunSettled = isLatestRunSettled(activeLatestRun, activeRuntime);
   const activePlan = deriveActivePlanState(serverProjection, activeActivityRun?.runId);
-  // Tasks progress for the running turn's own plan only â€” deriveActivePlanState
+  // Tasks progress for the running turn's own plan only — deriveActivePlanState
   // falls back to older runs' plans, which must not label fresh work.
   const activeComposerTasksProgress = (() => {
     if (
@@ -2203,7 +2203,7 @@ export default function ChatView(props: ChatViewProps) {
     if (serverThread.lastVisitedAt !== undefined) {
       // Server-tracked visited state: record the watermark server-side so it
       // syncs across every device connected to the environment. Dedupe per
-      // watermark â€” the effect re-runs before the command's echo lands. The
+      // watermark — the effect re-runs before the command's echo lands. The
       // dedupe also keeps a mark-unread on the open thread sticky: the rewind
       // leaves updatedAt untouched, so the already-dispatched key skips a
       // fresh visit until new activity lands or the thread is reopened.
@@ -2416,7 +2416,7 @@ export default function ChatView(props: ChatViewProps) {
               />
               <TooltipPopup side="top">
                 {versionMismatchServerLabel} {versionMismatch.serverVersion}{" "}
-                <span aria-hidden="true">â†’</span> {versionMismatch.clientVersion}
+                <span aria-hidden="true">→</span> {versionMismatch.clientVersion}
               </TooltipPopup>
             </Tooltip>
           ) : (
@@ -3288,7 +3288,7 @@ export default function ChatView(props: ChatViewProps) {
     ? draftThread?.loadBalancedEnvironmentId
       ? "Auto balance"
       : loadBalancing.pending
-        ? "Checking machinesâ€¦"
+        ? "Checking machines…"
         : loadBalancing.failed
           ? "Auto balance unavailable"
           : "Auto balance"
@@ -4277,7 +4277,7 @@ export default function ChatView(props: ChatViewProps) {
         const scrollNode = legendListRef.current?.getScrollableNode();
         if (!scrollNode) {
           // The list may not have mounted on the first frame after a thread
-          // switch â€” without a retry the opt-out listeners never attach and
+          // switch — without a retry the opt-out listeners never attach and
           // live-follow becomes impossible to escape for the whole thread.
           if (remainingAttempts > 0) {
             attach(remainingAttempts - 1);
@@ -4316,7 +4316,7 @@ export default function ChatView(props: ChatViewProps) {
         };
         // Touch direction isn't observable here (touchmove fires on any
         // finger motion, scrolling or not), so break only once the drag has
-        // actually carried the viewport out of the end band â€” an upward flick
+        // actually carried the viewport out of the end band — an upward flick
         // gets there within its first few events and later touchmoves break.
         const handleTouchMove = () => {
           if (viewportIsAwayFromEnd()) {
@@ -5234,7 +5234,7 @@ export default function ChatView(props: ChatViewProps) {
       title:
         presentation.usage === null
           ? presentation.title
-          : `${presentation.title} Â· ${presentation.usage}`,
+          : `${presentation.title} · ${presentation.usage}`,
       description: presentation.objective,
       actions: isWorking ? undefined : (
         <>
@@ -5489,7 +5489,7 @@ export default function ChatView(props: ChatViewProps) {
         icon: <GitBranchIcon />,
         title: (
           <span className="flex min-w-0 items-baseline gap-1.5">
-            <span className="shrink-0 font-normal text-muted-foreground">Branch changed â€” was</span>
+            <span className="shrink-0 font-normal text-muted-foreground">Branch changed — was</span>
             <Tooltip>
               <TooltipTrigger
                 render={

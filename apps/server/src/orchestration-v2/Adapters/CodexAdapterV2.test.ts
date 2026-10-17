@@ -1807,6 +1807,7 @@ describe("CodexAdapterV2 session initialize", () => {
         runtimePolicy: CODEX_TEST_RUNTIME_POLICY,
       });
       return {
+        events: runtime.events,
         ensureThread: (threadId: string) =>
           runtime.ensureThread({
             threadId: ThreadId.make(threadId),
@@ -1819,6 +1820,29 @@ describe("CodexAdapterV2 session initialize", () => {
 
   const replayPreamble = (nativeThreadId: string) =>
     codexReplayPreamble({ nativeThreadId, nativeTurnId: "unused", prompt: "unused" });
+
+  it.effect("fails the session event stream when the Codex transport exits", () =>
+    Effect.gen(function* () {
+      const session = yield* openReplaySession(
+        makeCodexReplayTranscript({
+          scenario: "session-transport-exit",
+          entries: [
+            ...replayPreamble("transport-exit").slice(0, 5),
+            { type: "runtime_exit", status: "success" },
+          ],
+        }),
+      );
+      yield* session.ensureThread("thread-transport-exit");
+      const error = yield* Stream.runDrain(session.events).pipe(Effect.flip);
+      assert.equal(error._tag, "ProviderAdapterEventStreamError");
+      assert.instanceOf(error.cause, CodexError.CodexAppServerProcessExitedError);
+    }).pipe(
+      Effect.scoped,
+      Effect.provide(
+        Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),
+      ),
+    ),
+  );
 
   it.effect("sends one initialize when two threads start on a fresh session at once", () =>
     Effect.gen(function* () {
@@ -2001,7 +2025,7 @@ describe("CodexAdapterV2 lost app-server", () => {
     Effect.gen(function* () {
       const error = yield* Fiber.join(yield* sessionFailureOver(Stream.empty));
       assert.instanceOf(error, ProviderAdapter.ProviderAdapterEventStreamError);
-      assert.include(String(error.cause), "Codex app-server connection ended");
+      assert.instanceOf(error.cause, CodexError.CodexAppServerInputStreamEndedError);
     }).pipe(
       Effect.provide(
         Layer.mergeAll(IdAllocator.layer, McpProviderSessions.layer, NodeServices.layer),

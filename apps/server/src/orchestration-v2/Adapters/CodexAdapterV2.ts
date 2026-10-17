@@ -6431,19 +6431,17 @@ export const makeCodexAdapterV2 = Effect.fn("makeCodexAdapterV2")(function* (
           }
         });
         yield* Effect.raceFirst(
-          client.terminated.pipe(
-            Effect.map((error) => `Codex app-server connection ended: ${error.message}`),
-          ),
+          client.terminated,
           // A probe that fails with a transport error is the termination above.
           unresponsive.pipe(Effect.catch(() => Effect.never)),
         ).pipe(
-          Effect.flatMap((detail) =>
+          Effect.flatMap((cause) =>
             Queue.fail(
               events,
               new ProviderAdapter.ProviderAdapterEventStreamError({
                 driver: CODEX_PROVIDER,
                 providerSessionId: input.providerSessionId,
-                cause: detail,
+                cause,
               }),
             ),
           ),

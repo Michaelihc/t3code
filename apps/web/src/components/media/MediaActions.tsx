@@ -177,7 +177,7 @@ export function MediaActions({
       } else if (action === "save" || action === "copy-image") {
         progressToast = toastManager.add({
           type: "loading",
-          title: action === "save" ? `Preparing ${noun} downloadâ€¦` : "Copying imageâ€¦",
+          title: action === "save" ? `Preparing ${noun} download…` : "Copying image…",
         });
         await (action === "save" ? save() : copyImage());
         toastManager.update(progressToast, {
