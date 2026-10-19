@@ -50,7 +50,16 @@ export function museUsageLimitResetAt(
   return resets.length > 0 ? DateTime.formatIso(DateTime.makeUnsafe(Math.max(...resets))) : null;
 }
 
-const decodeSubscriptionUsage = Schema.decodeUnknownEffect(MuseSubscriptionUsage);
+const decodeSubscriptionUsage = Schema.decodeUnknownEffect(
+  Schema.Struct({
+    observedAtMs: Schema.Finite.check(
+      Schema.isGreaterThanOrEqualTo(0),
+      Schema.isLessThanOrEqualTo(LATEST_DATE_MS),
+    ),
+    window: MuseSubscriptionUsage.fields.window,
+    weekly: MuseSubscriptionUsage.fields.weekly,
+  }),
+);
 
 /** Muse reports host-wide observations, without a session id. */
 export const decodeMuseUsageLimits = Effect.fn("decodeMuseUsageLimits")(function* (data: unknown) {

@@ -704,7 +704,7 @@ it.effect.skipIf(windowsHost)(
       assert.equal(result.editors.includes("file-manager"), true);
       assert.ok(spawned);
       assert.equal(spawned.command, "powershell.exe");
-      assert.equal(spawned.options.detached, true);
+      assert.equal(spawned.options.detached, false);
       const encodedCommand = spawned.args[spawned.args.length - 1] ?? "";
       const decodedCommand = Buffer.from(encodedCommand, "base64").toString("utf16le");
       assert.equal(
