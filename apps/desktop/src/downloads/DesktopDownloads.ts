@@ -110,6 +110,7 @@ export const layer = Layer.effect(
     );
     const observeOwner = (owner: Electron.WebContents) => {
       if (!ownerCleanups.has(owner)) {
+        const session = owner.session;
         const receive = (
           _event: Electron.Event,
           item: Electron.DownloadItem,
@@ -190,10 +191,10 @@ export const layer = Layer.effect(
             entries.delete(id);
           }
         };
-        owner.session.on("will-download", receive);
+        session.on("will-download", receive);
         owner.once("destroyed", destroyed);
         ownerCleanups.set(owner, () => {
-          owner.session.removeListener("will-download", receive);
+          session.removeListener("will-download", receive);
           owner.removeListener("destroyed", destroyed);
         });
       }

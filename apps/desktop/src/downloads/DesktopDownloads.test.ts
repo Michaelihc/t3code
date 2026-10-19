@@ -49,10 +49,11 @@ class Item extends NodeEvents.EventEmitter {
 function fixture(failFirstStart = false, deferDownload = false) {
   const session = new NodeEvents.EventEmitter();
   const items: Item[] = [];
+  let destroyed = false;
   const owner = Object.assign(new NodeEvents.EventEmitter(), {
     id: 7,
     session,
-    isDestroyed: () => false,
+    isDestroyed: () => destroyed,
     send: vi.fn(),
     downloadURL: (url: string) => {
       if (failFirstStart) {
@@ -64,8 +65,14 @@ function fixture(failFirstStart = false, deferDownload = false) {
       if (!deferDownload) session.emit("will-download", undefined, item, owner);
     },
   });
+  Object.defineProperty(owner, "session", {
+    get: () => {
+      if (destroyed) throw new TypeError("Object has been destroyed");
+      return session;
+    },
+  });
   const window = {
-    isDestroyed: () => false,
+    isDestroyed: () => destroyed,
     webContents: owner,
   } as unknown as Electron.BrowserWindow;
   const main = Effect.succeed(Option.some(window));
@@ -94,12 +101,39 @@ function fixture(failFirstStart = false, deferDownload = false) {
     layer,
     items,
     owner,
+    destroy: () => {
+      destroyed = true;
+      owner.emit("destroyed");
+    },
     receive: (item: Item, source = owner) => session.emit("will-download", undefined, item, source),
     listenerCount: () => session.listenerCount("will-download"),
   };
 }
 
 describe("retained native downloads", () => {
+  it.effect("cleans up transfers after the destroyed window releases its session", () => {
+    const { layer, receive, destroy, owner, listenerCount } = fixture();
+    return Effect.gen(function* () {
+      const downloads = yield* DesktopDownloads.DesktopDownloads;
+      yield* downloads.list(7);
+      const item = new Item("https://files.example/report");
+      const cancel = vi.spyOn(item, "cancel");
+      receive(item);
+      const [transfer] = yield* downloads.list(7);
+      expect(transfer).toBeDefined();
+      owner.send.mockClear();
+
+      expect(destroy).not.toThrow();
+
+      expect(listenerCount()).toBe(0);
+      expect(owner.listenerCount("destroyed")).toBe(0);
+      expect(item.eventNames()).toEqual([]);
+      expect(cancel).toHaveBeenCalledOnce();
+      expect(owner.send).not.toHaveBeenCalled();
+      expect(yield* downloads.list(7)).toEqual([]);
+      expect(yield* downloads.open(transfer!.id, true, 7).pipe(Effect.isFailure)).toBe(true);
+    }).pipe(Effect.provide(layer));
+  });
   it.effect("tracks a video-control download before any managed download", () => {
     const { layer, receive, owner, listenerCount } = fixture();
     const clock = vi.spyOn(performance, "now").mockReturnValue(0);
